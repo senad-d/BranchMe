@@ -1,0 +1,28 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="120" x2="864" y2="904" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App tile -->
+  <rect x="96" y="96" width="832" height="832" rx="208" fill="url(#bg)"/>
+
+  <!-- Main branch shape -->
+  <path d="M344 704V320" stroke="#F8FAFC" stroke-width="72" stroke-linecap="round"/>
+  <path d="M344 512H512C604 512 680 436 680 344" stroke="#F8FAFC" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M344 512H512C604 512 680 588 680 680" stroke="#F8FAFC" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Nodes -->
+  <circle cx="344" cy="320" r="72" fill="#34D399"/>
+  <circle cx="344" cy="704" r="72" fill="#38BDF8"/>
+  <circle cx="680" cy="344" r="72" fill="#38BDF8"/>
+  <circle cx="680" cy="680" r="72" fill="#34D399"/>
+
+  <!-- Inner node cutouts for a clean Git-like look -->
+  <circle cx="344" cy="320" r="30" fill="#111827" opacity="0.9"/>
+  <circle cx="344" cy="704" r="30" fill="#111827" opacity="0.9"/>
+  <circle cx="680" cy="344" r="30" fill="#111827" opacity="0.9"/>
+  <circle cx="680" cy="680" r="30" fill="#111827" opacity="0.9"/>
+</svg>
