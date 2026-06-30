@@ -64,17 +64,25 @@ export interface ExtensionUI {
   setEditorComponent(factory: EditorComponentFactory): void;
 }
 
+export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+
 export interface ExtensionContext {
   cwd: string;
-  mode: string;
+  mode: ExtensionMode;
+  hasUI: boolean;
+  signal?: AbortSignal;
   ui: ExtensionUI;
   isIdle(): boolean;
+}
+
+export interface ExtensionCommandContext extends ExtensionContext {
+  waitForIdle(): Promise<void>;
 }
 
 export interface ExtensionCommandOptions {
   description?: string;
   getArgumentCompletions?(prefix: string): CompletionItem[] | null | Promise<CompletionItem[] | null>;
-  handler(args: string, ctx: ExtensionContext): void | Promise<void>;
+  handler(args: string, ctx: ExtensionCommandContext): void | Promise<void>;
 }
 
 export interface ExtensionShortcutOptions {
@@ -83,12 +91,52 @@ export interface ExtensionShortcutOptions {
 }
 
 export interface SendUserMessageOptions {
-  deliverAs?: "followUp" | string;
+  deliverAs?: "steer" | "followUp" | "nextTurn" | string;
+}
+
+export interface ExecOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  timeout?: number;
+}
+
+export interface ExecResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+  killed: boolean;
+}
+
+export interface ToolExecutionUpdate {
+  content?: Array<{ type: "text"; text: string }>;
+  details?: unknown;
+}
+
+export interface ToolExecutionResult extends ToolExecutionUpdate {
+  terminate?: boolean;
+}
+
+export interface ToolDefinition {
+  name: string;
+  label?: string;
+  description: string;
+  promptSnippet?: string;
+  promptGuidelines?: string[];
+  parameters: unknown;
+  execute(
+    toolCallId: string,
+    params: any,
+    signal: AbortSignal | undefined,
+    onUpdate: ((update: ToolExecutionUpdate) => void) | undefined,
+    ctx: ExtensionContext,
+  ): ToolExecutionResult | Promise<ToolExecutionResult>;
 }
 
 export interface ExtensionAPI {
   registerCommand(name: string, options: ExtensionCommandOptions): void;
   registerShortcut(shortcut: string, options: ExtensionShortcutOptions): void;
+  registerTool(tool: ToolDefinition): void;
+  exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
   on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>): void;
   sendUserMessage(message: string, options?: SendUserMessageOptions): void;
 }

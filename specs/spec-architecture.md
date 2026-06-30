@@ -1,5 +1,7 @@
 # Plan: BranchMe Architecture
 
+> Historical note (updated 2026-06-30): this preparation plan is retained for implementation history, not as active guidance. Current BranchMe behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Implemented behavior differs from the original plan by adding `change_branch`, using hardened repository-root `.env` token fallback, serializing same-repository git mutations, redacting git output, validating PR branch refs, importing `@earendil-works/pi-tui` utilities, and pushing upstream branches with an explicit remote/refspec instead of bare `git push`.
+
 ## Task Description
 
 Define the architecture for BranchMe, a minimal TypeScript Pi extension package that will later provide git branch workflow tools for the current repository only.
@@ -14,7 +16,7 @@ Pi users and CI workflows need a small, automation-friendly extension that can c
 
 ## Solution Approach
 
-BranchMe will expose a help/config slash command and four custom tools. The slash command is informational only. All git and GitHub mutations happen through explicit tool calls with precise schemas and current-repository boundary checks.
+BranchMe exposes a help/config slash command and five custom tools. The slash command is informational only. All git and GitHub mutations happen through explicit tool calls with precise schemas and current-repository boundary checks.
 
 ## Approved Project Definition
 
@@ -36,7 +38,7 @@ src/
 ├── commands/
 │   └── branchme-command.ts       # /branchme and /branchme help, informational only
 ├── tools/
-│   └── branchme-tools.ts         # registers branch_status/create_branch/push_branch/pull_request
+│   └── branchme-tools.ts         # registers branch_status/change_branch/create_branch/push_branch/pull_request
 ├── git.ts                        # git command helpers and current-repo validation
 ├── github.ts                     # token resolution, repository resolution, PR REST call
 └── ui/
@@ -52,8 +54,9 @@ src/
 | Command | `/branchme` | Show a simple TUI status/config/help panel | Informational only; no git/GitHub actions |
 | Command | `/branchme help` | Show markdown workflow notes | Informational only |
 | Tool | `branch_status` | Inspect current repository, branch, upstream, and dirty/ahead/behind state | Read-only git commands |
+| Tool | `change_branch` | Switch to an existing local branch after clean-worktree preflight | Mutates local HEAD/working tree only through git switch |
 | Tool | `create_branch` | Create and checkout a new branch from current `HEAD` | Mutates git branch/HEAD only |
-| Tool | `push_branch` | Push current branch, publishing upstream to `origin` if missing | Mutates remote refs only; never commits |
+| Tool | `push_branch` | Push current branch with explicit upstream target, publishing to `origin` if missing | Mutates remote refs only; never commits |
 | Tool | `pull_request` | Create a GitHub PR for the current repository | Network call to GitHub REST API |
 | Event | `session_start`/`session_shutdown` | Optional status footer setup/cleanup | No long-lived resources |
 
@@ -101,9 +104,9 @@ src/
 - Behavior:
   - Fail on detached HEAD.
   - Detect upstream for current branch.
-  - If upstream exists, run `git push`.
+  - If upstream exists, resolve `branch.<current>.remote` and `branch.<current>.merge`, then run `git push <remote> HEAD:<mergeRef>`.
   - If upstream is missing, run `git push --set-upstream origin <currentBranch>`.
-  - Return current branch, upstream, publish mode, and git output summary.
+  - Return current branch, upstream, publish mode, target remote/ref, and redacted git output summary.
 - Non-behavior:
   - Never commits or stages changes.
   - Never pushes a branch other than the current branch.
@@ -121,8 +124,8 @@ src/
   - It must not accept owner/repo parameters.
   - If `GITHUB_REPOSITORY` and local git remote both exist and disagree, fail closed.
 - Auth:
-  - Read `GITHUB_TOKEN` first or `GH_TOKEN` as fallback from process env only.
-  - Do not read `.env` in v1 unless explicitly added in a future spec.
+  - Read `GITHUB_TOKEN` first or `GH_TOKEN` as fallback from process env.
+  - If neither process token is present, read only those keys from a small regular `.env` file in the verified git root.
   - Never include token values in output, errors, or details.
 - Behavior:
   - Optionally validate `headBranch` equals the current branch to avoid accidental PRs from another branch.
@@ -132,7 +135,7 @@ src/
 
 ## Git Command Strategy
 
-- Use `pi.exec("git", args, { cwd: ctx.cwd, signal, timeout })` only.
+- Use `pi.exec("git", args, { cwd, signal, timeout })` only; mutating operations resolve the git root first and run from that root.
 - Never build shell command strings for git operations.
 - Use argument arrays for branch names and refs.
 - Prefer deterministic commands:
@@ -143,7 +146,7 @@ src/
   - `git rev-list --left-right --count HEAD...@{u}`
   - `git check-ref-format --branch <branchName>`
   - `git switch -c <branchName>`
-  - `git push` or `git push --set-upstream origin <branch>`
+  - `git push <remote> HEAD:<refs/heads/branch>` or `git push --set-upstream origin <branch>`
 
 ## GitHub Repository Resolution
 
@@ -187,7 +190,7 @@ The tool must never accept owner/repo input because the extension is scoped to t
 - Git mutations are limited to branch creation, checkout, and push.
 - Working-tree file edits are out of scope.
 - Network access is limited to GitHub REST PR creation.
-- Tokens come from process environment only.
+- Tokens come from process environment or hardened repository-root `.env` fallback.
 - Error formatting must redact token-like values.
 - Tool outputs must be bounded and should truncate unexpected large git/GitHub responses.
 
@@ -195,6 +198,7 @@ The tool must never accept owner/repo input because the extension is scoped to t
 
 - Keep Pi packages in `peerDependencies` with `"*"`.
 - Use `dependencies` only for non-Pi runtime libraries. None are required in v1.
+- `@earendil-works/pi-tui` is a Pi peer because the panel imports TUI key/width utilities.
 - `devDependencies` may include TypeScript and local test dependencies.
 - Use Node 22 built-in `fetch`; do not add Octokit for v1.
 
@@ -224,7 +228,7 @@ pi --no-extensions -e .
 
 - The later implementation keeps `src/extension.ts` small and delegates to feature modules.
 - The slash command remains informational only.
-- All four tools have precise schemas, descriptions, `promptSnippet`, and tool-specific `promptGuidelines` that name the tool explicitly.
+- All five tools have precise schemas, descriptions, `promptSnippet`, and tool-specific `promptGuidelines` that name the tool explicitly.
 - No feature creates commits or stages files.
 - PR creation cannot target a repository supplied by tool arguments.
 - GitHub token values are never surfaced in content, details, or thrown errors.

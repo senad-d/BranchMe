@@ -5,6 +5,7 @@ import {
   GIT_STATUS_TIMEOUT_MS,
   MAX_SUMMARY_OUTPUT_CHARS,
 } from "./constants.ts";
+import { redactSecrets } from "./redaction.ts";
 import type {
   AheadBehindCount,
   BranchStatusDetails,
@@ -25,6 +26,31 @@ export interface GitRunOptions {
   allowFailure?: boolean;
 }
 
+const repositoryMutationQueues = new Map<string, Promise<void>>();
+
+async function withRepositoryMutationQueue<T>(repoRoot: string, operation: () => Promise<T>): Promise<T> {
+  const previous = repositoryMutationQueues.get(repoRoot) ?? Promise.resolve();
+  let releaseCurrent!: () => void;
+  const current = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const queued = previous.catch(() => undefined).then(() => current);
+  repositoryMutationQueues.set(repoRoot, queued);
+
+  await previous.catch(() => undefined);
+
+  try {
+    return await operation();
+  } finally {
+    releaseCurrent();
+    if (repositoryMutationQueues.get(repoRoot) === queued) {
+      void queued.finally(() => {
+        if (repositoryMutationQueues.get(repoRoot) === queued) repositoryMutationQueues.delete(repoRoot);
+      });
+    }
+  }
+}
+
 function trimOutput(value: string): string {
   return value.replace(/\s+$/u, "");
 }
@@ -35,14 +61,30 @@ function compactOutput(value: string): string {
   return `${text.slice(0, MAX_SUMMARY_OUTPUT_CHARS)}… [truncated]`;
 }
 
+function safeOutput(value: string, tokens: readonly string[] = []): string {
+  return compactOutput(redactSecrets(value, tokens));
+}
+
+function safeDetail(value: string): string {
+  return redactSecrets(value);
+}
+
+function safeNullableDetail(value: string | null): string | null {
+  return value === null ? null : safeDetail(value);
+}
+
 function commandLabel(args: readonly string[]): string {
   return `git ${args.join(" ")}`;
 }
 
-export function formatGitFailure(args: readonly string[], result: GitExecResult): string {
-  const reason = compactOutput(result.stderr || result.stdout) || `exit code ${result.code}`;
+function safeCommandLabel(args: readonly string[], tokens: readonly string[] = []): string {
+  return redactSecrets(commandLabel(args), tokens);
+}
+
+export function formatGitFailure(args: readonly string[], result: GitExecResult, tokens: readonly string[] = []): string {
+  const reason = safeOutput(result.stderr || result.stdout, tokens) || `exit code ${result.code}`;
   const killed = result.killed ? " (killed)" : "";
-  return `${commandLabel(args)} failed${killed}: ${reason}`;
+  return `${safeCommandLabel(args, tokens)} failed${killed}: ${reason}`;
 }
 
 export async function runGit(
@@ -72,7 +114,7 @@ export async function getGitRoot(
   const args = ["rev-parse", "--show-toplevel"];
   const result = await runGit(pi, ctx, args, { signal, timeout: GIT_STATUS_TIMEOUT_MS, allowFailure: true });
   if (result.code !== 0) {
-    throw new Error(`Not a git repository: ${compactOutput(result.stderr || result.stdout) || "git rev-parse failed"}`);
+    throw new Error(`Not a git repository: ${safeOutput(result.stderr || result.stdout) || "git rev-parse failed"}`);
   }
 
   const root = trimOutput(result.stdout);
@@ -100,7 +142,7 @@ export async function getCurrentBranch(
   });
   if (verify.code === 0) return { currentBranch: null, detached: true };
 
-  throw new Error(`Unable to determine current branch: ${compactOutput(result.stderr || verify.stderr) || "HEAD is invalid"}`);
+  throw new Error(`Unable to determine current branch: ${safeOutput(result.stderr || verify.stderr) || "HEAD is invalid"}`);
 }
 
 export async function requireCurrentBranch(
@@ -126,6 +168,94 @@ export async function getUpstreamBranch(
 
   const upstream = trimOutput(result.stdout);
   return upstream || null;
+}
+
+interface PushTarget {
+  upstream: string | null;
+  mode: "push" | "publish";
+  remote: string;
+  remoteRef: string;
+  refspec: string;
+  args: string[];
+}
+
+function validateRemoteName(remote: string): void {
+  if (!remote) throw new Error("Unable to push current branch: upstream remote is missing.");
+  if (remote === ".") throw new Error("Unable to push current branch: upstream is a local branch, not a remote.");
+  if (remote.startsWith("-")) throw new Error("Unable to push current branch: upstream remote cannot start with '-'.");
+  if (remote.includes(":") || remote.includes("@")) {
+    throw new Error("Unable to push current branch: upstream remote name cannot be a URL or user-prefixed target.");
+  }
+  if (/[\u0000-\u001f\u007f\s]/u.test(remote)) {
+    throw new Error("Unable to push current branch: upstream remote contains whitespace or control characters.");
+  }
+}
+
+function normalizeRemoteHeadRef(mergeRef: string): string {
+  if (!mergeRef.startsWith("refs/heads/")) {
+    throw new Error("Unable to push current branch: upstream merge ref is not a branch ref.");
+  }
+
+  const branchName = mergeRef.slice("refs/heads/".length);
+  validateBranchNameInput(branchName);
+  return mergeRef;
+}
+
+async function getBranchConfigValue(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  currentBranch: string,
+  key: "remote" | "merge",
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const result = await runGit(pi, ctx, ["config", "--get", `branch.${currentBranch}.${key}`], {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  if (result.code !== 0) return null;
+
+  const value = trimOutput(result.stdout);
+  return value || null;
+}
+
+async function resolvePushTarget(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  currentBranch: string,
+  signal?: AbortSignal,
+): Promise<PushTarget> {
+  validateBranchNameInput(currentBranch);
+  const upstream = await getUpstreamBranch(pi, ctx, signal);
+  if (!upstream) {
+    const remoteRef = `refs/heads/${currentBranch}`;
+    return {
+      upstream: null,
+      mode: "publish",
+      remote: "origin",
+      remoteRef,
+      refspec: currentBranch,
+      args: ["push", "--set-upstream", "origin", currentBranch],
+    };
+  }
+
+  const remote = await getBranchConfigValue(pi, ctx, currentBranch, "remote", signal);
+  const mergeRef = await getBranchConfigValue(pi, ctx, currentBranch, "merge", signal);
+  if (!remote || !mergeRef) {
+    throw new Error("Unable to push current branch: upstream exists but branch remote/merge configuration is incomplete.");
+  }
+
+  validateRemoteName(remote);
+  const remoteRef = normalizeRemoteHeadRef(mergeRef);
+  const refspec = `HEAD:${remoteRef}`;
+  return {
+    upstream,
+    mode: "push",
+    remote,
+    remoteRef,
+    refspec,
+    args: ["push", remote, refspec],
+  };
 }
 
 export async function hasWorkingTreeChanges(
@@ -155,7 +285,7 @@ export async function getAheadBehindCount(
   const ahead = Number(aheadText);
   const behind = Number(behindText);
   if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
-    throw new Error(`Unable to parse ahead/behind counts from git output: ${compactOutput(result.stdout)}`);
+    throw new Error(`Unable to parse ahead/behind counts from git output: ${safeOutput(result.stdout)}`);
   }
   return { ahead, behind };
 }
@@ -182,7 +312,7 @@ export async function validateBranchName(
   const args = ["check-ref-format", "--branch", branchName];
   const result = await runGit(pi, ctx, args, { signal, timeout: GIT_STATUS_TIMEOUT_MS, allowFailure: true });
   if (result.code !== 0) {
-    throw new Error(`Invalid branch name '${branchName}': ${compactOutput(result.stderr || result.stdout) || "git rejected the ref"}`);
+    throw new Error(`Invalid branch name '${redactSecrets(branchName)}': ${safeOutput(result.stderr || result.stdout) || "git rejected the ref"}`);
   }
 }
 
@@ -207,19 +337,23 @@ export async function createLocalBranch(
   signal?: AbortSignal,
 ): Promise<CreateBranchDetails> {
   const repoRoot = await getGitRoot(pi, ctx, signal);
-  const previousBranch = await requireCurrentBranch(pi, ctx, signal);
-  await validateBranchName(pi, ctx, branchName, signal);
+  const rootCtx = { cwd: repoRoot };
 
-  if (await localBranchExists(pi, ctx, branchName, signal)) {
-    throw new Error(`Local branch '${branchName}' already exists.`);
-  }
+  return withRepositoryMutationQueue(repoRoot, async () => {
+    const previousBranch = await requireCurrentBranch(pi, rootCtx, signal);
+    await validateBranchName(pi, rootCtx, branchName, signal);
 
-  await runGit(pi, ctx, ["switch", "-c", branchName], {
-    signal,
-    timeout: GIT_MUTATION_TIMEOUT_MS,
+    if (await localBranchExists(pi, rootCtx, branchName, signal)) {
+      throw new Error(`Local branch '${redactSecrets(branchName)}' already exists.`);
+    }
+
+    await runGit(pi, rootCtx, ["switch", "-c", branchName], {
+      signal,
+      timeout: GIT_MUTATION_TIMEOUT_MS,
+    });
+
+    return { repoRoot, previousBranch: safeDetail(previousBranch), newBranch: safeDetail(branchName) };
   });
-
-  return { repoRoot, previousBranch, newBranch: branchName };
 }
 
 export async function changeExistingLocalBranch(
@@ -229,38 +363,42 @@ export async function changeExistingLocalBranch(
   signal?: AbortSignal,
 ): Promise<ChangeBranchDetails> {
   const repoRoot = await getGitRoot(pi, ctx, signal);
-  await validateBranchName(pi, ctx, branchName, signal);
+  const rootCtx = { cwd: repoRoot };
 
-  if (!(await localBranchExists(pi, ctx, branchName, signal))) {
-    throw new Error(`Local branch '${branchName}' does not exist.`);
-  }
+  return withRepositoryMutationQueue(repoRoot, async () => {
+    await validateBranchName(pi, rootCtx, branchName, signal);
 
-  const previous = await getCurrentBranch(pi, ctx, signal);
-  if (!previous.detached && previous.currentBranch === branchName) {
-    throw new Error(`Already on branch '${branchName}'.`);
-  }
+    if (!(await localBranchExists(pi, rootCtx, branchName, signal))) {
+      throw new Error(`Local branch '${redactSecrets(branchName)}' does not exist.`);
+    }
 
-  if (await hasWorkingTreeChanges(pi, ctx, signal)) {
-    throw new Error("Working tree has uncommitted changes; clean it before changing branches.");
-  }
+    const previous = await getCurrentBranch(pi, rootCtx, signal);
+    if (!previous.detached && previous.currentBranch === branchName) {
+      throw new Error(`Already on branch '${redactSecrets(branchName)}'.`);
+    }
 
-  await runGit(pi, ctx, ["switch", branchName], {
-    signal,
-    timeout: GIT_MUTATION_TIMEOUT_MS,
+    if (await hasWorkingTreeChanges(pi, rootCtx, signal)) {
+      throw new Error("Working tree has uncommitted changes; clean it before changing branches.");
+    }
+
+    await runGit(pi, rootCtx, ["switch", branchName], {
+      signal,
+      timeout: GIT_MUTATION_TIMEOUT_MS,
+    });
+
+    const current = await getCurrentBranch(pi, rootCtx, signal);
+    if (current.detached || current.currentBranch !== branchName) {
+      throw new Error(`git switch did not end on branch '${redactSecrets(branchName)}'.`);
+    }
+
+    return {
+      repoRoot,
+      previousBranch: safeNullableDetail(previous.currentBranch),
+      previousDetached: previous.detached,
+      currentBranch: safeDetail(current.currentBranch),
+      hasChangesBeforeSwitch: false,
+    };
   });
-
-  const current = await getCurrentBranch(pi, ctx, signal);
-  if (current.detached || current.currentBranch !== branchName) {
-    throw new Error(`git switch did not end on branch '${branchName}'.`);
-  }
-
-  return {
-    repoRoot,
-    previousBranch: previous.currentBranch,
-    previousDetached: previous.detached,
-    currentBranch: current.currentBranch,
-    hasChangesBeforeSwitch: false,
-  };
 }
 
 export async function pushCurrentBranch(
@@ -269,21 +407,27 @@ export async function pushCurrentBranch(
   signal?: AbortSignal,
 ): Promise<PushBranchDetails> {
   const repoRoot = await getGitRoot(pi, ctx, signal);
-  const currentBranch = await requireCurrentBranch(pi, ctx, signal);
-  const upstream = await getUpstreamBranch(pi, ctx, signal);
-  const args = upstream ? ["push"] : ["push", "--set-upstream", "origin", currentBranch];
-  const result = await runGit(pi, ctx, args, {
-    signal,
-    timeout: GIT_PUSH_TIMEOUT_MS,
-  });
+  const rootCtx = { cwd: repoRoot };
 
-  return {
-    repoRoot,
-    currentBranch,
-    upstream,
-    mode: upstream ? "push" : "publish",
-    output: compactOutput(result.stdout || result.stderr),
-  };
+  return withRepositoryMutationQueue(repoRoot, async () => {
+    const currentBranch = await requireCurrentBranch(pi, rootCtx, signal);
+    const target = await resolvePushTarget(pi, rootCtx, currentBranch, signal);
+    const result = await runGit(pi, rootCtx, target.args, {
+      signal,
+      timeout: GIT_PUSH_TIMEOUT_MS,
+    });
+
+    return {
+      repoRoot,
+      currentBranch: safeDetail(currentBranch),
+      upstream: safeNullableDetail(target.upstream),
+      mode: target.mode,
+      remote: safeDetail(target.remote),
+      remoteRef: safeDetail(target.remoteRef),
+      refspec: safeDetail(target.refspec),
+      output: safeOutput(result.stdout || result.stderr),
+    };
+  });
 }
 
 export async function getOriginUrl(
@@ -315,9 +459,9 @@ export async function getBranchStatus(
 
   return {
     repoRoot,
-    currentBranch: current.currentBranch,
+    currentBranch: safeNullableDetail(current.currentBranch),
     detached: current.detached,
-    upstream,
+    upstream: safeNullableDetail(upstream),
     hasChanges,
     ahead: counts.ahead,
     behind: counts.behind,

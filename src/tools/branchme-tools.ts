@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
+import { Type } from "typebox";
 import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
@@ -7,7 +7,7 @@ import {
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
 } from "../constants.ts";
-import { changeExistingLocalBranch, createLocalBranch, getBranchStatus, pushCurrentBranch } from "../git.ts";
+import { changeExistingLocalBranch, createLocalBranch, getBranchStatus, getGitRoot, pushCurrentBranch } from "../git.ts";
 import {
   createGitHubPullRequest,
   redactSecrets,
@@ -17,23 +17,23 @@ import {
 } from "../github.ts";
 import type { BranchStatusDetails, ChangeBranchDetails, PullRequestDetails } from "../types.ts";
 
-export const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
+const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
 
-export const CreateBranchParametersSchema = Type.Object(
+const CreateBranchParametersSchema = Type.Object(
   {
     branchName: Type.String({ minLength: 1, description: "Name of the new branch to create from current HEAD." }),
   },
   { additionalProperties: false },
 );
 
-export const ChangeBranchParametersSchema = Type.Object(
+const ChangeBranchParametersSchema = Type.Object(
   {
     branchName: Type.String({ minLength: 1, description: "Name of the existing local branch to switch to." }),
   },
   { additionalProperties: false },
 );
 
-export const PullRequestParametersSchema = Type.Object(
+const PullRequestParametersSchema = Type.Object(
   {
     headBranch: Type.String({ minLength: 1, description: "Branch containing the pull request changes." }),
     baseBranch: Type.String({ minLength: 1, description: "Target branch for the pull request." }),
@@ -44,10 +44,7 @@ export const PullRequestParametersSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export type CreateBranchParameters = Static<typeof CreateBranchParametersSchema>;
-export type ChangeBranchParameters = Static<typeof ChangeBranchParametersSchema>;
-export type PullRequestParameters = Static<typeof PullRequestParametersSchema>;
-
+// Exported so tests and advanced embedders can inject environment/fetch behavior without mutating globals.
 export interface BranchMeToolOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
@@ -148,8 +145,8 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: PUSH_BRANCH_TOOL_NAME,
     label: "Push Branch",
-    description: "push_branch pushes the current branch. If the current branch has no upstream, push_branch publishes it to origin with --set-upstream. push_branch never commits, stages, or edits files.",
-    promptSnippet: "push_branch: push or publish the current branch only, without committing or staging",
+    description: "push_branch pushes the current branch to its configured upstream remote with an explicit refspec. If the current branch has no upstream, push_branch publishes it to origin with --set-upstream. push_branch never commits, stages, or edits files.",
+    promptSnippet: "push_branch: push or publish the current branch only with an explicit target, without committing or staging",
     promptGuidelines: [
       "Use push_branch only after commits already exist; push_branch never commits, stages, or edits files.",
       "Use push_branch to push only the current branch; push_branch does not accept a branchName parameter.",
@@ -168,17 +165,19 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: PULL_REQUEST_TOOL_NAME,
     label: "Pull Request",
-    description: "pull_request creates a GitHub pull request in the resolved current repository. pull_request requires headBranch, baseBranch, title, body, and draft. Owner and repo are never accepted as inputs.",
+    description: "pull_request creates a GitHub pull request in the resolved current repository. pull_request requires safe local branch names for headBranch and baseBranch plus title, body, and draft. Owner-prefixed refs, owner, and repo are never accepted as inputs.",
     promptSnippet: "pull_request: create a GitHub pull request in the current repository with all PR fields explicit",
     promptGuidelines: [
       "Use pull_request only when the user provides explicit headBranch, baseBranch, title, body, and draft values.",
-      "Use pull_request only for the resolved current repository; pull_request never accepts owner or repo parameters.",
+      "Use pull_request only for the resolved current repository; pull_request never accepts owner, repo, or owner-prefixed branch refs.",
       "Use pull_request with GITHUB_TOKEN or GH_TOKEN from the process environment or local .env fallback; pull_request must not expose token values.",
     ],
     parameters: PullRequestParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const repository = await resolveGitHubRepository(pi, ctx, signal, options.env);
-      const token = resolveGitHubToken(options.env, { cwd: ctx.cwd }).token;
+      const repoRoot = await getGitRoot(pi, ctx, signal);
+      const rootCtx = { cwd: repoRoot };
+      const repository = await resolveGitHubRepository(pi, rootCtx, signal, options.env);
+      const token = (await resolveGitHubToken(options.env, { cwd: repoRoot, signal })).token;
 
       try {
         const details = await createGitHubPullRequest(repository, params, token, {

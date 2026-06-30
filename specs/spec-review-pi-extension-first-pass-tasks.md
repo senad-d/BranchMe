@@ -37,7 +37,7 @@
 
 ## Ordered tasks
 
-- [ ] Redact credential-bearing git output before returning or throwing BranchMe tool results
+- [x] Redact credential-bearing git output before returning or throwing BranchMe tool results
 
 #### Why
 
@@ -57,7 +57,7 @@
 - Tests cover redaction for both thrown git errors and returned push details.
 - `npm run typecheck`, `npm run test`, and `npm run validate` pass.
 
-- [ ] Serialize BranchMe repository-state mutations across parallel Pi tool calls
+- [x] Serialize BranchMe repository-state mutations across parallel Pi tool calls
 
 #### Why
 
@@ -77,7 +77,7 @@ Pi can execute sibling tool calls in parallel. `create_branch`, `change_branch`,
 - Concurrency tests prove branch mutation calls execute in a deterministic serialized order and preserve correct details.
 - Relevant validation commands pass, and any remaining same-turn workflow limitations are documented.
 
-- [ ] Make `push_branch` explicitly push only the current branch instead of relying on bare `git push`
+- [x] Make `push_branch` explicitly push only the current branch instead of relying on bare `git push`
 
 #### Why
 
@@ -99,7 +99,7 @@ When an upstream exists, `pushCurrentBranch()` runs `git push` with no remote or
 - Documentation and details accurately describe the explicit push target.
 - Relevant validation commands pass.
 
-- [ ] Validate PR branch refs so `pull_request` cannot smuggle cross-repository `head` values
+- [x] Validate PR branch refs so `pull_request` cannot smuggle cross-repository `head` values
 
 #### Why
 
@@ -120,7 +120,7 @@ The `pull_request` schema rejects `owner` and `repo`, but GitHub’s create-pull
 - Tests cover accepted and rejected PR ref inputs.
 - Relevant validation commands pass.
 
-- [ ] Harden local `.env` token fallback against blocking, oversized, or unintended reads
+- [x] Harden local `.env` token fallback against blocking, oversized, or unintended reads
 
 #### Why
 

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   changeExistingLocalBranch,
   createLocalBranch,
+  formatGitFailure,
   getBranchStatus,
   pushCurrentBranch,
   validateBranchName,
@@ -121,6 +122,47 @@ test("createLocalBranch creates from current HEAD with git switch -c", async () 
   assert.deepEqual(pi.calls.at(-1).args, ["switch", "-c", "feature/new"]);
 });
 
+test("mutating branch helpers serialize repository-state windows for the same repository", async () => {
+  const calls = [];
+  const pi = {
+    calls,
+    async exec(command, args, options) {
+      assert.equal(command, "git");
+      assert.ok(Array.isArray(args));
+      assert.equal(options.cwd, "/repo");
+      calls.push({ command, args: [...args], options });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      if (args.join("\0") === "rev-parse\0--show-toplevel") return result({ stdout: "/repo\n" });
+      if (args.join("\0") === "symbolic-ref\0--quiet\0--short\0HEAD") return result({ stdout: "main\n" });
+      if (args[0] === "check-ref-format") return result({ stdout: `${args[2]}\n` });
+      if (args[0] === "show-ref") return result({ code: 1 });
+      if (args[0] === "switch") return result();
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    },
+  };
+
+  await Promise.all([
+    createLocalBranch(pi, ctx, "feature/one"),
+    createLocalBranch(pi, ctx, "feature/two"),
+  ]);
+
+  const nonRootCommands = calls
+    .map((call) => call.args)
+    .filter((args) => args.join("\0") !== "rev-parse\0--show-toplevel");
+
+  assert.deepEqual(nonRootCommands, [
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    ["check-ref-format", "--branch", "feature/one"],
+    ["show-ref", "--verify", "--quiet", "refs/heads/feature/one"],
+    ["switch", "-c", "feature/one"],
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    ["check-ref-format", "--branch", "feature/two"],
+    ["show-ref", "--verify", "--quiet", "refs/heads/feature/two"],
+    ["switch", "-c", "feature/two"],
+  ]);
+});
+
 test("changeExistingLocalBranch switches from current branch with argv-style git switch", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
@@ -219,6 +261,38 @@ test("changeExistingLocalBranch rejects switching to the already-current branch"
   assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
 });
 
+test("formatGitFailure redacts credential-bearing command labels and git output", () => {
+  const message = formatGitFailure(
+    ["push", "https://user:ghp_labelsecret123@github.com/senad-d/branchme.git"],
+    result({
+      stderr:
+        "fatal: could not read from https://user:ghp_stderrsecret123@github.com/senad-d/branchme.git; Authorization: Bearer ghp_bearersecret123; token=github_pat_keysecret123",
+    }),
+  );
+
+  assert.doesNotMatch(message, /labelsecret|stderrsecret|bearersecret|keysecret|user:ghp_/u);
+  assert.match(message, /\[REDACTED\]/u);
+});
+
+test("pushCurrentBranch redacts credential-bearing git output in returned details", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+    ["push\0origin\0HEAD:refs/heads/feature/current"]: {
+      stdout:
+        "pushed to https://user:ghp_pushsecret123@github.com/senad-d/branchme.git with Bearer ghp_bearersecret123 and token=github_pat_outputsecret123\n",
+    },
+  });
+
+  const details = await pushCurrentBranch(pi, ctx);
+
+  assert.doesNotMatch(details.output, /pushsecret|bearersecret|outputsecret|user:ghp_/u);
+  assert.match(details.output, /\[REDACTED\]/u);
+});
+
 test("pushCurrentBranch fails clearly on detached HEAD", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
@@ -229,18 +303,65 @@ test("pushCurrentBranch fails clearly on detached HEAD", async () => {
   await assert.rejects(() => pushCurrentBranch(pi, ctx), /detached/i);
 });
 
-test("pushCurrentBranch uses git push when upstream exists", async () => {
+test("pushCurrentBranch uses an explicit remote and refspec when upstream exists", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
     ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
-    ["push"]: { stdout: "Everything up-to-date\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+    ["push\0origin\0HEAD:refs/heads/feature/current"]: { stdout: "Everything up-to-date\n" },
   });
 
   const details = await pushCurrentBranch(pi, ctx);
 
   assert.equal(details.mode, "push");
-  assert.deepEqual(pi.calls.at(-1).args, ["push"]);
+  assert.equal(details.remote, "origin");
+  assert.equal(details.remoteRef, "refs/heads/feature/current");
+  assert.equal(details.refspec, "HEAD:refs/heads/feature/current");
+  assert.deepEqual(pi.calls.at(-1).args, ["push", "origin", "HEAD:refs/heads/feature/current"]);
+  assert.equal(pi.calls.some((call) => call.args.length === 1 && call.args[0] === "push"), false);
+});
+
+test("pushCurrentBranch supports custom upstreams and branch names with slashes", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "upstream-remote/team/feature/current\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: "upstream-remote\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/team/feature/current\n" },
+    ["push\0upstream-remote\0HEAD:refs/heads/team/feature/current"]: { stdout: "Everything up-to-date\n" },
+  });
+
+  const details = await pushCurrentBranch(pi, ctx);
+
+  assert.equal(details.remote, "upstream-remote");
+  assert.equal(details.remoteRef, "refs/heads/team/feature/current");
+  assert.deepEqual(pi.calls.at(-1).args, ["push", "upstream-remote", "HEAD:refs/heads/team/feature/current"]);
+});
+
+test("pushCurrentBranch rejects incomplete or non-remote upstream configuration", async () => {
+  const missingConfigPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { code: 1, stderr: "missing\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+  });
+
+  await assert.rejects(() => pushCurrentBranch(missingConfigPi, ctx), /configuration is incomplete/i);
+  assert.equal(missingConfigPi.calls.some((call) => call.args[0] === "push"), false);
+
+  const localUpstreamPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "main\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: ".\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/main\n" },
+  });
+
+  await assert.rejects(() => pushCurrentBranch(localUpstreamPi, ctx), /local branch/i);
+  assert.equal(localUpstreamPi.calls.some((call) => call.args[0] === "push"), false);
 });
 
 test("pushCurrentBranch publishes current branch when upstream is missing", async () => {
@@ -254,5 +375,8 @@ test("pushCurrentBranch publishes current branch when upstream is missing", asyn
   const details = await pushCurrentBranch(pi, ctx);
 
   assert.equal(details.mode, "publish");
+  assert.equal(details.remote, "origin");
+  assert.equal(details.remoteRef, "refs/heads/feature/current");
+  assert.equal(details.refspec, "feature/current");
   assert.deepEqual(pi.calls.at(-1).args, ["push", "--set-upstream", "origin", "feature/current"]);
 });

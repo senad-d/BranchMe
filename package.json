@@ -40,13 +40,13 @@
   "scripts": {
     "dev": "pi --no-extensions -e .",
     "typecheck": "tsc --noEmit",
-    "lint": "npm run typecheck && npm run check",
+    "lint": "npm run typecheck && npm run format:check && npm run check",
     "format:check": "node scripts/check-format.mjs",
     "test": "node --test test/*.test.mjs",
     "check": "node --check scripts/check-package-contents.mjs",
     "pack:dry-run": "npm pack --dry-run --json",
     "check:pack": "node scripts/check-package-contents.mjs",
-    "validate": "npm run typecheck && npm run test && npm run check && npm run check:pack"
+    "validate": "npm run typecheck && npm run format:check && npm run test && npm run check && npm run check:pack"
   },
   "pi": {
     "extensions": [
@@ -55,10 +55,12 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.8",
+    "@earendil-works/pi-tui": "^0.79.10",
     "@types/node": "^25.9.3",
     "typebox": "^1.2.18",
     "typescript": "^6.0.3"

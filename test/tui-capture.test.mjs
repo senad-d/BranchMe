@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { getBranchMeHelpText } from "../src/commands/branchme-command.ts";
 import { renderBranchMePanelLines } from "../src/ui/branchme-panel.ts";
 
@@ -114,7 +115,7 @@ function renderCapture() {
   for (const panelCase of panelCases) {
     const renderedLines = renderBranchMePanelLines(panelCase.data, panelCase.width, undefined, panelCase.selectedSection);
     assert.ok(
-      renderedLines.every((line) => line.length <= panelCase.width),
+      renderedLines.every((line) => visibleWidth(line) <= panelCase.width),
       `${panelCase.title} exceeded width ${panelCase.width}`,
     );
     assert.ok(renderedLines.length <= 14, `${panelCase.title} exceeded maximum height`);

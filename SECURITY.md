@@ -11,15 +11,15 @@ pi install git:https://github.com/senad-d/branchme@<tag>
 
 ## Git behavior
 
-BranchMe runs local `git` commands through Pi's extension API with argv-style arguments and `cwd` set to the current Pi working directory.
+BranchMe runs local `git` commands through Pi's extension API with argv-style arguments. Repository mutations first resolve the git root and then run from that verified root.
 
 Implemented git mutations are limited to:
 
 - `change_branch`: `git switch <branchName>` after branch-name validation, local `refs/heads/<branchName>` verification, and clean-worktree preflight.
 - `create_branch`: `git switch -c <branchName>` from current `HEAD` after branch-name validation and existing-branch checks.
-- `push_branch`: `git push` for the current branch, or `git push --set-upstream origin <currentBranch>` when no upstream exists.
+- `push_branch`: `git push <upstreamRemote> HEAD:<upstreamBranchRef>` for the current branch when an upstream exists, or `git push --set-upstream origin <currentBranch>` when no upstream exists.
 
-Branch switching can update working-tree files as normal Git checkout behavior. BranchMe rejects dirty worktrees before `change_branch` and does not force checkout, stash, stage files, create commits, reset, rebase, merge, or edit files directly.
+Branch switching can update working-tree files as normal Git checkout behavior. Mutating branch operations for the same repository are serialized to avoid same-turn branch races. BranchMe rejects dirty worktrees before `change_branch` and does not force checkout, stash, stage files, create commits, reset, rebase, merge, or edit files directly.
 
 ## Network behavior
 
@@ -36,18 +36,19 @@ The request body contains only the explicit PR fields supplied to the tool: titl
 BranchMe operates on the current repository only.
 
 - The GitHub repository is inferred from local `origin` and/or `GITHUB_REPOSITORY`.
-- Tool inputs never accept filesystem paths, `owner`, or `repo` fields.
+- Tool inputs never accept filesystem paths, `owner`, `repo`, or owner-prefixed `owner:branch` PR refs.
 - `change_branch` accepts only `branchName` and never creates branches, checks out remote branches, forces, stashes, or discards changes.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, PR creation fails closed.
+- PR branch inputs are validated as local branch-name refs; cross-repository `head` values are rejected before any GitHub request.
 
 ## Credentials
 
-`pull_request` checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`. If neither process token is set, BranchMe reads a local `.env` file in the directory where Pi is running and checks:
+`pull_request` checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`. If neither process token is set, BranchMe reads a local `.env` file from the verified git root and checks:
 
 - `GITHUB_TOKEN` (preferred)
 - `GH_TOKEN` (fallback)
 
-Only these two token keys are read from `.env`; other `.env` keys are ignored. BranchMe does not read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from thrown errors, tool content, and tool details.
+Only these two token keys are read from `.env`; other `.env` keys are ignored. The fallback uses async file I/O, requires `.env` to be a small regular file, and rejects directories, symlinks, special files, and oversized files. BranchMe does not read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from thrown errors, tool content, and tool details.
 
 ## Telemetry
 

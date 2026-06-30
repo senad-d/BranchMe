@@ -22,12 +22,13 @@ src/
 ## Module boundaries
 
 1. `src/extension.ts` stays small and only calls `registerBranchMeCommand(pi)` and `registerBranchMeTools(pi)`.
-2. `src/commands/branchme-command.ts` parses `/branchme`, `/branchme help`, `--help`, and `-h`; it never performs git or GitHub mutations.
+2. `src/commands/branchme-command.ts` parses `/branchme`, `/branchme help`, `--help`, and `-h`; it never performs git or GitHub mutations and avoids raw stdout in JSON mode.
 3. `src/tools/branchme-tools.ts` owns TypeBox schemas, prompt metadata, tool content, and safe structured details.
 4. `src/git.ts` owns current-repository git behavior: root detection, branch/upstream/status inspection, branch validation, branch creation, existing-local-branch switching, clean-worktree preflight, and current-branch push/publish.
-5. `src/github.ts` owns GitHub `owner/repo` parsing, repository boundary checks, `GITHUB_TOKEN`/`GH_TOKEN` process-env and `.env` fallback resolution, PR REST calls, response validation, and redacted errors.
-6. `src/types.ts` keeps serializable details shared by helpers and tools.
-7. `src/ui/branchme-panel.ts` renders a compact status panel and clips lines to terminal width.
+5. `src/github.ts` owns GitHub `owner/repo` parsing, repository boundary checks, `GITHUB_TOKEN`/`GH_TOKEN` process-env and hardened git-root `.env` fallback resolution, PR REST calls, response validation, and redacted errors.
+6. `src/redaction.ts` owns shared credential redaction for Git and GitHub messages.
+7. `src/types.ts` keeps serializable details shared by helpers and tools.
+8. `src/ui/branchme-panel.ts` renders a compact status panel and clips lines to terminal width.
 
 ## Pi extension conventions
 
@@ -35,18 +36,18 @@ src/
 - Slash commands are informational; tools perform branch, push, and PR actions.
 - Every tool uses a strict TypeBox object schema with `additionalProperties: false`.
 - Every tool defines a description, `promptSnippet`, and tool-specific `promptGuidelines` that explicitly name the tool.
-- Git commands use `pi.exec("git", args, { cwd: ctx.cwd, signal, timeout })` with argv arrays.
+- Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from the verified git root and are serialized per repository.
 - Tool details avoid token values and unbounded raw command/API output.
-- Pi core packages remain in `peerDependencies` with `"*"`.
+- Pi core packages, including `@earendil-works/pi-tui` for key/width utilities, remain in `peerDependencies` with `"*"`.
 
 ## Security-sensitive areas
 
 - `change_branch` mutates local HEAD and working-tree files only through `git switch <branchName>` for existing local branches after a clean-worktree preflight.
 - `create_branch` mutates local branch/HEAD only with `git switch -c`.
-- `push_branch` mutates remote refs only for the current branch.
-- `pull_request` makes a GitHub REST API call for the resolved current repository only.
-- `pull_request` reads `GITHUB_TOKEN` or `GH_TOKEN` from process environment first; only when neither process token is set does it read those token keys from local `.env` as a fallback.
-- BranchMe does not force checkout, stash, stage, commit, directly edit files, read non-token `.env` keys, depend on GitHub CLI, or collect telemetry.
+- `push_branch` mutates remote refs only for the current branch and uses an explicit upstream remote/refspec instead of bare `git push` when an upstream exists.
+- `pull_request` makes a GitHub REST API call for the resolved current repository only and rejects owner-prefixed or unsafe branch refs before the request.
+- `pull_request` reads `GITHUB_TOKEN` or `GH_TOKEN` from process environment first; only when neither process token is set does it read those token keys from a small regular `.env` file in the verified git root as a fallback.
+- BranchMe does not force checkout, stash, stage, commit, directly edit files, read non-token `.env` keys, follow unsafe `.env` file types, depend on GitHub CLI, or collect telemetry.
 
 ## Documentation
 
@@ -71,6 +72,7 @@ Validation commands:
 
 ```bash
 npm run typecheck
+npm run format:check
 npm run test
 npm run check:pack
 npm run validate

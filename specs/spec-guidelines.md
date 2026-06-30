@@ -1,5 +1,7 @@
 # Plan: BranchMe Implementation Guidelines
 
+> Historical note (updated 2026-06-30): this preparation guideline is retained for context, but current behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Current implementation includes `change_branch`, hardened repository-root `.env` token fallback, repository-scoped mutation serialization, explicit upstream push refspecs, PR branch-ref validation, and Pi TUI width/key utilities.
+
 ## Task Description
 
 Define implementation rules for a later BranchMe development session.
@@ -17,7 +19,7 @@ Keep BranchMe minimal, safe for automation, and consistent with Pi extension bes
 - Avoid broad abstractions until a second implementation need appears.
 - Do not add classes unless they materially simplify UI component state.
 - Keep user-facing messages concise and action-oriented.
-- Use Node built-ins before adding dependencies.
+- Use Node built-ins before adding dependencies; `@earendil-works/pi-tui` is used for panel width/key handling.
 
 ## Pi Extension Guidelines
 
@@ -47,6 +49,7 @@ Use `StringEnum` from `@earendil-works/pi-ai` for string enum schemas if enum fi
 ### Tool Naming
 
 - `branch_status`: read current repo/branch status.
+- `change_branch`: switch to an existing local branch after clean-worktree preflight.
 - `create_branch`: create and checkout a branch from current `HEAD`.
 - `push_branch`: push/publish the current branch.
 - `pull_request`: create a GitHub pull request in the current repository.
@@ -56,6 +59,7 @@ Use `StringEnum` from `@earendil-works/pi-ai` for string enum schemas if enum fi
 Good guideline examples:
 
 - `Use branch_status before create_branch when the user asks for the current branch state.`
+- `Use change_branch only when the user explicitly wants to switch to an existing local branch.`
 - `Use create_branch only when the user explicitly wants a new branch from current HEAD.`
 - `Use push_branch only after commits already exist; push_branch never commits or stages files.`
 - `Use pull_request only when the user provides explicit head branch, base branch, title, body, and draft values.`
@@ -80,20 +84,20 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
 
 - Run git via `pi.exec("git", args, options)` with argv arrays.
 - Do not use shell command strings for branch names, refs, or user input.
-- Always pass `cwd: ctx.cwd` and the active `signal` when available.
+- Resolve the git root and run mutating operations from that verified root; pass the active `signal` when available.
 - Use short timeouts for status commands and a longer timeout for push.
 - Validate branch names with `git check-ref-format --branch`.
 - Fail on detached HEAD for `push_branch`.
 - `create_branch` must create from current `HEAD` only.
-- `push_branch` must push the current branch only.
+- `push_branch` must push the current branch only and use an explicit upstream remote/refspec instead of bare `git push`.
 - Do not implement commit, staging, stash, reset, merge, rebase, or file-editing behavior.
 
 ## GitHub Guidelines
 
-- Use process environment only for auth:
+- Use process environment first for auth:
   - Prefer `GITHUB_TOKEN`.
   - Fallback to `GH_TOKEN`.
-- Do not read `.env` in v1.
+- If neither process token is set, read only those token keys from a small regular `.env` file in the verified git root.
 - Do not depend on GitHub CLI.
 - Use Node 22 `fetch` for REST API calls.
 - Use `https://api.github.com` only.
@@ -109,7 +113,7 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
 ## Repository Boundary Rules
 
 - BranchMe works on the current Pi `ctx.cwd` repository only.
-- Tools must not accept filesystem paths, owner, or repo fields in v1.
+- Tools must not accept filesystem paths, owner, repo fields, or owner-prefixed PR branch refs in v1.
 - Resolve the git root from `ctx.cwd` and do not operate elsewhere.
 - `pull_request` must infer the GitHub repo from the current checkout and/or matching `GITHUB_REPOSITORY`.
 - If current repo cannot be resolved as GitHub, fail with a clear error.
@@ -121,7 +125,7 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
 - Show configuration/status/help, not action buttons.
 - Do not duplicate tool behavior in commands.
 - Use semantic theme roles; do not hardcode ANSI color values.
-- Ensure rendered lines do not exceed terminal width.
+- Ensure rendered lines do not exceed terminal visible width; use Pi TUI width/key utilities where needed.
 - Tiny/narrow terminals may fall back to plain text.
 - `/branchme help`, `/branchme --help`, and `/branchme -h` should work without requiring custom UI.
 
@@ -144,7 +148,7 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
 
 ## Documentation Rules
 
-- README must clearly label planned functionality as pending until implemented.
+- README must describe current implemented behavior and clearly label historical plans as historical.
 - SECURITY.md must document:
   - git branch checkout/push behavior
   - GitHub network access
@@ -153,7 +157,7 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
   - no commit/staging behavior
 - CHANGELOG.md should track implementation milestones.
 - docs/STRUCTURE.md should describe actual module boundaries.
-- Specs must remain the source of truth for future implementation.
+- Specs are historical or future-work context once implementation lands; current behavior lives in README, SECURITY, and docs/STRUCTURE.
 - Do not mark task checkboxes complete during preparation.
 
 ## Testing Rules
@@ -179,7 +183,7 @@ Tests should avoid touching real remotes. Mock `pi.exec` and `fetch`.
 - BranchMe must not collect telemetry.
 - BranchMe must not send repository contents to GitHub beyond explicit PR fields.
 - BranchMe must not send token values to the model.
-- BranchMe must not read or write secrets.
+- BranchMe must not write secrets and must read only supported token keys from process env or hardened repository-root `.env` fallback.
 - BranchMe must not mutate working-tree files.
 - Mutating git operations must be explicit tool calls.
 - Automation-friendly behavior is preferred over extra prompts, but schemas and validation must be strict.

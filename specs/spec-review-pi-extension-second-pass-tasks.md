@@ -35,7 +35,7 @@
 
 ## Ordered tasks
 
-- [ ] Make `/branchme` command output safe across print, JSON, RPC, and TUI modes
+- [x] Make `/branchme` command output safe across print, JSON, RPC, and TUI modes
 
 #### Why
 
@@ -56,7 +56,7 @@
 - TUI, RPC, and print behavior remains user-visible where supported.
 - Relevant validation commands pass.
 
-- [ ] Include formatting checks in the default validation and CI path
+- [x] Include formatting checks in the default validation and CI path
 
 #### Why
 
@@ -77,7 +77,7 @@
 - `npm run format:check` and `npm run validate` pass after the change.
 - The task does not introduce automatic formatting writes.
 
-- [ ] Replace ad hoc TUI width and keyboard handling with Pi TUI utilities where needed
+- [x] Replace ad hoc TUI width and keyboard handling with Pi TUI utilities where needed
 
 #### Why
 
@@ -98,7 +98,7 @@
 - TUI capture tests either remain stable or are intentionally refreshed with reviewable changes.
 - Relevant validation commands pass.
 
-- [ ] Reconcile stale planning docs and specs with implemented BranchMe behavior
+- [x] Reconcile stale planning docs and specs with implemented BranchMe behavior
 
 #### Why
 
@@ -119,7 +119,7 @@ Several planning files still describe earlier constraints that no longer match t
 - Documentation tests still pass or are updated with intentional assertions.
 - Relevant validation commands pass.
 
-- [ ] Prune or justify unused exported surfaces and stale development shims
+- [x] Prune or justify unused exported surfaces and stale development shims
 
 #### Why
 

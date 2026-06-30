@@ -1,3 +1,5 @@
+import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+
 export interface BranchMePanelData {
   currentBranch: string | null;
   detached: boolean;
@@ -28,6 +30,12 @@ const MAX_PANEL_WIDTH = 96;
 const MAX_PANEL_HEIGHT = 14;
 const BODY_HEIGHT = 7;
 const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow"];
+const ANSI_RESET = /\u001b\[0m/gu;
+
+function truncateVisible(value: string, width: number, ellipsis = "…", pad = false): string {
+  const truncated = truncateToWidth(value, width, ellipsis, pad);
+  return value.includes("\u001b") ? truncated : truncated.replace(ANSI_RESET, "");
+}
 
 function sanitize(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f\u009b]/gu, " ").replace(/\s+/gu, " ").trim();
@@ -35,14 +43,11 @@ function sanitize(value: string): string {
 
 function clip(value: string, width: number): string {
   if (width <= 0) return "";
-  const text = sanitize(value);
-  if (text.length <= width) return text;
-  if (width === 1) return "…";
-  return `${text.slice(0, width - 1)}…`;
+  return truncateVisible(sanitize(value), width);
 }
 
 function pad(value: string, width: number): string {
-  return clip(value, width).padEnd(Math.max(0, width), " ");
+  return truncateVisible(sanitize(value), Math.max(0, width), "…", true);
 }
 
 function sanitizeLayout(value: string): string {
@@ -51,14 +56,11 @@ function sanitizeLayout(value: string): string {
 
 function clipLayout(value: string, width: number): string {
   if (width <= 0) return "";
-  const text = sanitizeLayout(value);
-  if (text.length <= width) return text;
-  if (width === 1) return "…";
-  return `${text.slice(0, width - 1)}…`;
+  return truncateVisible(sanitizeLayout(value), width);
 }
 
 function padLayout(value: string, width: number): string {
-  return clipLayout(value, width).padEnd(Math.max(0, width), " ");
+  return truncateVisible(sanitizeLayout(value), Math.max(0, width), "…", true);
 }
 
 function style(theme: PanelTheme | undefined, role: string, value: string): string {
@@ -191,14 +193,21 @@ function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): Pa
   }
 }
 
+function fitLines(lines: string[], width: number): string[] {
+  return lines.map((line) => truncateVisible(line, Math.max(0, width), ""));
+}
+
 function renderTiny(data: BranchMePanelData, width: number): string[] {
   const values = statusValue(data);
-  return [
-    clip("BranchMe", width),
-    clip(`branch: ${values.branch}`, width),
-    clip(`repo: ${values.repository}`, width),
-    clip("q quit", width),
-  ];
+  return fitLines(
+    [
+      clip("BranchMe", width),
+      clip(`branch: ${values.branch}`, width),
+      clip(`repo: ${values.repository}`, width),
+      clip("q quit", width),
+    ],
+    width,
+  );
 }
 
 function renderNarrow(data: BranchMePanelData, width: number, selectedSection: BranchMePanelSection, theme?: PanelTheme): string[] {
@@ -223,7 +232,7 @@ function renderNarrow(data: BranchMePanelData, width: number, selectedSection: B
     horizontal(width, "╰", "─", "╯", theme),
   );
 
-  return lines.slice(0, MAX_PANEL_HEIGHT);
+  return fitLines(lines.slice(0, MAX_PANEL_HEIGHT), width);
 }
 
 function paneSeparator(width: number, leftPaneWidth: number, rightPaneWidth: number, middle: string, theme?: PanelTheme): string {
@@ -257,7 +266,7 @@ function renderWide(data: BranchMePanelData, width: number, selectedSection: Bra
     horizontal(width, "╰", "─", "╯", theme),
   );
 
-  return lines.slice(0, MAX_PANEL_HEIGHT);
+  return fitLines(lines.slice(0, MAX_PANEL_HEIGHT), width);
 }
 
 export function getTokenLabel(tokenSource: string | null): string {
@@ -298,17 +307,17 @@ export class BranchMePanel {
   }
 
   handleInput(data: string): void {
-    if (data === "q" || data === "Q" || data === "\u001b" || data === "\r" || data === "\n") {
+    if (data === "q" || data === "Q" || matchesKey(data, Key.escape) || matchesKey(data, Key.enter)) {
       this.onClose();
       return;
     }
 
-    if (data === "\u001b[A" || data === "k" || data === "K") {
+    if (data === "k" || data === "K" || matchesKey(data, Key.up)) {
       this.moveSelection(-1);
       return;
     }
 
-    if (data === "\u001b[B" || data === "\t" || data === "j" || data === "J") {
+    if (data === "j" || data === "J" || matchesKey(data, Key.down) || matchesKey(data, Key.tab)) {
       this.moveSelection(1);
     }
   }

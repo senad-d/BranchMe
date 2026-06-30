@@ -8,10 +8,6 @@ export interface CurrentBranchInfo {
   detached: boolean;
 }
 
-export interface UpstreamInfo {
-  upstream: string | null;
-}
-
 export interface AheadBehindCount {
   ahead: number | null;
   behind: number | null;
@@ -47,6 +43,9 @@ export interface PushBranchDetails {
   currentBranch: string;
   upstream: string | null;
   mode: "push" | "publish";
+  remote: string;
+  remoteRef: string;
+  refspec: string;
   output: string;
 }
 
@@ -68,19 +67,9 @@ export interface PullRequestInput {
   draft: boolean;
 }
 
-export interface GitExecOptions {
-  cwd: string;
-  signal?: AbortSignal;
-  timeout?: number;
-}
-
 export interface GitExecResult {
   stdout: string;
   stderr: string;
   code: number;
   killed: boolean;
-}
-
-export interface GitExecutor {
-  exec(command: string, args: string[], options?: GitExecOptions): Promise<GitExecResult>;
 }

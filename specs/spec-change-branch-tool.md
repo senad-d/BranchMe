@@ -1,5 +1,7 @@
 # Plan: Add `change_branch` Tool
 
+> Historical note (updated 2026-06-30): this future implementation blueprint has been implemented. Current `change_branch` behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`; completed task checkboxes remain historical evidence.
+
 ## Task Description
 
 Add a new BranchMe tool named `change_branch` that switches the current repository checkout to an existing local branch. This plan is a future implementation blueprint only; do not implement runtime behavior while creating this spec.

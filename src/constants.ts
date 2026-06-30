@@ -1,5 +1,4 @@
 export const EXTENSION_DISPLAY_NAME = "BranchMe";
-export const EXTENSION_STATUS_KEY = "branchme";
 export const BRANCHME_COMMAND_NAME = "branchme";
 
 export const BRANCH_STATUS_TOOL_NAME = "branch_status";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -224,7 +224,11 @@ test("push_branch pushes current branch with and without upstream", async () => 
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
     ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
-    ["push"]: { stdout: "ok\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+    ["push\0origin\0HEAD:refs/heads/feature/current"]: {
+      stdout: "ok https://user:ghp_toolsecret123@github.com/senad-d/branchme.git token=github_pat_toolsecret123\n",
+    },
   });
   registerBranchMeTools(upstreamPi);
   const upstreamTool = toolByName(upstreamPi, PUSH_BRANCH_TOOL_NAME);
@@ -235,7 +239,11 @@ test("push_branch pushes current branch with and without upstream", async () => 
 
   const upstreamOutput = await upstreamTool.execute("call-3", {}, undefined, undefined, ctx);
   assert.equal(upstreamOutput.details.mode, "push");
-  assert.deepEqual(upstreamPi.calls.at(-1).args, ["push"]);
+  assert.equal(upstreamOutput.details.remote, "origin");
+  assert.equal(upstreamOutput.details.remoteRef, "refs/heads/feature/current");
+  assert.deepEqual(upstreamPi.calls.at(-1).args, ["push", "origin", "HEAD:refs/heads/feature/current"]);
+  assert.equal(upstreamPi.calls.some((call) => call.args.length === 1 && call.args[0] === "push"), false);
+  assert.doesNotMatch(JSON.stringify(upstreamOutput), /toolsecret|user:ghp_/u);
 
   const publishPi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
@@ -262,6 +270,34 @@ test("pull_request has required strict schema and rejects repository parameters"
   assert.equal("owner" in tool.parameters.properties, false);
   assert.equal("repo" in tool.parameters.properties, false);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(PULL_REQUEST_TOOL_NAME)));
+});
+
+test("pull_request rejects cross-repository and unsafe branch refs before creating a request", async () => {
+  let called = false;
+  const fetchImpl = async () => {
+    called = true;
+    throw new Error("fetch should not be called");
+  };
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+  });
+  registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
+  const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+  await assert.rejects(
+    () =>
+      tool.execute(
+        "call-pr-invalid",
+        { headBranch: "other-owner:feature/current", baseBranch: "main", title: "Title", body: "", draft: false },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    /owner-prefixed|cross-repository|:/i,
+  );
+
+  assert.equal(called, false);
 });
 
 test("pull_request creates a PR in the resolved current repository without leaking token details", async () => {
@@ -355,6 +391,49 @@ test("pull_request can use a local .env token fallback", async () => {
     assert.doesNotMatch(JSON.stringify(output), /filetoken123/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("pull_request resolves .env token fallback from the verified git root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "branchme-tool-root-env-"));
+  try {
+    const subdir = join(root, "nested");
+    await mkdir(subdir);
+    await writeFile(join(root, ".env"), "GH_TOKEN=ghp_roottoken123\n", "utf8");
+
+    const requests = [];
+    const fetchImpl = async (url, init) => {
+      requests.push({ url, init });
+      return new Response(
+        JSON.stringify({
+          number: 9,
+          html_url: "https://github.com/senad-d/branchme/pull/9",
+          state: "open",
+          draft: false,
+          head: { ref: "feature/root-env" },
+          base: { ref: "main" },
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    };
+    const pi = makePi({
+      ["rev-parse\0--show-toplevel"]: { stdout: `${root}\n` },
+      ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+    });
+    registerBranchMeTools(pi, { env: {}, fetchImpl });
+    const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+    await tool.execute(
+      "call-root-env",
+      { headBranch: "feature/root-env", baseBranch: "main", title: "Title", body: "Body", draft: false },
+      undefined,
+      undefined,
+      { ...ctx, cwd: subdir },
+    );
+
+    assert.equal(requests[0].init.headers.Authorization, "Bearer ghp_roottoken123");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

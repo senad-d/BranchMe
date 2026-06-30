@@ -14,15 +14,16 @@ Approved on 2026-06-30.
 - Display name: `BranchMe`
 - Exported extension function: `branchMeExtension`
 - Repository URL: `https://github.com/senad-d/branchme`
-- One-sentence pitch: Minimal Pi tools for creating the current-repo branch, publishing it, and opening a GitHub pull request.
+- One-sentence pitch: Minimal Pi tools for changing/creating current-repo branches, publishing the current branch, and opening a GitHub pull request.
 
 ## 3. Users and use cases
 
 - Primary users: Pi users and CI/GitHub Actions workflows.
 - Primary use cases:
   - Check current git branch/repo status.
+  - Switch to an existing local branch after clean-worktree preflight.
   - Create and checkout a new branch from current `HEAD`.
-  - Push/publish the current branch to `origin`.
+  - Push the current branch to its configured upstream, or publish it to `origin` when no upstream exists.
   - Create a PR in the current GitHub repo via REST API.
 - Non-goals:
   - No commit, staging, diff, or message generation behavior.
@@ -37,8 +38,9 @@ Approved on 2026-06-30.
 | Command | `/branchme` | Simple TUI config/status/help panel | No git/GitHub mutations |
 | Command | `/branchme help` | Workflow notes | No actions |
 | Tool | `branch_status` | Read current repo/branch/upstream/dirty/push state | Read-only |
+| Tool | `change_branch` | Switch to an existing local branch | Required `branchName`; rejects dirty worktrees |
 | Tool | `create_branch` | Create + checkout new branch from current `HEAD` | Required `branchName`; fail if exists/invalid |
-| Tool | `push_branch` | Push current branch; publish with upstream if needed | No commits/staging |
+| Tool | `push_branch` | Push current branch with explicit upstream target; publish with upstream if needed | No commits/staging |
 | Tool | `pull_request` | Create PR via GitHub REST API | Required `headBranch`, `baseBranch`, `title`, `body`, `draft`; repo inferred from current checkout |
 | Event | `session_start/session_shutdown` | Optional status footer cleanup | No long-lived resources |
 | UI | TUI panel | Compact BranchMe workflow/config view | No persisted config assumed |
@@ -61,12 +63,12 @@ Approved on 2026-06-30.
   - Tools expose precise TypeBox schemas and structured details.
 - Dependencies:
   - Pi core packages as peer deps with `"*"`.
-  - Add `@earendil-works/pi-tui` only if the TUI imports components.
+  - `@earendil-works/pi-tui` is a peer/dev dependency because the TUI panel imports width and key utilities.
   - No Octokit; use Node 22 `fetch`.
 
 ## 6. Config, state, and persistence
 
-- Config source: no BranchMe config file; `/branchme` displays runtime status and workflow notes. GitHub tokens may come from process environment or local `.env` fallback.
+- Config source: no BranchMe config file; `/branchme` displays runtime status and workflow notes. GitHub tokens may come from process environment or a small regular `.env` fallback in the verified git root.
 - Session state: none; tool results include useful `details`.
 - Files written: none by extension code, except normal git metadata changes from branch checkout/push.
 - Cleanup behavior: clear any footer/status key on `session_shutdown` if used.
@@ -76,13 +78,13 @@ Approved on 2026-06-30.
 - Shell execution: only `git` via argv-style `pi.exec`, not shell strings.
 - File access/mutation: no working-tree file edits; git metadata changes only.
 - Network access: `pull_request` calls `https://api.github.com/repos/{owner}/{repo}/pulls`.
-- Credentials/secrets: `GITHUB_TOKEN` / `GH_TOKEN` from process env or local `.env` fallback; never log token.
+- Credentials/secrets: `GITHUB_TOKEN` / `GH_TOKEN` from process env or hardened local `.env` fallback; never log token.
 - Telemetry/retention: none.
 - User confirmations: no extra confirmation by default, to support automation; tools rely on explicit arguments.
 
 ## 8. Documentation and packaging
 
-- README changes: describe pending implementation, workflow, tools, CI env usage.
+- README changes: describe implemented behavior, workflow, tools, CI env usage.
 - SECURITY changes: document git mutation, GitHub API, token behavior.
 - CHANGELOG changes: rename initial unreleased entry to BranchMe.
 - package.json changes: set package identity/URLs/keywords/peer deps.
@@ -91,8 +93,9 @@ Approved on 2026-06-30.
 ## 9. Validation plan
 
 - Typecheck: `npm run typecheck`
-- Tests: prep-level metadata/spec checks now; implementation tests later.
+- Tests: unit tests for commands, tools, git/GitHub helpers, package metadata, and TUI captures.
 - Package dry-run: `npm run check:pack`
+- Formatting: `npm run format:check`
 - Full validation: `npm run validate`
 - Isolated Pi smoke test: `pi --no-extensions -e .`
 

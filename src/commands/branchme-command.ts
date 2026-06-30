@@ -36,13 +36,15 @@ export function getBranchMeHelpText(): string {
   ].join("\n");
 }
 
-function notifyOrLog(ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
+function emitCommandMessage(ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
   if (ctx.hasUI) {
     ctx.ui.notify(message, level);
     return;
   }
 
-  console.log(message);
+  if (ctx.mode === "print") {
+    console.log(message);
+  }
 }
 
 async function collectPanelData(
@@ -56,10 +58,12 @@ async function collectPanelData(
     tokenSource: null,
   };
 
+  let tokenLookupCwd = ctx.cwd;
   try {
     const status = await getBranchStatus(pi, ctx, ctx.signal);
     data.currentBranch = status.currentBranch;
     data.detached = status.detached;
+    tokenLookupCwd = status.repoRoot;
   } catch (error) {
     data.statusNote = error instanceof Error ? error.message : String(error);
   }
@@ -72,7 +76,7 @@ async function collectPanelData(
   }
 
   try {
-    data.tokenSource = resolveGitHubToken(process.env, { cwd: ctx.cwd }).source;
+    data.tokenSource = (await resolveGitHubToken(process.env, { cwd: tokenLookupCwd, signal: ctx.signal })).source;
   } catch {
     data.tokenSource = null;
   }
@@ -85,7 +89,7 @@ async function showPanel(pi: Pick<ExtensionAPI, "exec">, ctx: ExtensionCommandCo
 
   if (ctx.mode !== "tui") {
     const branch = data.detached ? "detached HEAD" : data.currentBranch ?? "unknown";
-    notifyOrLog(
+    emitCommandMessage(
       ctx,
       `${EXTENSION_DISPLAY_NAME}: branch ${branch}; GitHub repository ${data.githubRepository ?? "not resolved"}; token ${data.tokenSource ? `present (${data.tokenSource})` : "not set"}.`,
       data.statusNote ? "warning" : "info",
@@ -102,7 +106,7 @@ export function registerBranchMeCommand(pi: Pick<ExtensionAPI, "registerCommand"
     handler: async (args, ctx) => {
       const mode = parseBranchMeArgs(args);
       if (mode === "help") {
-        notifyOrLog(ctx, getBranchMeHelpText(), "info");
+        emitCommandMessage(ctx, getBranchMeHelpText(), "info");
         return;
       }
 

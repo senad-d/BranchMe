@@ -1,5 +1,7 @@
 # Plan: BranchMe Implementation Tasks
 
+> Historical note (updated 2026-06-30): this checklist records the original implementation path. Current BranchMe behavior includes five tools (`branch_status`, `change_branch`, `create_branch`, `push_branch`, `pull_request`), hardened repository-root `.env` token fallback, explicit upstream push targets, PR branch-ref validation, and the updated validation path with `format:check`.
+
 ## Task Description
 
 Task checklist for a later, separate implementation session for BranchMe.
@@ -92,7 +94,7 @@ Resolve owner/repo from local `origin` and/or `GITHUB_REPOSITORY`. Fail closed w
 - GitHub repository parsing supports HTTPS, SSH, and `GITHUB_REPOSITORY` formats.
 - Owner/repo are never accepted from tool parameters.
 - Env/local repository mismatch throws a boundary error.
-- Token resolution never reads `.env`.
+- Token resolution reads only supported token keys from process env or hardened repository-root fallback.
 - Error messages redact token values and token-like request data.
 - Tests cover parsing, mismatch, missing token, and redaction.
 
@@ -107,7 +109,7 @@ Use GitHub REST `POST /repos/{owner}/{repo}/pulls` with required `headBranch`, `
 - Tool schema requires `headBranch`, `baseBranch`, `title`, `body`, and `draft`.
 - Tool schema rejects owner/repo fields and additional properties.
 - Tool has description, `promptSnippet`, and `promptGuidelines` that explicitly name `pull_request`.
-- Tool uses `GITHUB_TOKEN` or `GH_TOKEN` only.
+- Tool uses `GITHUB_TOKEN` or `GH_TOKEN` from process env or hardened repository-root fallback only.
 - Tool creates PRs only for the resolved current repository.
 - Tests verify request URL, headers without exposed token, body shape, response parsing, and API error handling.
 
@@ -137,7 +139,7 @@ The tests should assert registration names, schema strictness, prompt snippets, 
 #### Acceptance criteria
 
 - Exactly one BranchMe command is registered: `branchme`.
-- Exactly four BranchMe tools are registered: `branch_status`, `create_branch`, `push_branch`, `pull_request`.
+- Exactly five BranchMe tools are registered: `branch_status`, `change_branch`, `create_branch`, `push_branch`, `pull_request`.
 - Each tool has `promptSnippet` and non-empty `promptGuidelines`.
 - Every prompt guideline names its tool explicitly.
 - Template example command/tool names are absent.
@@ -164,7 +166,7 @@ Use npm validation and `pi --no-extensions -e .` so other configured extensions 
 
 #### Acceptance criteria
 
-- `npm run validate` passes.
+- `npm run validate` passes, including formatting checks.
 - `npm run check:pack` confirms package contents are minimal.
 - `pi --no-extensions -e .` loads BranchMe without template behavior.
 - Any manual smoke-test findings are documented.

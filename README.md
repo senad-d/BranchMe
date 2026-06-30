@@ -143,7 +143,7 @@ export GH_TOKEN=ghp_...
 pi
 ```
 
-Or copy `.env.example` to `.env` in the directory where you start pi and fill in one token value:
+Or copy `.env.example` to `.env` in the repository root and fill in one token value:
 
 ```bash
 cp .env.example .env
@@ -152,12 +152,13 @@ pi
 ```
 
 `push_branch` uses your normal Git remote credentials. BranchMe does not inject `GITHUB_TOKEN` into `git push`.
+When the current branch already has an upstream, BranchMe pushes an explicit `HEAD:<upstream-branch-ref>` refspec to the configured upstream remote instead of relying on a bare `git push`.
 
 ---
 
 ## Configuration
 
-BranchMe has no project config file. It reads process environment variables for GitHub pull request creation and optional repository boundary checks, with a local `.env` token fallback when no process token is set. Token lookup checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`; if neither is set, BranchMe reads `.env` from the directory where pi is running and checks `GITHUB_TOKEN`, then `GH_TOKEN`.
+BranchMe has no project config file. It reads process environment variables for GitHub pull request creation and optional repository boundary checks, with a local `.env` token fallback when no process token is set. Token lookup checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`; if neither is set, BranchMe reads `.env` from the verified git root and checks `GITHUB_TOKEN`, then `GH_TOKEN`.
 
 | Variable | Meaning |
 | --- | --- |
@@ -165,7 +166,7 @@ BranchMe has no project config file. It reads process environment variables for 
 | `GH_TOKEN` | Fallback token for `pull_request`; process environment first, then local `.env` fallback. |
 | `GITHUB_REPOSITORY=owner/repo` | Optional CI fallback and boundary check for the current GitHub repository; process environment only. |
 
-BranchMe reads only `GITHUB_TOKEN` and `GH_TOKEN` from `.env`; it does not import other `.env` keys. BranchMe does not read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from errors, tool content, and tool details.
+BranchMe reads only `GITHUB_TOKEN` and `GH_TOKEN` from a small regular `.env` file; it rejects directories, symlinks, special files, and oversized files. BranchMe does not import other `.env` keys, read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from errors, tool content, and tool details.
 
 If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
@@ -180,7 +181,7 @@ If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_reque
 | `/branchme --help` | Alias for `/branchme help`. |
 | `/branchme -h` | Alias for `/branchme help`. |
 
-Commands are informational only. BranchMe actions are performed by agent-callable tools.
+Commands are informational only. BranchMe actions are performed by agent-callable tools. `/branchme` uses the TUI panel in TUI mode, notifications in RPC mode, plain text only in print mode, and stays stdout-silent in JSON mode to avoid corrupting protocol output.
 
 ---
 
@@ -191,10 +192,10 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | `branch_status` | `{}` | Read-only git status: repo root, current branch or detached state, upstream, dirty state, ahead/behind counts, and GitHub repository when resolvable. |
 | `change_branch` | `{ "branchName": string }` | Validates `branchName`, requires `refs/heads/<branchName>` to exist locally, rejects dirty worktrees, and runs `git switch <branchName>`. |
 | `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
-| `push_branch` | `{}` | Pushes the current branch with `git push`, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
-| `pull_request` | `{ "headBranch": string, "baseBranch": string, "title": string, "body": string, "draft": boolean }` | Creates a GitHub pull request in the resolved current repository via `POST /repos/{owner}/{repo}/pulls`. |
+| `push_branch` | `{}` | Pushes the current branch to its configured upstream remote with an explicit `HEAD:<upstream-branch-ref>` refspec, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
+| `pull_request` | `{ "headBranch": string, "baseBranch": string, "title": string, "body": string, "draft": boolean }` | Creates a GitHub pull request in the resolved current repository via `POST /repos/{owner}/{repo}/pulls`; branch inputs must be local branch-name refs and cannot use `owner:branch`. |
 
-All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `pull_request` never accepts `owner` or `repo`; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
+All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
 
 ---
 
@@ -211,11 +212,11 @@ Create a draft pull request from feature/docs-refresh to main titled "Refresh do
 
 BranchMe operates only on the repository where pi is running:
 
-- Git commands use `pi.exec("git", args, { cwd: ctx.cwd })` with argv arrays.
+- Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from the verified git root.
 - `change_branch` switches only to existing local branches and has no `force`, `stash`, `discard`, remote, or path input.
 - `create_branch` creates from the current `HEAD` only and has no `baseRef` input.
-- `push_branch` pushes only the current branch and has no `branchName` input.
-- `pull_request` creates PRs only for the resolved current GitHub repository.
+- `push_branch` pushes only the current branch, uses no bare upstream `git push`, and has no `branchName` input.
+- `pull_request` creates PRs only for the resolved current GitHub repository and rejects `owner:branch` head refs.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
 BranchMe intentionally does **not** stage files, create commits, force checkout, stash changes, discard changes, edit files directly, or generate commit messages.
@@ -283,7 +284,7 @@ npm run check:pack
 printf '/branchme help\n/quit\n' | pi --no-extensions -e .
 ```
 
-Validation covers TypeScript typechecking, unit tests, package checks, and package-content verification. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
+Validation covers TypeScript typechecking, formatting checks, unit tests, package checks, and package-content verification. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
 
 Refresh TUI captures intentionally with:
 
@@ -309,8 +310,8 @@ pi remove npm:@senad-d/branchme -l     # remove project-local install
 ```bash
 npm install
 npm run typecheck
-npm run test
 npm run format:check
+npm run test
 npm run check:pack
 npm run validate
 pi --no-extensions -e .

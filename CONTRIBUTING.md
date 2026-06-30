@@ -13,21 +13,22 @@ Useful commands:
 
 ```bash
 npm run typecheck
+npm run format:check
 npm run test
 npm run check:pack
 pi --no-extensions -e .
 ```
 
-## Preparation status
+## Project status
 
-The repository is currently prepared for BranchMe, but feature implementation is pending. Start with the approved brief and specs before writing feature code:
+BranchMe is implemented. The historical preparation specs remain for context, but current behavior is documented in:
 
+- `README.md`
+- `SECURITY.md`
+- `docs/STRUCTURE.md`
 - `docs/PROJECT_DEFINITION_BRIEF.md`
-- `specs/spec-architecture.md`
-- `specs/spec-guidelines.md`
-- `specs/spec-tasks.md`
 
-Do not mark task checkboxes complete unless you are in a later implementation session and have completed the matching task with validation.
+Do not mark task checkboxes complete unless you have completed the matching task with validation.
 
 ## Pull requests
 
@@ -38,4 +39,4 @@ Do not mark task checkboxes complete unless you are in a later implementation se
 
 ## Security expectations
 
-BranchMe's planned behavior includes local git commands and GitHub REST API calls. Treat changes that execute shell commands, read files, write files, push branches, call the network, or handle credentials as security-sensitive and document the behavior.
+BranchMe behavior includes local git commands and GitHub REST API calls. Treat changes that execute shell commands, read files, write files, push branches, call the network, or handle credentials as security-sensitive and document the behavior.

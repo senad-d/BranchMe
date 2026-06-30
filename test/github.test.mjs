@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   redactSecrets,
   resolveGitHubRepository,
   resolveGitHubToken,
+  validatePullRequestBranchRef,
 } from "../src/github.ts";
 
 function result(overrides = {}) {
@@ -83,13 +84,13 @@ test("resolveGitHubRepository fails outside a git repository even with env fallb
   );
 });
 
-test("resolveGitHubToken uses process environment and prefers GITHUB_TOKEN", () => {
-  assert.deepEqual(resolveGitHubToken({ GITHUB_TOKEN: " github-token ", GH_TOKEN: "gh-token" }), {
+test("resolveGitHubToken uses process environment and prefers GITHUB_TOKEN", async () => {
+  assert.deepEqual(await resolveGitHubToken({ GITHUB_TOKEN: " github-token ", GH_TOKEN: "gh-token" }), {
     token: "github-token",
     source: "GITHUB_TOKEN",
   });
-  assert.deepEqual(resolveGitHubToken({ GH_TOKEN: " gh-token " }), { token: "gh-token", source: "GH_TOKEN" });
-  assert.throws(() => resolveGitHubToken({}), /GITHUB_TOKEN or GH_TOKEN/);
+  assert.deepEqual(await resolveGitHubToken({ GH_TOKEN: " gh-token " }), { token: "gh-token", source: "GH_TOKEN" });
+  await assert.rejects(() => resolveGitHubToken({}), /GITHUB_TOKEN or GH_TOKEN/);
 });
 
 test("resolveGitHubToken falls back to local .env tokens", async () => {
@@ -101,14 +102,36 @@ test("resolveGitHubToken falls back to local .env tokens", async () => {
       "utf8",
     );
 
-    assert.deepEqual(resolveGitHubToken({}, { cwd }), {
+    assert.deepEqual(await resolveGitHubToken({}, { cwd }), {
       token: "github_pat_from_file",
       source: "GITHUB_TOKEN (.env)",
     });
-    assert.deepEqual(resolveGitHubToken({ GH_TOKEN: " process-token " }, { cwd }), {
+    assert.deepEqual(await resolveGitHubToken({ GH_TOKEN: " process-token " }, { cwd }), {
       token: "process-token",
       source: "GH_TOKEN",
     });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resolveGitHubToken rejects unsafe, oversized, and aborted .env fallback reads", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "branchme-env-hardening-"));
+  try {
+    await assert.rejects(() => resolveGitHubToken({}, { cwd }), /GITHUB_TOKEN or GH_TOKEN/);
+
+    await mkdir(join(cwd, ".env"));
+    await assert.rejects(() => resolveGitHubToken({}, { cwd }), /regular file/i);
+    await rm(join(cwd, ".env"), { recursive: true, force: true });
+
+    await writeFile(join(cwd, ".env"), `GITHUB_TOKEN=ghp_${"a".repeat(70 * 1024)}\n`, "utf8");
+    await assert.rejects(() => resolveGitHubToken({}, { cwd }), /too large|byte limit/i);
+    await rm(join(cwd, ".env"), { force: true });
+
+    await writeFile(join(cwd, ".env"), "GITHUB_TOKEN=ghp_filetoken123\n", "utf8");
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(() => resolveGitHubToken({}, { cwd, signal: controller.signal }), /aborted/i);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -123,6 +146,44 @@ test("redactSecrets removes tokens and token-like request data", () => {
 
   assert.doesNotMatch(redacted, /secret123|github_pat_abc123/);
   assert.match(redacted, /\[REDACTED\]/);
+});
+
+test("validatePullRequestBranchRef accepts local branch names and rejects cross-repository or unsafe refs", () => {
+  assert.doesNotThrow(() => validatePullRequestBranchRef("feature/current", "headBranch"));
+  assert.doesNotThrow(() => validatePullRequestBranchRef("release/v1.2", "baseBranch"));
+
+  for (const value of [
+    "other-owner:feature/current",
+    "../feature",
+    "feature/../main",
+    "feature branch",
+    "feature\nmain",
+    "refs/heads/feature",
+    "feature.lock",
+    "feature//main",
+  ]) {
+    assert.throws(() => validatePullRequestBranchRef(value, "headBranch"), /headBranch/u);
+  }
+});
+
+test("createGitHubPullRequest rejects owner-prefixed head branches before fetch", async () => {
+  let called = false;
+  const fetchImpl = async () => {
+    called = true;
+    throw new Error("fetch should not be called");
+  };
+
+  await assert.rejects(
+    () =>
+      createGitHubPullRequest(
+        { owner: "senad-d", repo: "branchme" },
+        { headBranch: "other-owner:feature", baseBranch: "main", title: "Title", body: "", draft: false },
+        "ghp_secret123",
+        { fetchImpl },
+      ),
+    /owner-prefixed|cross-repository|:/i,
+  );
+  assert.equal(called, false);
 });
 
 test("createGitHubPullRequest sends expected request and parses response", async () => {

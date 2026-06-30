@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { redactSecrets } from "./redaction.ts";
 import {
   GITHUB_API_BASE_URL,
   GITHUB_API_VERSION,
@@ -19,10 +20,13 @@ export interface TokenResolution {
   source: TokenResolutionSource;
 }
 
+// Exported for focused tests and future embedders that call GitHub helpers directly.
 export interface TokenResolutionOptions {
   cwd?: string;
+  signal?: AbortSignal;
 }
 
+// Exported for focused tests and future embedders that inject fetch/cancellation.
 export interface PullRequestFetchOptions {
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
@@ -144,41 +148,78 @@ function parseDotEnvTokens(contents: string): Partial<Record<TokenEnvironmentKey
   return tokens;
 }
 
+const MAX_DOTENV_BYTES = 64 * 1024;
+
 function isMissingFileError(error: unknown): boolean {
   return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
 
-function readDotEnvTokens(cwd: string | undefined): Partial<Record<TokenEnvironmentKey, string>> {
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error("GitHub token .env fallback was aborted.");
+}
+
+function errorMessage(error: unknown): string {
+  return redactSecrets(error instanceof Error ? error.message : String(error));
+}
+
+async function readDotEnvTokens(
+  cwd: string | undefined,
+  signal?: AbortSignal,
+): Promise<Partial<Record<TokenEnvironmentKey, string>>> {
   if (!cwd) return {};
 
   const envPath = join(cwd, ".env");
-  let contents: string;
+  throwIfAborted(signal);
+
+  let stats: Awaited<ReturnType<typeof lstat>>;
   try {
-    contents = readFileSync(envPath, "utf8");
+    stats = await lstat(envPath);
   } catch (error) {
     if (isMissingFileError(error)) return {};
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Unable to read .env file for GitHub token fallback: ${message}`);
+    throw new Error(`Unable to inspect .env file for GitHub token fallback: ${errorMessage(error)}`);
+  }
+
+  if (!stats.isFile()) {
+    throw new Error("Unable to read .env file for GitHub token fallback: .env must be a small regular file.");
+  }
+  if (stats.size > MAX_DOTENV_BYTES) {
+    throw new Error(
+      `Unable to read .env file for GitHub token fallback: .env is too large (${stats.size} bytes; limit ${MAX_DOTENV_BYTES} bytes).`,
+    );
+  }
+
+  throwIfAborted(signal);
+
+  let contents: string;
+  try {
+    contents = await readFile(envPath, { encoding: "utf8", signal });
+  } catch (error) {
+    if (isMissingFileError(error)) return {};
+    throw new Error(`Unable to read .env file for GitHub token fallback: ${errorMessage(error)}`);
+  }
+
+  if (Buffer.byteLength(contents, "utf8") > MAX_DOTENV_BYTES) {
+    throw new Error(`Unable to read .env file for GitHub token fallback: .env exceeded the ${MAX_DOTENV_BYTES} byte limit.`);
   }
 
   return parseDotEnvTokens(contents);
 }
 
-export function resolveGitHubToken(
+export async function resolveGitHubToken(
   env: NodeJS.ProcessEnv = process.env,
   options: TokenResolutionOptions = {},
-): TokenResolution {
+): Promise<TokenResolution> {
   const processToken = resolveProcessToken(env);
   if (processToken) return processToken;
 
-  const dotEnvTokens = readDotEnvTokens(options.cwd);
+  const dotEnvTokens = await readDotEnvTokens(options.cwd, options.signal);
   const githubToken = dotEnvTokens.GITHUB_TOKEN?.trim();
   if (githubToken) return { token: githubToken, source: "GITHUB_TOKEN (.env)" };
 
   const ghToken = dotEnvTokens.GH_TOKEN?.trim();
   if (ghToken) return { token: ghToken, source: "GH_TOKEN (.env)" };
 
-  throw new Error("GitHub token is required. Set GITHUB_TOKEN or GH_TOKEN in the process environment or local .env file.");
+  throw new Error("GitHub token is required. Set GITHUB_TOKEN or GH_TOKEN in the process environment or repository .env file.");
 }
 
 export async function resolveGitHubRepository(
@@ -216,30 +257,45 @@ function truncate(value: string): string {
   return `${value.slice(0, MAX_SUMMARY_OUTPUT_CHARS)}… [truncated]`;
 }
 
-export function redactSecrets(value: string, tokens: readonly string[] = []): string {
-  let redacted = value;
-  for (const token of tokens) {
-    if (!token) continue;
-    redacted = redacted.split(token).join("[REDACTED]");
-  }
-
-  redacted = redacted.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer [REDACTED]");
-  redacted = redacted.replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]+\b/gu, "[REDACTED]");
-  redacted = redacted.replace(/github_pat_[A-Za-z0-9_]+/giu, "[REDACTED]");
-  redacted = redacted.replace(
-    /\b(token|access_token|authorization|github_token|gh_token)(["'\s:=]+)([^\s"',}]+)/giu,
-    (_match, key: string, separator: string) => `${key}${separator}[REDACTED]`,
-  );
-  return redacted;
-}
+export { redactSecrets } from "./redaction.ts";
 
 function encodePathSegment(value: string): string {
   return encodeURIComponent(value).replace(/%2F/giu, "/");
 }
 
+function requireStringRef(value: unknown, field: "headBranch" | "baseBranch"): string {
+  if (typeof value !== "string") throw new Error(`${field} must be a string.`);
+  if (!value.trim()) throw new Error(`${field} is required.`);
+  if (value !== value.trim()) throw new Error(`${field} cannot start or end with whitespace.`);
+  return value;
+}
+
+export function validatePullRequestBranchRef(value: unknown, field: "headBranch" | "baseBranch"): void {
+  const ref = requireStringRef(value, field);
+
+  if (/[\u0000-\u001f\u007f]/u.test(ref)) throw new Error(`${field} cannot contain control characters.`);
+  if (/\s/u.test(ref)) throw new Error(`${field} cannot contain whitespace.`);
+  if (ref.includes(":")) throw new Error(`${field} cannot contain ':' or an owner-prefixed cross-repository ref.`);
+  if (ref.includes("\\")) throw new Error(`${field} cannot contain backslashes.`);
+  if (/[~^?*[\]]/u.test(ref)) throw new Error(`${field} contains characters that are not valid in a branch ref.`);
+  if (ref.includes("..")) throw new Error(`${field} cannot contain path traversal-like '..' segments.`);
+  if (ref.includes("@{")) throw new Error(`${field} cannot contain '@{'.`);
+  if (ref.includes("//")) throw new Error(`${field} cannot contain empty path segments.`);
+  if (ref.startsWith("/") || ref.endsWith("/")) throw new Error(`${field} cannot start or end with '/'.`);
+  if (ref.startsWith("-")) throw new Error(`${field} cannot start with '-'.`);
+  if (ref.endsWith(".")) throw new Error(`${field} cannot end with '.'.`);
+  if (ref === "@") throw new Error(`${field} cannot be '@'.`);
+  if (ref.startsWith("refs/")) throw new Error(`${field} must be a branch name, not a full ref path.`);
+
+  for (const segment of ref.split("/")) {
+    if (segment === "." || segment === "..") throw new Error(`${field} cannot contain path traversal segments.`);
+    if (segment.endsWith(".lock")) throw new Error(`${field} cannot contain '.lock' path segments.`);
+  }
+}
+
 function validatePullRequestInput(input: PullRequestInput): void {
-  if (!input.headBranch.trim()) throw new Error("headBranch is required.");
-  if (!input.baseBranch.trim()) throw new Error("baseBranch is required.");
+  validatePullRequestBranchRef(input.headBranch, "headBranch");
+  validatePullRequestBranchRef(input.baseBranch, "baseBranch");
   if (!input.title.trim()) throw new Error("title is required.");
   if (typeof input.body !== "string") throw new Error("body must be a string.");
   if (typeof input.draft !== "boolean") throw new Error("draft must be a boolean.");
