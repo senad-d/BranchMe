@@ -117,11 +117,14 @@ Use GitHub REST `POST /repos/{owner}/{repo}/pulls` with required `headBranch`, `
 
 `/branchme` should show a simple status/config panel in TUI mode and a safe fallback in non-TUI modes. `/branchme help`, `/branchme --help`, and `/branchme -h` should show concise workflow notes.
 
+Any extension configuration TUI work in this task must follow `specs/spec-configuration-tui-design-standard.md` for visual layout, responsive behavior, theme roles, focus states, and value alignment.
+
 #### Acceptance criteria
 
 - `/branchme` does not run git mutation or GitHub mutation actions.
 - `/branchme help`, `--help`, and `-h` all display help.
 - TUI mode uses a compact panel that respects terminal width.
+- Any configuration-oriented TUI surface follows `specs/spec-configuration-tui-design-standard.md`.
 - Non-TUI mode falls back gracefully.
 - Tests cover argument parsing and help text generation.
 

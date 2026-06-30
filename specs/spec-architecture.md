@@ -169,6 +169,7 @@ The tool must never accept owner/repo input because the extension is scoped to t
 
 ## TUI Panel
 
+- Any extension configuration TUI design must follow `specs/spec-configuration-tui-design-standard.md` as the mandatory visual standard before introducing custom layout choices.
 - `/branchme` opens a basic TUI panel in TUI mode.
 - `/branchme help`, `/branchme --help`, and `/branchme -h` show help text.
 - In non-TUI modes, `/branchme` should fall back to a concise markdown/help message or notification.

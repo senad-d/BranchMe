@@ -116,6 +116,7 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
 
 ## TUI Guidelines
 
+- Treat `specs/spec-configuration-tui-design-standard.md` as the mandatory visual standard for any extension configuration TUI or configuration panel.
 - Keep `/branchme` basic.
 - Show configuration/status/help, not action buttons.
 - Do not duplicate tool behavior in commands.
