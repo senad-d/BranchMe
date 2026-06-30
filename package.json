@@ -14,14 +14,20 @@
   },
   "homepage": "https://github.com/senad-d/branchme#readme",
   "keywords": [
+    "pi",
     "pi-package",
     "pi-extension",
     "pi-coding-agent",
     "branchme",
     "git",
+    "git-branch",
+    "git-workflow",
     "github",
+    "github-pr",
     "pull-request",
-    "automation"
+    "branch-workflow",
+    "automation",
+    "typescript"
   ],
   "engines": {
     "node": ">=22.19.0"
