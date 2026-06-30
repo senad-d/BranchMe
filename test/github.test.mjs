@@ -1,0 +1,173 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  createGitHubPullRequest,
+  parseGitHubRepository,
+  redactSecrets,
+  resolveGitHubRepository,
+  resolveGitHubToken,
+} from "../src/github.ts";
+
+function result(overrides = {}) {
+  return { stdout: "", stderr: "", code: 0, killed: false, ...overrides };
+}
+
+function makePi(routes) {
+  const calls = [];
+  return {
+    calls,
+    async exec(command, args, options) {
+      assert.equal(command, "git");
+      assert.equal(options.cwd, "/repo");
+      calls.push({ command, args: [...args], options });
+      const route = routes[args.join("\0")];
+      if (!route) throw new Error(`Unexpected git command: ${args.join(" ")}`);
+      return result(route);
+    },
+  };
+}
+
+const ctx = { cwd: "/repo" };
+
+test("parseGitHubRepository supports HTTPS, SSH, and owner/repo formats", () => {
+  assert.deepEqual(parseGitHubRepository("https://github.com/senad-d/branchme.git"), {
+    owner: "senad-d",
+    repo: "branchme",
+  });
+  assert.deepEqual(parseGitHubRepository("git@github.com:senad-d/branchme.git"), {
+    owner: "senad-d",
+    repo: "branchme",
+  });
+  assert.deepEqual(parseGitHubRepository("ssh://git@github.com/senad-d/branchme.git"), {
+    owner: "senad-d",
+    repo: "branchme",
+  });
+  assert.deepEqual(parseGitHubRepository("senad-d/branchme"), { owner: "senad-d", repo: "branchme" });
+  assert.equal(parseGitHubRepository("https://example.com/senad-d/branchme.git"), null);
+});
+
+test("resolveGitHubRepository uses current repository and fails closed on mismatch", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+  });
+  const repository = await resolveGitHubRepository(pi, ctx, undefined, { GITHUB_REPOSITORY: "senad-d/branchme" });
+  assert.deepEqual(repository, { owner: "senad-d", repo: "branchme" });
+
+  await assert.rejects(
+    () => resolveGitHubRepository(pi, ctx, undefined, { GITHUB_REPOSITORY: "other/repo" }),
+    /boundary mismatch/i,
+  );
+});
+
+test("resolveGitHubRepository falls back to GITHUB_REPOSITORY when origin is unavailable", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["remote\0get-url\0origin"]: { code: 1, stderr: "origin missing\n" },
+  });
+  const repository = await resolveGitHubRepository(pi, ctx, undefined, { GITHUB_REPOSITORY: "senad-d/branchme" });
+  assert.deepEqual(repository, { owner: "senad-d", repo: "branchme" });
+});
+
+test("resolveGitHubRepository fails outside a git repository even with env fallback", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { code: 128, stderr: "fatal: not a git repository\n" },
+  });
+
+  await assert.rejects(
+    () => resolveGitHubRepository(pi, ctx, undefined, { GITHUB_REPOSITORY: "senad-d/branchme" }),
+    /not a git repository/i,
+  );
+});
+
+test("resolveGitHubToken uses environment only and prefers GITHUB_TOKEN", () => {
+  assert.deepEqual(resolveGitHubToken({ GITHUB_TOKEN: " github-token ", GH_TOKEN: "gh-token" }), {
+    token: "github-token",
+    source: "GITHUB_TOKEN",
+  });
+  assert.deepEqual(resolveGitHubToken({ GH_TOKEN: " gh-token " }), { token: "gh-token", source: "GH_TOKEN" });
+  assert.throws(() => resolveGitHubToken({}), /GITHUB_TOKEN or GH_TOKEN/);
+});
+
+test("redactSecrets removes tokens and token-like request data", () => {
+  const token = "ghp_secret123";
+  const redacted = redactSecrets(
+    `Authorization: Bearer ${token}; token=${token}; github_pat_abc123; plain ${token}`,
+    [token],
+  );
+
+  assert.doesNotMatch(redacted, /secret123|github_pat_abc123/);
+  assert.match(redacted, /\[REDACTED\]/);
+});
+
+test("createGitHubPullRequest sends expected request and parses response", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return new Response(
+      JSON.stringify({
+        number: 42,
+        html_url: "https://github.com/senad-d/branchme/pull/42",
+        state: "open",
+        draft: true,
+        head: { ref: "feature/current" },
+        base: { ref: "main" },
+      }),
+      { status: 201, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  const details = await createGitHubPullRequest(
+    { owner: "senad-d", repo: "branchme" },
+    {
+      headBranch: "feature/current",
+      baseBranch: "main",
+      title: "Add BranchMe",
+      body: "Body",
+      draft: true,
+    },
+    "ghp_secret123",
+    { fetchImpl },
+  );
+
+  assert.deepEqual(details, {
+    repository: { owner: "senad-d", repo: "branchme" },
+    number: 42,
+    url: "https://github.com/senad-d/branchme/pull/42",
+    state: "open",
+    head: "feature/current",
+    base: "main",
+    draft: true,
+  });
+  assert.equal(requests[0].url, "https://api.github.com/repos/senad-d/branchme/pulls");
+  assert.equal(requests[0].init.method, "POST");
+  assert.equal(requests[0].init.headers.Accept, "application/vnd.github+json");
+  assert.equal(requests[0].init.headers.Authorization, "Bearer ghp_secret123");
+  assert.equal(requests[0].init.headers["X-GitHub-Api-Version"], "2022-11-28");
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    title: "Add BranchMe",
+    head: "feature/current",
+    base: "main",
+    body: "Body",
+    draft: true,
+  });
+});
+
+test("createGitHubPullRequest redacts API errors", async () => {
+  const fetchImpl = async () =>
+    new Response(JSON.stringify({ message: "bad token ghp_secret123" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+
+  await assert.rejects(
+    () =>
+      createGitHubPullRequest(
+        { owner: "senad-d", repo: "branchme" },
+        { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "", draft: false },
+        "ghp_secret123",
+        { fetchImpl },
+      ),
+    (error) => error instanceof Error && /HTTP 401/.test(error.message) && !/secret123/.test(error.message),
+  );
+});

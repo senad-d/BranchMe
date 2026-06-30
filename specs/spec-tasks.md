@@ -14,7 +14,7 @@ This file is a future implementation plan. During preparation, do not complete a
 
 ### 1. Apply source module layout
 
-- [ ] Replace template source modules with BranchMe modules and keep `src/extension.ts` as a small registration entry point.
+- [x] Replace template source modules with BranchMe modules and keep `src/extension.ts` as a small registration entry point.
 
 Create the planned module layout from the architecture spec: constants, types, command registration, tool registration, git helpers, GitHub helpers, and optional UI panel. Remove template example behavior rather than keeping demo command/tool registrations.
 
@@ -27,7 +27,7 @@ Create the planned module layout from the architecture spec: constants, types, c
 
 ### 2. Implement git helper foundation
 
-- [ ] Implement current-repository git helpers using argv-style `pi.exec("git", args)` calls.
+- [x] Implement current-repository git helpers using argv-style `pi.exec("git", args)` calls.
 
 Add helpers for git root detection, current branch detection, upstream detection, dirty status, ahead/behind count, branch validation, branch creation, and current-branch push/publish behavior.
 
@@ -40,7 +40,7 @@ Add helpers for git root detection, current branch detection, upstream detection
 
 ### 3. Implement `branch_status`
 
-- [ ] Register the read-only `branch_status` tool with a strict empty schema and structured details.
+- [x] Register the read-only `branch_status` tool with a strict empty schema and structured details.
 
 The tool should summarize current repository, branch, upstream, dirty status, ahead/behind status, and resolved GitHub repository if available.
 
@@ -54,7 +54,7 @@ The tool should summarize current repository, branch, upstream, dirty status, ah
 
 ### 4. Implement `create_branch`
 
-- [ ] Register `create_branch` to create and checkout a new branch from current `HEAD` only.
+- [x] Register `create_branch` to create and checkout a new branch from current `HEAD` only.
 
 Use required `branchName` input. Validate the name, reject existing local branches, and run the minimal git switch command.
 
@@ -68,7 +68,7 @@ Use required `branchName` input. Validate the name, reject existing local branch
 
 ### 5. Implement `push_branch`
 
-- [ ] Register `push_branch` to push the current branch and publish it to `origin` when no upstream exists.
+- [x] Register `push_branch` to push the current branch and publish it to `origin` when no upstream exists.
 
 The tool should inspect current branch/upstream and then run either `git push` or `git push --set-upstream origin <currentBranch>`.
 
@@ -83,7 +83,7 @@ The tool should inspect current branch/upstream and then run either `git push` o
 
 ### 6. Implement GitHub repository and token helpers
 
-- [ ] Implement current-repository GitHub resolution, env-token resolution, fetch wrapper, and redacted error handling.
+- [x] Implement current-repository GitHub resolution, env-token resolution, fetch wrapper, and redacted error handling.
 
 Resolve owner/repo from local `origin` and/or `GITHUB_REPOSITORY`. Fail closed when both exist and disagree. Read `GITHUB_TOKEN` or `GH_TOKEN` from process env only.
 
@@ -98,7 +98,7 @@ Resolve owner/repo from local `origin` and/or `GITHUB_REPOSITORY`. Fail closed w
 
 ### 7. Implement `pull_request`
 
-- [ ] Register `pull_request` to create a GitHub PR in the current repository with all PR inputs required.
+- [x] Register `pull_request` to create a GitHub PR in the current repository with all PR inputs required.
 
 Use GitHub REST `POST /repos/{owner}/{repo}/pulls` with required `headBranch`, `baseBranch`, `title`, `body`, and `draft`. Validate response shape before returning success.
 
@@ -113,7 +113,7 @@ Use GitHub REST `POST /repos/{owner}/{repo}/pulls` with required `headBranch`, `
 
 ### 8. Implement `/branchme` and `/branchme help`
 
-- [ ] Implement the BranchMe slash command as an informational TUI/help surface only.
+- [x] Implement the BranchMe slash command as an informational TUI/help surface only.
 
 `/branchme` should show a simple status/config panel in TUI mode and a safe fallback in non-TUI modes. `/branchme help`, `/branchme --help`, and `/branchme -h` should show concise workflow notes.
 
@@ -130,7 +130,7 @@ Any extension configuration TUI work in this task must follow `specs/spec-config
 
 ### 9. Add extension registration and prompt metadata tests
 
-- [ ] Add tests that instantiate the extension with a fake Pi API and verify registered commands/tools.
+- [x] Add tests that instantiate the extension with a fake Pi API and verify registered commands/tools.
 
 The tests should assert registration names, schema strictness, prompt snippets, prompt guidelines, and no template leftovers.
 
@@ -144,7 +144,7 @@ The tests should assert registration names, schema strictness, prompt snippets, 
 
 ### 10. Update public documentation for implemented behavior
 
-- [ ] Update README, SECURITY, CHANGELOG, and structure docs to describe implemented BranchMe behavior.
+- [x] Update README, SECURITY, CHANGELOG, and structure docs to describe implemented BranchMe behavior.
 
 Replace preparation wording with implementation-accurate instructions after features are built and tested.
 
@@ -158,7 +158,7 @@ Replace preparation wording with implementation-accurate instructions after feat
 
 ### 11. Validate in isolation
 
-- [ ] Run full repository validation and an isolated Pi smoke test.
+- [x] Run full repository validation and an isolated Pi smoke test.
 
 Use npm validation and `pi --no-extensions -e .` so other configured extensions do not affect BranchMe.
 

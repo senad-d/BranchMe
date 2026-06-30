@@ -2,45 +2,54 @@
 
 ## Trust model
 
-Pi packages and extensions run with the full local permissions of the user account that starts Pi. Review extension source before installing it, pin versions in sensitive environments, and install only from trusted sources.
+Pi packages and extensions run with the full local permissions of the user account that starts Pi. Review BranchMe source before installing it, pin versions in sensitive environments, and install only from trusted sources.
 
 ```bash
 pi install npm:@senad-d/branchme@<version>
 pi install git:https://github.com/senad-d/branchme@<tag>
 ```
 
-## Current implementation status
+## Git behavior
 
-BranchMe is currently prepared but not implemented. The planned git and GitHub behaviors below are documented for the later implementation session and must be validated before publishing.
+BranchMe runs local `git` commands through Pi's extension API with argv-style arguments and `cwd` set to the current Pi working directory.
 
-## Planned security-sensitive behavior
+Implemented git mutations are limited to:
 
-BranchMe is planned to:
+- `create_branch`: `git switch -c <branchName>` from current `HEAD` after branch-name validation and existing-branch checks.
+- `push_branch`: `git push` for the current branch, or `git push --set-upstream origin <currentBranch>` when no upstream exists.
 
-- Run local `git` commands through Pi's extension API using argv-style arguments.
-- Create and checkout a new branch from current `HEAD` when `create_branch` is called.
-- Push or publish the current branch to `origin` when `push_branch` is called.
-- Create GitHub pull requests through the GitHub REST API when `pull_request` is called.
-- Read `GITHUB_TOKEN` or `GH_TOKEN` from the process environment for GitHub authentication.
+BranchMe does not stage files, create commits, stash, reset, rebase, merge, or edit working-tree files.
 
-BranchMe is planned not to:
+## Network behavior
 
-- Stage files.
-- Create commits.
-- Generate commit messages.
-- Edit working-tree files.
-- Read `.env` token files in v1.
-- Depend on GitHub CLI.
-- Send telemetry.
-- Accept owner/repo tool parameters for pull request creation.
+BranchMe makes network requests only for `pull_request`, which calls the GitHub REST API:
 
-## Current-repository boundary
+```text
+POST https://api.github.com/repos/{owner}/{repo}/pulls
+```
 
-BranchMe tools must operate only on the repository where Pi is running. The PR tool must infer the GitHub repository from the current checkout and/or matching `GITHUB_REPOSITORY`. If environment and local repository metadata disagree, the implementation should fail closed.
+The request body contains only the explicit PR fields supplied to the tool: title, head branch, base branch, body, and draft flag.
+
+## Repository boundary
+
+BranchMe operates on the current repository only.
+
+- The GitHub repository is inferred from local `origin` and/or `GITHUB_REPOSITORY`.
+- Tool inputs never accept filesystem paths, `owner`, or `repo` fields.
+- If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, PR creation fails closed.
 
 ## Credentials
 
-Do not paste tokens into prompts, issues, logs, or test fixtures. The later implementation must redact token values from errors and tool details.
+`pull_request` reads tokens from process environment variables only:
+
+- `GITHUB_TOKEN` (preferred)
+- `GH_TOKEN` (fallback)
+
+BranchMe does not read `.env` files, shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from thrown errors, tool content, and tool details.
+
+## Telemetry
+
+BranchMe does not collect telemetry and does not send repository contents to any service beyond the explicit GitHub pull request fields provided to `pull_request`.
 
 ## Reporting vulnerabilities
 
@@ -55,7 +64,8 @@ Do not open public issues for security-sensitive reports that include exploit de
 ## Secure development checklist
 
 - Do not commit secrets, tokens, local `.pi/` state, or generated artifacts.
-- Document any file, shell, network, or credential access added by the extension.
-- Avoid starting background resources in the extension factory.
+- Keep tool schemas strict and reject unsupported fields.
+- Keep all git calls argv-style through `pi.exec("git", args)`.
+- Mock `pi.exec` and `fetch` in tests; do not touch real remotes.
 - Keep package contents minimal with `npm run check:pack`.
 - Use isolated smoke tests with `pi --no-extensions -e .`.

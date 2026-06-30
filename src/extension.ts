@@ -1,11 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerBranchMeCommand } from "./commands/branchme-command.ts";
+import { registerBranchMeTools } from "./tools/branchme-tools.ts";
 
-/**
- * BranchMe extension entry point.
- *
- * Feature registration is intentionally pending. See docs/PROJECT_DEFINITION_BRIEF.md
- * and specs/ before implementing `/branchme` or the planned tools.
- */
-export default function branchMeExtension(pi: ExtensionAPI) {
-  void pi;
+export function branchMeExtension(pi: ExtensionAPI): void {
+  registerBranchMeCommand(pi);
+  registerBranchMeTools(pi);
 }
+
+export default branchMeExtension;

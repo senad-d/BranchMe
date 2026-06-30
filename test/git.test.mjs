@@ -1,0 +1,147 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  createLocalBranch,
+  getBranchStatus,
+  pushCurrentBranch,
+  validateBranchName,
+  validateBranchNameInput,
+} from "../src/git.ts";
+
+function result(overrides = {}) {
+  return { stdout: "", stderr: "", code: 0, killed: false, ...overrides };
+}
+
+function makePi(routes) {
+  const calls = [];
+  return {
+    calls,
+    async exec(command, args, options) {
+      assert.equal(command, "git");
+      assert.ok(Array.isArray(args), "git args must be an argv array");
+      assert.equal(options.cwd, "/repo");
+      calls.push({ command, args: [...args], options });
+      const key = args.join("\0");
+      const route = routes[key];
+      if (!route) throw new Error(`Unexpected git command: ${args.join(" ")}`);
+      if (Array.isArray(route)) {
+        const next = route.shift();
+        if (!next) throw new Error(`No remaining result for git command: ${args.join(" ")}`);
+        return result(next);
+      }
+      if (typeof route === "function") return result(route(args));
+      return result(route);
+    },
+  };
+}
+
+const ctx = { cwd: "/repo" };
+
+test("getBranchStatus reads current git state with argv-style commands", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/test\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/test\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/test...origin/feature/test [ahead 1]\n M src/a.ts\n" },
+    ["rev-list\0--left-right\0--count\0HEAD...@{u}"]: { stdout: "1\t0\n" },
+  });
+
+  const details = await getBranchStatus(pi, ctx);
+
+  assert.deepEqual(details, {
+    repoRoot: "/repo",
+    currentBranch: "feature/test",
+    detached: false,
+    upstream: "origin/feature/test",
+    hasChanges: true,
+    ahead: 1,
+    behind: 0,
+  });
+  assert.deepEqual(
+    pi.calls.map((call) => call.args),
+    [
+      ["rev-parse", "--show-toplevel"],
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+      ["status", "--porcelain=v1", "--branch"],
+      ["rev-list", "--left-right", "--count", "HEAD...@{u}"],
+    ],
+  );
+});
+
+test("validateBranchName uses local checks and git check-ref-format", async () => {
+  assert.throws(() => validateBranchNameInput("bad\nname"), /control/i);
+  assert.throws(() => validateBranchNameInput("-bad"), /start/);
+
+  const pi = makePi({
+    ["check-ref-format\0--branch\0feature/good"]: { stdout: "feature/good\n" },
+  });
+
+  await validateBranchName(pi, ctx, "feature/good");
+  assert.deepEqual(pi.calls[0].args, ["check-ref-format", "--branch", "feature/good"]);
+});
+
+test("createLocalBranch rejects existing branches before git switch", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["check-ref-format\0--branch\0feature/existing"]: { stdout: "feature/existing\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/existing"]: { code: 0 },
+  });
+
+  await assert.rejects(() => createLocalBranch(pi, ctx, "feature/existing"), /already exists/);
+  assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
+});
+
+test("createLocalBranch creates from current HEAD with git switch -c", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["check-ref-format\0--branch\0feature/new"]: { stdout: "feature/new\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/new"]: { code: 1 },
+    ["switch\0-c\0feature/new"]: { stdout: "" },
+  });
+
+  const details = await createLocalBranch(pi, ctx, "feature/new");
+
+  assert.deepEqual(details, { repoRoot: "/repo", previousBranch: "main", newBranch: "feature/new" });
+  assert.deepEqual(pi.calls.at(-1).args, ["switch", "-c", "feature/new"]);
+});
+
+test("pushCurrentBranch fails clearly on detached HEAD", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { code: 1, stderr: "fatal: ref HEAD is not a symbolic ref\n" },
+    ["rev-parse\0--verify\0HEAD"]: { stdout: "abc123\n" },
+  });
+
+  await assert.rejects(() => pushCurrentBranch(pi, ctx), /detached/i);
+});
+
+test("pushCurrentBranch uses git push when upstream exists", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
+    ["push"]: { stdout: "Everything up-to-date\n" },
+  });
+
+  const details = await pushCurrentBranch(pi, ctx);
+
+  assert.equal(details.mode, "push");
+  assert.deepEqual(pi.calls.at(-1).args, ["push"]);
+});
+
+test("pushCurrentBranch publishes current branch when upstream is missing", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { code: 1, stderr: "no upstream\n" },
+    ["push\0--set-upstream\0origin\0feature/current"]: { stdout: "branch set up\n" },
+  });
+
+  const details = await pushCurrentBranch(pi, ctx);
+
+  assert.equal(details.mode, "publish");
+  assert.deepEqual(pi.calls.at(-1).args, ["push", "--set-upstream", "origin", "feature/current"]);
+});

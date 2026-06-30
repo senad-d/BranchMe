@@ -1,58 +1,77 @@
 # BranchMe Structure Guide
 
-BranchMe is a TypeScript Pi extension package prepared for current-repository git branch, push, and GitHub pull request workflows.
+BranchMe is a TypeScript Pi extension package for current-repository git branch, push, and GitHub pull request workflows.
 
-> Feature implementation is pending. Placeholder source files exist only to reserve the planned module boundaries; they must not be treated as implemented behavior.
-
-## Planned layout
+## Source layout
 
 ```text
 src/
-├── extension.ts                  # small extension entry point
-├── constants.ts                  # names, tool names, status key, future limits
-├── types.ts                      # future serializable domain/result types
+├── extension.ts                  # extension entry point; registers command and tools only
+├── constants.ts                  # command/tool names, timeouts, GitHub API constants
+├── types.ts                      # serializable tool details and helper result types
 ├── commands/
-│   └── branchme-command.ts       # future /branchme informational TUI/help command
+│   └── branchme-command.ts       # /branchme status/help command; informational only
 ├── tools/
-│   └── branchme-tools.ts         # future BranchMe tool registration
-├── git.ts                        # future git helper functions
-├── github.ts                     # future GitHub REST/token/repo helpers
+│   └── branchme-tools.ts         # branch_status/create_branch/push_branch/pull_request registration
+├── git.ts                        # argv-style git helpers through pi.exec("git", args)
+├── github.ts                     # GitHub repo resolution, env tokens, REST calls, redaction
 └── ui/
-    └── branchme-panel.ts         # future simple TUI panel
+    └── branchme-panel.ts         # compact /branchme status panel renderer
 ```
 
-## Planned module boundaries
+## Module boundaries
 
-1. `src/extension.ts` remains intentionally small and only calls registration functions after implementation.
-2. `src/commands/branchme-command.ts` will parse `/branchme`, `/branchme help`, `--help`, and `-h`; it must stay informational only.
-3. `src/tools/branchme-tools.ts` will register `branch_status`, `create_branch`, `push_branch`, and `pull_request`.
-4. `src/git.ts` will own git command execution through `pi.exec("git", args)` and current-repository validation.
-5. `src/github.ts` will own process-env token resolution, current-repository GitHub resolution, REST calls, and token redaction.
-6. `src/types.ts` will keep tool details and helper result types serializable.
-7. `src/ui/branchme-panel.ts` will contain only the simple `/branchme` status/config/help panel if custom UI is needed.
+1. `src/extension.ts` stays small and only calls `registerBranchMeCommand(pi)` and `registerBranchMeTools(pi)`.
+2. `src/commands/branchme-command.ts` parses `/branchme`, `/branchme help`, `--help`, and `-h`; it never performs git or GitHub mutations.
+3. `src/tools/branchme-tools.ts` owns TypeBox schemas, prompt metadata, tool content, and safe structured details.
+4. `src/git.ts` owns current-repository git behavior: root detection, branch/upstream/status inspection, branch validation, branch creation, and current-branch push/publish.
+5. `src/github.ts` owns GitHub `owner/repo` parsing, repository boundary checks, `GITHUB_TOKEN`/`GH_TOKEN` resolution, PR REST calls, response validation, and redacted errors.
+6. `src/types.ts` keeps serializable details shared by helpers and tools.
+7. `src/ui/branchme-panel.ts` renders a compact status panel and clips lines to terminal width.
 
 ## Pi extension conventions
 
-- Do not start long-lived processes, file watchers, timers, sockets, or background jobs in the extension factory.
-- Keep action behavior in tools, not slash commands.
-- Use TypeBox schemas, descriptions, `promptSnippet`, and tool-specific `promptGuidelines` for every tool.
-- Every prompt guideline must name the tool it describes.
-- Use `StringEnum` from `@earendil-works/pi-ai` if future string enum schemas are needed.
-- Truncate unexpected large tool outputs and tell the agent when truncation happens.
-- Store branch-sensitive state in tool result `details` when possible.
-- Keep Pi core packages in `peerDependencies` with `"*"`.
+- No long-lived processes, watchers, timers, sockets, or background jobs start in the extension factory.
+- Slash commands are informational; tools perform branch, push, and PR actions.
+- Every tool uses a strict TypeBox object schema with `additionalProperties: false`.
+- Every tool defines a description, `promptSnippet`, and tool-specific `promptGuidelines` that explicitly name the tool.
+- Git commands use `pi.exec("git", args, { cwd: ctx.cwd, signal, timeout })` with argv arrays.
+- Tool details avoid token values and unbounded raw command/API output.
+- Pi core packages remain in `peerDependencies` with `"*"`.
 
-## Security-sensitive areas for implementation
+## Security-sensitive areas
 
-- Local git execution for branch creation, current branch push, and status inspection.
-- GitHub REST API calls for PR creation.
-- `GITHUB_TOKEN` / `GH_TOKEN` process-env token handling.
-- Current-repository boundary checks so PRs cannot be created for arbitrary owner/repo tool input.
-- No commit, staging, working-tree file mutation, telemetry, GitHub CLI dependency, or `.env` token loading in v1.
+- `create_branch` mutates local branch/HEAD only with `git switch -c`.
+- `push_branch` mutates remote refs only for the current branch.
+- `pull_request` makes a GitHub REST API call for the resolved current repository only.
+- `pull_request` reads `GITHUB_TOKEN` or `GH_TOKEN` from process environment only.
+- BranchMe does not stage, commit, edit files, read `.env`, depend on GitHub CLI, or collect telemetry.
 
-## Planning files
+## Documentation
 
-- `docs/PROJECT_DEFINITION_BRIEF.md` - approved preparation brief
-- `specs/spec-architecture.md` - architecture blueprint
-- `specs/spec-guidelines.md` - implementation rules
-- `specs/spec-tasks.md` - future task checklist; all checkboxes remain unchecked during preparation
+- `docs/PROJECT_DEFINITION_BRIEF.md` preserves the approved project definition.
+- `docs/STRUCTURE.md` describes the implemented source layout.
+- `docs/SMOKE_TEST.md` records isolated validation/smoke-test findings.
+- `docs/TUI_CAPTURE.md` stores deterministic text captures of BranchMe TUI/help surfaces for visual regression review.
+
+## Tests
+
+```text
+test/
+├── command.test.mjs      # /branchme parsing, help, fallback, panel width
+├── git.test.mjs          # git helper command construction and failures
+├── github.test.mjs       # GitHub parsing, token resolution, fetch wrapper, redaction
+├── preparation.test.mjs  # package/docs/source metadata checks
+├── tools.test.mjs        # extension registration, schemas, prompt metadata, tool behavior
+└── tui-capture.test.mjs  # generated text capture for TUI/help visual baselines
+```
+
+Validation commands:
+
+```bash
+npm run typecheck
+npm run test
+npm run check:pack
+npm run validate
+pi --no-extensions -e .
+```

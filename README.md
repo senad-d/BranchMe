@@ -9,92 +9,18 @@
 </p>
 
 <p align="center">
-  Current-repository branch and PR automation for <a href="https://pi.dev">pi</a>.
-  <br />Create a branch, push the current branch, and open a GitHub pull request from agent tools.
+  Current-repository branch and pull request tools for <a href="https://pi.dev">pi</a>.
 </p>
 
 ---
 
-BranchMe is a Pi extension project for focused git branch workflows. It is prepared to add tools that inspect the current repository, create a branch from `HEAD`, publish the current branch, and create a GitHub pull request without leaving pi.
+BranchMe is a minimal Pi extension for branch workflow automation. It adds one informational slash command and four agent-callable tools that inspect the current repository, create a branch from current `HEAD`, push the current branch, and create a GitHub pull request.
 
-> **Implementation status:** feature implementation is pending. The repository identity, docs, specs, and non-functional stubs are prepared; the planned `/branchme` command and BranchMe tools are not implemented yet.
-
-<table align="center">
-  <tr>
-    <th>BranchMe demo</th>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="img/demo.gif" alt="BranchMe demo: create a branch, push it, and open a pull request in pi" title="BranchMe demo" width="760">
-    </td>
-  </tr>
-</table>
-
-- **Current-repo only:** PR creation is planned to infer owner/repo from the checkout, not from tool arguments.
-- **Automation-friendly:** GitHub auth is planned through `GITHUB_TOKEN` or `GH_TOKEN`, including GitHub Actions.
-- **No commits:** BranchMe intentionally does not stage files, create commits, or generate commit messages.
-- **Pi-native:** planned `/branchme` help/config UI plus agent-callable tools.
-
-> **Security:** pi packages run with your full system permissions. BranchMe is planned to run local `git` commands, push the current branch, call the GitHub REST API, and read `GITHUB_TOKEN` or `GH_TOKEN` from the process environment. BranchMe is not planned to edit files, create commits, read `.env`, or send telemetry. Read [`SECURITY.md`](SECURITY.md).
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Planned Workflow](#planned-workflow)
-- [Commands](#commands)
-- [Agent Tools](#agent-tools)
-- [GitHub Authentication](#github-authentication)
-- [Current Repository Boundary](#current-repository-boundary)
-- [Troubleshooting](#troubleshooting)
-- [Implementation Specs](#implementation-specs)
-- [Update and Uninstall](#update-and-uninstall)
-- [Development](#development)
-- [Publishing](#publishing)
-- [License](#license)
-
----
-
-## Quick Start
-
-From this source checkout while implementation is pending:
-
-```bash
-npm install
-npm run validate
-pi --no-extensions -e .
-```
-
-After BranchMe is implemented and published, the planned install path is:
-
-```bash
-pi install npm:@senad-d/branchme
-cd /path/to/your/git/repo
-pi
-```
-
-Planned first commands inside pi:
-
-```text
-/branchme
-/branchme help
-```
-
-Branch actions will be performed through tools, not slash commands.
-
----
+BranchMe intentionally does **not** stage files, create commits, edit working-tree files, or generate commit messages.
 
 ## Installation
 
-| Scope | Command | Notes |
-| --- | --- | --- |
-| Global | `pi install npm:@senad-d/branchme` | Planned package install after release. |
-| Project-local | `pi install npm:@senad-d/branchme -l` | Planned `.pi/settings.json` project install after release. |
-| One run | `pi -e npm:@senad-d/branchme` | Planned try-without-install mode after release. |
-| Git | `pi install git:github.com/senad-d/branchme@<tag>` | Pin a tag or commit. |
-| Local checkout | `pi --no-extensions -e .` | Develop or test this repository in isolation. |
-
-Source checkout:
+From a local checkout:
 
 ```bash
 git clone https://github.com/senad-d/branchme.git
@@ -104,153 +30,129 @@ npm run validate
 pi --no-extensions -e .
 ```
 
-Use the checkout globally while developing:
+After package publication:
 
 ```bash
-pi install /absolute/path/to/branchme
+pi install npm:@senad-d/branchme
+cd /path/to/your/git/repo
+pi
 ```
 
----
+## Usage
 
-## Planned Workflow
+Inside Pi:
 
-BranchMe is designed to complement CommitMe or your normal git commit workflow:
+```text
+/branchme
+/branchme help
+```
 
-1. Use `branch_status` to inspect the current branch and repository state.
-2. Use `create_branch` with an explicit `branchName` to create and checkout a branch from current `HEAD`.
-3. Create commits outside BranchMe.
-4. Use `push_branch` to push the current branch, publishing it to `origin` if it has no upstream.
-5. Use `pull_request` with explicit PR fields to open a GitHub pull request.
+Slash commands are informational only. Ask the agent to use BranchMe tools for actions, for example:
 
-BranchMe intentionally avoids commit functionality because CommitMe already handles staging and commit-message creation.
+```text
+Use branch_status, then create a branch named feature/update-docs.
+Push the current branch with push_branch.
+Create a draft pull request from feature/update-docs to main titled "Update docs" with this body: "...".
+```
 
----
+## Command
 
-## Commands
+| Command | Behavior |
+| --- | --- |
+| `/branchme` | Shows a compact status panel/fallback with current branch, GitHub repository resolution, token presence, and workflow notes. |
+| `/branchme help`, `/branchme --help`, `/branchme -h` | Shows concise BranchMe workflow help. |
 
-| Command | Status | Description |
+The command never creates branches, pushes, commits, stages, edits files, or opens pull requests.
+
+## Tools
+
+| Tool | Schema | Behavior |
 | --- | --- | --- |
-| `/branchme` | Planned | Open a simple TUI config/status/help panel. No git or GitHub actions. |
-| `/branchme help` | Planned | Show workflow notes. `/branchme --help` and `/branchme -h` should also work. |
+| `branch_status` | `{}` | Read-only git status: repo root, current branch/detached state, upstream, dirty state, ahead/behind counts, and GitHub repository when resolvable. |
+| `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
+| `push_branch` | `{}` | Pushes the current branch with `git push`, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
+| `pull_request` | `{ "headBranch": string, "baseBranch": string, "title": string, "body": string, "draft": boolean }` | Creates a GitHub pull request in the resolved current repository via `POST /repos/{owner}/{repo}/pulls`. |
 
-Slash commands are informational only. Tools perform all branch, push, and PR actions.
+All schemas reject additional properties. `pull_request` never accepts `owner` or `repo`; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
 
----
+## Environment variables
 
-## Agent Tools
+`pull_request` reads tokens from the process environment only:
 
-| Tool | Status | Planned schema | Behavior |
-| --- | --- | --- | --- |
-| `branch_status` | Planned | `{}` | Read current repo, branch, upstream, dirty state, ahead/behind state, and GitHub repo info. |
-| `create_branch` | Planned | `{ branchName }` | Create and checkout `branchName` from current `HEAD`. |
-| `push_branch` | Planned | `{}` | Push the current branch; use `origin` and set upstream when needed. |
-| `pull_request` | Planned | `{ headBranch, baseBranch, title, body, draft }` | Create a PR in the current GitHub repository via REST API. |
+- `GITHUB_TOKEN` (preferred)
+- `GH_TOKEN` (fallback)
+- `GITHUB_REPOSITORY` (`owner/repo`, optional CI fallback and boundary check)
 
-All PR inputs are planned to be required. `pull_request` will not accept `owner` or `repo`; BranchMe must infer the repository from the current checkout and/or matching `GITHUB_REPOSITORY`.
+BranchMe does not read `.env` files and redacts token values from errors and tool details.
 
----
-
-## GitHub Authentication
-
-`pull_request` is planned to use process environment tokens only:
-
-- `GITHUB_TOKEN`
-- `GH_TOKEN`
-
-This keeps the tool usable in GitHub Actions and other automation. BranchMe is not planned to depend on GitHub CLI or read `.env` in v1.
-
-GitHub Actions example:
+## GitHub Actions example
 
 ```yaml
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+name: branchme-smoke
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  branchme:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+      - run: pi --no-extensions -e npm:@senad-d/branchme --help
 ```
 
----
+Use BranchMe from Pi prompts or automation that drives Pi with explicit tool calls. Ensure the token has permission to push branches and create pull requests.
 
-## Current Repository Boundary
+## Current repository boundary
 
-BranchMe is planned to operate only on the git repository where pi is running.
+BranchMe operates only on the repository where Pi is running:
 
-- `create_branch` creates from current `HEAD` only.
-- `push_branch` pushes the current branch only.
-- `pull_request` creates PRs for the resolved current GitHub repository only.
-- If local git metadata and `GITHUB_REPOSITORY` disagree, the implementation should fail closed.
-
----
-
-## Troubleshooting
-
-| Problem | Try |
-| --- | --- |
-| Tool says not a git repository | Start pi from inside a git checkout. |
-| PR auth fails | Set `GITHUB_TOKEN` or `GH_TOKEN` in the process environment. |
-| Repository cannot be resolved | Ensure `origin` points to GitHub or set matching `GITHUB_REPOSITORY=owner/repo`. |
-| Push fails without upstream | `push_branch` is planned to publish the current branch to `origin`; check remote permissions. |
-| Need a commit | Use CommitMe or normal git commands before `push_branch`; BranchMe does not commit. |
-| Other extensions interfere | Test with `pi --no-extensions -e .`. |
-
----
-
-## Implementation Specs
-
-Read these before implementing features:
-
-- [`docs/PROJECT_DEFINITION_BRIEF.md`](docs/PROJECT_DEFINITION_BRIEF.md)
-- [`specs/spec-architecture.md`](specs/spec-architecture.md)
-- [`specs/spec-guidelines.md`](specs/spec-guidelines.md)
-- [`specs/spec-tasks.md`](specs/spec-tasks.md)
-
-The task spec checkboxes must stay unchecked until a later implementation session completes and validates each task.
-
----
-
-## Update and Uninstall
-
-After package release:
-
-```bash
-pi update --extensions
-pi update npm:@senad-d/branchme
-pi remove npm:@senad-d/branchme
-pi remove npm:@senad-d/branchme -l
-```
-
----
+- Git commands use `pi.exec("git", args, { cwd: ctx.cwd })` with argv arrays.
+- `create_branch` creates from the current `HEAD` only and has no `baseRef` input.
+- `push_branch` pushes only the current branch and has no `branchName` input.
+- `pull_request` creates PRs only for the resolved current GitHub repository.
+- If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
 ## Development
 
 ```bash
 npm install
 npm run typecheck
-npm run lint
-npm run format:check
+npm run test
+npm run check:pack
 npm run validate
-```
-
-Useful local smoke test:
-
-```bash
 pi --no-extensions -e .
 ```
 
----
+Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md). Refresh TUI captures intentionally with `UPDATE_TUI_CAPTURE=1 node --test test/tui-capture.test.mjs`. `npm run check:pack` verifies the npm package does not include local state, specs, caches, `node_modules`, or environment files.
 
-## Publishing
+## Troubleshooting
 
-BranchMe is planned to publish to npm as `@senad-d/branchme`.
+| Problem | Try |
+| --- | --- |
+| Not a git repository | Start Pi from inside a git checkout. |
+| Detached HEAD | Checkout a branch before `create_branch` or `push_branch`. |
+| Branch already exists | Choose a new local branch name. |
+| PR auth fails | Set `GITHUB_TOKEN` or `GH_TOKEN`. |
+| Repository mismatch | Make `origin` and `GITHUB_REPOSITORY` refer to the same `owner/repo`. |
+| Need a commit | Use CommitMe or normal git commands; BranchMe never commits. |
+| Other extensions interfere | Test with `pi --no-extensions -e .`. |
 
-Do not publish until the planned tools and `/branchme` command are implemented, tested, documented, and the changelog is updated.
+## Security
 
-```bash
-npm login
-npm whoami
-npm run validate
-npm version <version>
-npm publish --access public
-```
-
-Run release commands only from a clean working tree.
+Pi extensions run with your local permissions. See [`SECURITY.md`](SECURITY.md) for BranchMe's git, network, token, and no-telemetry behavior.
 
 ## License
 

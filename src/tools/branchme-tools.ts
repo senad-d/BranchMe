@@ -1,8 +1,164 @@
-/**
- * Placeholder for future BranchMe tool registration.
- *
- * Planned tools: branch_status, create_branch, push_branch, pull_request.
- * Preparation-only note: this file intentionally registers no tools and
- * performs no git or GitHub actions.
- */
-export {};
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type, type Static } from "typebox";
+import {
+  BRANCH_STATUS_TOOL_NAME,
+  CREATE_BRANCH_TOOL_NAME,
+  PULL_REQUEST_TOOL_NAME,
+  PUSH_BRANCH_TOOL_NAME,
+} from "../constants.ts";
+import { createLocalBranch, getBranchStatus, pushCurrentBranch } from "../git.ts";
+import {
+  createGitHubPullRequest,
+  redactSecrets,
+  repositoryLabel,
+  resolveGitHubRepository,
+  resolveGitHubToken,
+} from "../github.ts";
+import type { BranchStatusDetails, PullRequestDetails } from "../types.ts";
+
+export const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
+
+export const CreateBranchParametersSchema = Type.Object(
+  {
+    branchName: Type.String({ minLength: 1, description: "Name of the new branch to create from current HEAD." }),
+  },
+  { additionalProperties: false },
+);
+
+export const PullRequestParametersSchema = Type.Object(
+  {
+    headBranch: Type.String({ minLength: 1, description: "Branch containing the pull request changes." }),
+    baseBranch: Type.String({ minLength: 1, description: "Target branch for the pull request." }),
+    title: Type.String({ minLength: 1, description: "Pull request title." }),
+    body: Type.String({ description: "Pull request body. Pass an empty string only when intentionally blank." }),
+    draft: Type.Boolean({ description: "Whether to create the pull request as a draft." }),
+  },
+  { additionalProperties: false },
+);
+
+export type CreateBranchParameters = Static<typeof CreateBranchParametersSchema>;
+export type PullRequestParameters = Static<typeof PullRequestParametersSchema>;
+
+export interface BranchMeToolOptions {
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: typeof fetch;
+}
+
+function repositoryText(details: BranchStatusDetails): string {
+  return details.githubRepository ? repositoryLabel(details.githubRepository) : "not resolved";
+}
+
+export function formatBranchStatus(details: BranchStatusDetails): string {
+  const branch = details.detached ? "detached HEAD" : details.currentBranch ?? "unknown branch";
+  const tree = details.hasChanges ? "dirty" : "clean";
+  const upstream = details.upstream ? `upstream ${details.upstream}` : "no upstream";
+  const counts = details.ahead === null || details.behind === null ? "ahead/behind unavailable" : `ahead ${details.ahead}, behind ${details.behind}`;
+  return `BranchMe status: ${branch}; ${tree}; ${upstream}; ${counts}; GitHub ${repositoryText(details)}.`;
+}
+
+export function formatPullRequest(details: PullRequestDetails): string {
+  return `Created pull request #${details.number} (${details.state}) for ${repositoryLabel(details.repository)}: ${details.url}`;
+}
+
+export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "exec">, options: BranchMeToolOptions = {}): void {
+  pi.registerTool({
+    name: BRANCH_STATUS_TOOL_NAME,
+    label: "Branch Status",
+    description: "branch_status inspects the current git repository, branch, upstream, dirty state, ahead/behind counts, and GitHub repository if available. branch_status is read-only.",
+    promptSnippet: "branch_status: inspect current-repository git branch status without mutating files or git state",
+    promptGuidelines: [
+      "Use branch_status before create_branch, push_branch, or pull_request when the user asks about the current branch state.",
+      "Use branch_status only for read-only inspection; branch_status never creates branches, pushes, commits, stages, or edits files.",
+    ],
+    parameters: EmptyParametersSchema,
+    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+      const details = await getBranchStatus(pi, ctx, signal);
+
+      try {
+        details.githubRepository = await resolveGitHubRepository(pi, ctx, signal, options.env);
+      } catch {
+        // Repository resolution is optional for branch_status; mutation tools fail closed.
+      }
+
+      return {
+        content: [{ type: "text", text: formatBranchStatus(details) }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: CREATE_BRANCH_TOOL_NAME,
+    label: "Create Branch",
+    description: "create_branch creates and checks out a new local branch from the current HEAD only. create_branch does not accept a base ref and never stages, commits, pushes, or edits files.",
+    promptSnippet: "create_branch: create and checkout a new branch from current HEAD using an explicit branchName",
+    promptGuidelines: [
+      "Use create_branch only when the user explicitly wants a new branch from current HEAD.",
+      "Use create_branch with only branchName; create_branch never accepts or infers baseRef, commits, stages, pushes, or edits files.",
+    ],
+    parameters: CreateBranchParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await createLocalBranch(pi, ctx, params.branchName, signal);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created and checked out branch ${details.newBranch} from ${details.previousBranch}.`,
+          },
+        ],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: PUSH_BRANCH_TOOL_NAME,
+    label: "Push Branch",
+    description: "push_branch pushes the current branch. If the current branch has no upstream, push_branch publishes it to origin with --set-upstream. push_branch never commits, stages, or edits files.",
+    promptSnippet: "push_branch: push or publish the current branch only, without committing or staging",
+    promptGuidelines: [
+      "Use push_branch only after commits already exist; push_branch never commits, stages, or edits files.",
+      "Use push_branch to push only the current branch; push_branch does not accept a branchName parameter.",
+    ],
+    parameters: EmptyParametersSchema,
+    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+      const details = await pushCurrentBranch(pi, ctx, signal);
+      const action = details.mode === "publish" ? "Published" : "Pushed";
+      return {
+        content: [{ type: "text", text: `${action} current branch ${details.currentBranch}.` }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: PULL_REQUEST_TOOL_NAME,
+    label: "Pull Request",
+    description: "pull_request creates a GitHub pull request in the resolved current repository. pull_request requires headBranch, baseBranch, title, body, and draft. Owner and repo are never accepted as inputs.",
+    promptSnippet: "pull_request: create a GitHub pull request in the current repository with all PR fields explicit",
+    promptGuidelines: [
+      "Use pull_request only when the user provides explicit headBranch, baseBranch, title, body, and draft values.",
+      "Use pull_request only for the resolved current repository; pull_request never accepts owner or repo parameters.",
+      "Use pull_request with GITHUB_TOKEN or GH_TOKEN from the process environment; pull_request must not expose token values.",
+    ],
+    parameters: PullRequestParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const repository = await resolveGitHubRepository(pi, ctx, signal, options.env);
+      const token = resolveGitHubToken(options.env).token;
+
+      try {
+        const details = await createGitHubPullRequest(repository, params, token, {
+          fetchImpl: options.fetchImpl,
+          signal,
+        });
+        return {
+          content: [{ type: "text", text: formatPullRequest(details) }],
+          details,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(redactSecrets(message, [token]));
+      }
+    },
+  });
+}
