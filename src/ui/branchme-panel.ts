@@ -188,7 +188,7 @@ function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): Pa
         workflowDetailRow("change_branch", "existing local"),
         workflowDetailRow("create_branch", "from HEAD"),
         workflowDetailRow("push_branch", "current branch"),
-        workflowDetailRow("pull_request", "current repo PR"),
+        workflowDetailRow("pull_request", "after push"),
       ];
   }
 }

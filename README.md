@@ -31,7 +31,7 @@ BranchMe is a Pi extension for safe branch workflow automation. It adds an infor
 - **Current-repository only:** Git and GitHub operations are scoped to the checkout where pi is running.
 - **Commit-safe:** BranchMe never stages files, creates commits, generates commit messages, rebases, merges, resets, or edits files directly.
 - **Strict tools:** tool schemas reject extra properties such as `force`, `stash`, `discard`, `owner`, `repo`, `path`, or `baseRef`.
-- **PR-ready:** create GitHub pull requests with explicit PR fields and `GITHUB_TOKEN` or `GH_TOKEN` from the process environment or a local `.env` fallback.
+- **PR-ready:** create GitHub pull requests from existing local branches after verifying the `headBranch` matches GitHub and the base is visible, with explicit PR fields and `GITHUB_TOKEN` or `GH_TOKEN` from the process environment or a local `.env` fallback.
 
 > **Security:** pi packages run with your full system permissions. BranchMe can run local `git` commands, switch/create branches, push the current branch, and call the GitHub REST API to create pull requests. Read [`SECURITY.md`](SECURITY.md).
 
@@ -81,7 +81,7 @@ A typical BranchMe flow is:
 2. Switch with `change_branch` or create from current `HEAD` with `create_branch`.
 3. Make edits and commit outside BranchMe.
 4. Push the current branch with `push_branch`.
-5. Create a GitHub pull request with `pull_request`.
+5. After `push_branch` completes and GitHub can see the branches, create a pull request with `pull_request`.
 
 BranchMe is tool-based. The slash command is informational only and never changes branches, pushes, commits, stages, edits files, or opens pull requests.
 
@@ -153,6 +153,7 @@ pi
 
 `push_branch` uses your normal Git remote credentials. BranchMe does not inject `GITHUB_TOKEN` into `git push`.
 When the current branch already has an upstream, BranchMe pushes an explicit `HEAD:<upstream-branch-ref>` refspec to the configured upstream remote instead of relying on a bare `git push`.
+Run `pull_request` only after `push_branch` has completed; `pull_request` preflights the GitHub `headBranch` and `baseBranch` before creating the PR and fails with retry guidance if a branch is not visible yet or the GitHub `headBranch` commit does not match the local branch.
 
 ---
 
@@ -181,7 +182,7 @@ If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_reque
 | `/branchme --help` | Alias for `/branchme help`. |
 | `/branchme -h` | Alias for `/branchme help`. |
 
-Commands are informational only. BranchMe actions are performed by agent-callable tools. `/branchme` uses the TUI panel in TUI mode, notifications in RPC mode, plain text only in print mode, and stays stdout-silent in JSON mode to avoid corrupting protocol output.
+Commands are informational only. BranchMe actions are performed by agent-callable tools. `/branchme` uses the TUI panel in TUI mode, notifications in RPC mode, plain text only in print mode, and stays stdout-silent in JSON mode to avoid corrupting protocol output. Unsupported non-empty `/branchme` arguments return guidance to use `/branchme help` where the current mode can display it safely.
 
 ---
 
@@ -193,7 +194,7 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | `change_branch` | `{ "branchName": string }` | Validates `branchName`, requires `refs/heads/<branchName>` to exist locally, rejects dirty worktrees, and runs `git switch <branchName>`. |
 | `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
 | `push_branch` | `{}` | Pushes the current branch to its configured upstream remote with an explicit `HEAD:<upstream-branch-ref>` refspec, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
-| `pull_request` | `{ "headBranch": string, "baseBranch": string, "title": string, "body": string, "draft": boolean }` | Creates a GitHub pull request in the resolved current repository via `POST /repos/{owner}/{repo}/pulls`; branch inputs must be local branch-name refs and cannot use `owner:branch`. |
+| `pull_request` | `{ "headBranch": string, "baseBranch": string, "title": string, "body": string, "draft": boolean }` | Preflights GitHub branch visibility and verifies the GitHub `headBranch` commit matches the local branch, then creates a pull request in the resolved current repository via `POST /repos/{owner}/{repo}/pulls`; branch refs must exist locally and cannot use `owner:branch`. |
 
 All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
 
@@ -207,7 +208,7 @@ Use BranchMe from pi prompts or automation that drives pi with explicit tool cal
 Use branch_status.
 Create branch feature/docs-refresh from the current HEAD with create_branch.
 Push the current branch with push_branch.
-Create a draft pull request from feature/docs-refresh to main titled "Refresh docs" with this body: "...".
+After push_branch completes, create a draft pull request from feature/docs-refresh to main titled "Refresh docs" with this body: "...".
 ```
 
 BranchMe operates only on the repository where pi is running:
@@ -216,7 +217,7 @@ BranchMe operates only on the repository where pi is running:
 - `change_branch` switches only to existing local branches and has no `force`, `stash`, `discard`, remote, or path input.
 - `create_branch` creates from the current `HEAD` only and has no `baseRef` input.
 - `push_branch` pushes only the current branch, uses no bare upstream `git push`, and has no `branchName` input.
-- `pull_request` creates PRs only for the resolved current GitHub repository and rejects `owner:branch` head refs.
+- `pull_request` creates PRs only for the resolved current GitHub repository, requires `headBranch` and `baseBranch` to exist locally, requires the GitHub `headBranch` commit to match the local branch, queues behind in-flight same-repository git mutation windows when possible, and rejects `owner:branch` head refs.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
 BranchMe intentionally does **not** stage files, create commits, force checkout, stash changes, discard changes, edit files directly, or generate commit messages.
@@ -268,6 +269,8 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | Dirty worktree before branch switch | Commit, stash, or discard changes outside BranchMe before using `change_branch`. |
 | Push fails | Confirm the current branch is correct and your normal Git remote credentials can push. |
 | PR auth fails | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi, or copy `.env.example` to `.env` and fill in one token. |
+| PR branch does not exist locally | Create or fetch/check out the local `headBranch` and `baseBranch` branches first; BranchMe does not use remote-only or cross-repository PR refs. |
+| PR branch is not visible or is stale on GitHub | Run `push_branch`, wait for it to complete, then retry `pull_request`; do not batch `push_branch` and `pull_request` in the same assistant tool call. |
 | Repository mismatch | Make `origin` and `GITHUB_REPOSITORY` refer to the same `owner/repo`. |
 | Need a commit | Use CommitMe or normal git commands; BranchMe never commits. |
 | Other extensions interfere | Test with `pi --no-extensions -e .`. |

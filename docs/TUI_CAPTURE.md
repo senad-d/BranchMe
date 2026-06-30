@@ -26,7 +26,7 @@ Commands only show info; BranchMe tools perform actions.
 2. `change_branch` / `create_branch` — switch to an existing clean branch or create one from `HEAD`.
 3. Commit outside BranchMe.
 4. `push_branch` — push the current branch.
-5. `pull_request` — open a PR in the current GitHub repo.
+5. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.
 
 ## Requirements
 
@@ -100,7 +100,7 @@ Width: 80
 │                     │  change_branch  -> existing local                      │
 │                     │  create_branch  -> from HEAD                           │
 │                     │  push_branch    -> current branch                      │
-│                     │  pull_request   -> current repo PR                     │
+│                     │  pull_request   -> after push                          │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
 │ 2/2 • workflow • inspect → change/create → push → PR                         │

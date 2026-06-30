@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { registerBranchMeCommand, getBranchMeHelpText, parseBranchMeArgs } from "../src/commands/branchme-command.ts";
+import {
+  formatUnsupportedBranchMeArgument,
+  getBranchMeHelpText,
+  parseBranchMeArgs,
+  registerBranchMeCommand,
+} from "../src/commands/branchme-command.ts";
 import { BranchMePanel, renderBranchMePanelLines } from "../src/ui/branchme-panel.ts";
 
 function result(overrides = {}) {
@@ -71,11 +79,48 @@ async function withCapturedConsoleLog(fn) {
   }
 }
 
-test("parseBranchMeArgs recognizes help aliases", () => {
+function branchStatusRoutes(repoRoot) {
+  return {
+    ["rev-parse\0--show-toplevel"]: { stdout: `${repoRoot}\n` },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main...origin/main\n" },
+    ["rev-list\0--left-right\0--count\0HEAD...@{u}"]: { stdout: "0\t0\n" },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+  };
+}
+
+async function withGitHubTokenEnvironment(env, fn) {
+  const previous = {
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+  };
+
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.GH_TOKEN;
+  if (env.GITHUB_TOKEN !== undefined) process.env.GITHUB_TOKEN = env.GITHUB_TOKEN;
+  if (env.GH_TOKEN !== undefined) process.env.GH_TOKEN = env.GH_TOKEN;
+
+  try {
+    await fn();
+  } finally {
+    if (previous.GITHUB_TOKEN === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = previous.GITHUB_TOKEN;
+
+    if (previous.GH_TOKEN === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = previous.GH_TOKEN;
+  }
+}
+
+test("parseBranchMeArgs recognizes help aliases and unsupported arguments", () => {
   assert.equal(parseBranchMeArgs(""), "panel");
+  assert.equal(parseBranchMeArgs("  "), "panel");
   assert.equal(parseBranchMeArgs("help"), "help");
+  assert.equal(parseBranchMeArgs("help\n/quit"), "help");
   assert.equal(parseBranchMeArgs("--help"), "help");
   assert.equal(parseBranchMeArgs("-h"), "help");
+  assert.equal(parseBranchMeArgs("hlep"), "unsupported");
+  assert.equal(formatUnsupportedBranchMeArgument('bad "arg"'), 'Unknown /branchme argument "bad \\"arg\\"". Use /branchme help.');
 });
 
 test("/branchme help returns concise workflow and requirements through UI modes", async () => {
@@ -114,6 +159,39 @@ test("/branchme help writes only in print mode when no UI is available", async (
     await pi.commands[0].options.handler("help", makeContext({ mode: "json", hasUI: false }));
     assert.deepEqual(logs, []);
   });
+});
+
+test("/branchme unsupported arguments return mode-safe guidance without opening the panel", async () => {
+  for (const mode of ["tui", "rpc"]) {
+    const pi = makePi();
+    registerBranchMeCommand(pi);
+    const ctx = makeContext({ mode, hasUI: true });
+
+    await withCapturedConsoleLog(async (logs) => {
+      await pi.commands[0].options.handler("hlep", ctx);
+      assert.deepEqual(logs, []);
+    });
+
+    assert.deepEqual(ctx.notifications, [{ message: 'Unknown /branchme argument "hlep". Use /branchme help.', level: "warning" }]);
+    assert.equal(ctx.customCalls.length, 0);
+    assert.equal(pi.calls.length, 0);
+  }
+
+  const printPi = makePi();
+  registerBranchMeCommand(printPi);
+  await withCapturedConsoleLog(async (logs) => {
+    await printPi.commands[0].options.handler("status", makeContext({ mode: "print", hasUI: false }));
+    assert.deepEqual(logs, ['Unknown /branchme argument "status". Use /branchme help.']);
+  });
+  assert.equal(printPi.calls.length, 0);
+
+  const jsonPi = makePi();
+  registerBranchMeCommand(jsonPi);
+  await withCapturedConsoleLog(async (logs) => {
+    await jsonPi.commands[0].options.handler("status", makeContext({ mode: "json", hasUI: false }));
+    assert.deepEqual(logs, []);
+  });
+  assert.equal(jsonPi.calls.length, 0);
 });
 
 test("/branchme fallback uses read-only git status and no mutation commands", async () => {
@@ -180,6 +258,76 @@ test("/branchme print mode writes fallback text and JSON mode stays stdout-silen
     await jsonPi.commands[0].options.handler("", makeContext({ mode: "json", hasUI: false }));
     assert.deepEqual(logs, []);
   });
+});
+
+test("/branchme does not read local token files outside verified git roots", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "branchme-command-nongit-"));
+  try {
+    await writeFile(join(cwd, ".env"), "GITHUB_TOKEN=ghp_filetoken_from_wrong_directory\n", "utf8");
+    await withGitHubTokenEnvironment({}, async () => {
+      const pi = makePi({
+        ["rev-parse\0--show-toplevel"]: { code: 128, stderr: "fatal: not a git repository\n" },
+      });
+      registerBranchMeCommand(pi);
+
+      await withCapturedConsoleLog(async (logs) => {
+        await pi.commands[0].options.handler("", makeContext({ cwd, mode: "print", hasUI: false }));
+        assert.equal(logs.length, 1);
+        assert.match(logs[0], /token not set/);
+        assert.doesNotMatch(logs[0], /token present|\.env/);
+      });
+    });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("/branchme reports process token presence outside git roots", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "branchme-command-envtoken-"));
+  try {
+    await writeFile(join(cwd, ".env"), "GH_TOKEN=ghp_filetoken_from_wrong_directory\n", "utf8");
+    await withGitHubTokenEnvironment({ GITHUB_TOKEN: "ghp_process_token" }, async () => {
+      const pi = makePi({
+        ["rev-parse\0--show-toplevel"]: { code: 128, stderr: "fatal: not a git repository\n" },
+      });
+      registerBranchMeCommand(pi);
+
+      await withCapturedConsoleLog(async (logs) => {
+        await pi.commands[0].options.handler("", makeContext({ cwd, mode: "print", hasUI: false }));
+        assert.equal(logs.length, 1);
+        assert.match(logs[0], /token present \(GITHUB_TOKEN\)/);
+        assert.doesNotMatch(logs[0], /\.env/);
+      });
+    });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("/branchme reads token fallback from verified git roots only", async () => {
+  const repoRoot = await mkdtemp(join(tmpdir(), "branchme-command-repo-"));
+  const subdir = join(repoRoot, "nested");
+  try {
+    await mkdir(subdir);
+    await writeFile(join(repoRoot, ".env"), "GH_TOKEN=ghp_verified_repo_root\n", "utf8");
+    await writeFile(join(subdir, ".env"), "GITHUB_TOKEN=ghp_unverified_subdir\n", "utf8");
+
+    await withGitHubTokenEnvironment({}, async () => {
+      for (const cwd of [repoRoot, subdir]) {
+        const pi = makePi(branchStatusRoutes(repoRoot));
+        registerBranchMeCommand(pi);
+
+        await withCapturedConsoleLog(async (logs) => {
+          await pi.commands[0].options.handler("", makeContext({ cwd, mode: "print", hasUI: false }));
+          assert.equal(logs.length, 1);
+          assert.match(logs[0], /token present \(GH_TOKEN \(\.env\)\)/);
+          assert.doesNotMatch(logs[0], /GITHUB_TOKEN \(\.env\)/);
+        });
+      }
+    });
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
 });
 
 function stripAnsi(value) {

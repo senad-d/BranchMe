@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   createGitHubPullRequest,
+  ensureGitHubBranchExists,
   parseGitHubRepository,
   redactSecrets,
   resolveGitHubRepository,
@@ -166,6 +167,39 @@ test("validatePullRequestBranchRef accepts local branch names and rejects cross-
   }
 });
 
+test("ensureGitHubBranchExists checks encoded branch refs and returns push guidance on 404", async () => {
+  const commitSha = "a".repeat(40);
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    const payload = requests.length === 1 ? { name: "feature/current", commit: { sha: commitSha } } : { message: "missing ghp_secret123" };
+    return new Response(JSON.stringify(payload), {
+      status: requests.length === 1 ? 200 : 404,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const details = await ensureGitHubBranchExists(
+    { owner: "senad-d", repo: "branchme" },
+    "feature/current",
+    "headBranch",
+    "ghp_secret123",
+    { fetchImpl },
+  );
+  assert.deepEqual(details, { name: "feature/current", commitSha });
+  assert.equal(requests[0].url, "https://api.github.com/repos/senad-d/branchme/branches/feature%2Fcurrent");
+  assert.equal(requests[0].init.headers.Authorization, "Bearer ghp_secret123");
+
+  await assert.rejects(
+    () => ensureGitHubBranchExists({ owner: "senad-d", repo: "branchme" }, "feature/missing", "headBranch", "ghp_secret123", { fetchImpl }),
+    (error) =>
+      error instanceof Error &&
+      /Run push_branch and wait for it to complete before calling pull_request/i.test(error.message) &&
+      !/secret123/u.test(error.message),
+  );
+  assert.equal(requests[1].url, "https://api.github.com/repos/senad-d/branchme/branches/feature%2Fmissing");
+});
+
 test("createGitHubPullRequest rejects owner-prefixed head branches before fetch", async () => {
   let called = false;
   const fetchImpl = async () => {
@@ -184,6 +218,40 @@ test("createGitHubPullRequest rejects owner-prefixed head branches before fetch"
     /owner-prefixed|cross-repository|:/i,
   );
   assert.equal(called, false);
+});
+
+test("createGitHubPullRequest validates repository owner and repo before fetch", async () => {
+  const invalidRepositories = [
+    [{ owner: "", repo: "branchme" }, /owner is required/i],
+    [{ owner: "senad-d/extra", repo: "branchme" }, /owner must be a single path segment/i],
+    [{ owner: "senad-d", repo: "branchme/extra" }, /repo must be a single path segment/i],
+    [{ owner: "senad-d\\evil", repo: "branchme" }, /owner must be a single path segment/i],
+    [{ owner: ".", repo: "branchme" }, /owner cannot be a dot segment/i],
+    [{ owner: "senad-d", repo: ".." }, /repo cannot be a dot segment/i],
+    [{ owner: "senad d", repo: "branchme" }, /owner cannot contain whitespace/i],
+    [{ owner: "senad-d", repo: "branchme\nnext" }, /repo cannot contain control characters/i],
+    [{ owner: "senad-d", repo: "branchme?query" }, /repo contains unsupported characters/i],
+  ];
+
+  for (const [repository, messagePattern] of invalidRepositories) {
+    let called = false;
+    const fetchImpl = async () => {
+      called = true;
+      throw new Error("fetch should not be called");
+    };
+
+    await assert.rejects(
+      () =>
+        createGitHubPullRequest(
+          repository,
+          { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "", draft: false },
+          "ghp_secret123",
+          { fetchImpl },
+        ),
+      (error) => error instanceof Error && messagePattern.test(error.message) && !/secret123/u.test(error.message),
+    );
+    assert.equal(called, false, `${repository.owner}/${repository.repo} should fail before fetch`);
+  }
 });
 
 test("createGitHubPullRequest sends expected request and parses response", async () => {

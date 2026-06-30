@@ -4,12 +4,21 @@ import { getBranchStatus } from "../git.ts";
 import { repositoryLabel, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
 import { BranchMePanel, type BranchMePanelData } from "../ui/branchme-panel.ts";
 
-export type BranchMeCommandMode = "panel" | "help";
+export type BranchMeCommandMode = "panel" | "help" | "unsupported";
+
+function firstBranchMeArgumentLine(args: string): string {
+  return args.split(/\r?\n/u, 1)[0] ?? "";
+}
 
 export function parseBranchMeArgs(args: string): BranchMeCommandMode {
-  const normalized = args.trim().toLowerCase();
+  const normalized = firstBranchMeArgumentLine(args).trim().toLowerCase();
+  if (!normalized) return "panel";
   if (normalized === "help" || normalized === "--help" || normalized === "-h") return "help";
-  return "panel";
+  return "unsupported";
+}
+
+export function formatUnsupportedBranchMeArgument(args: string): string {
+  return `Unknown /branchme argument ${JSON.stringify(firstBranchMeArgumentLine(args).trim())}. Use /branchme help.`;
 }
 
 export function getBranchMeHelpText(): string {
@@ -26,7 +35,7 @@ export function getBranchMeHelpText(): string {
     "2. `change_branch` / `create_branch` — switch to an existing clean branch or create one from `HEAD`.",
     "3. Commit outside BranchMe.",
     "4. `push_branch` — push the current branch.",
-    "5. `pull_request` — open a PR in the current GitHub repo.",
+    "5. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.",
     "",
     "## Requirements",
     "",
@@ -58,7 +67,7 @@ async function collectPanelData(
     tokenSource: null,
   };
 
-  let tokenLookupCwd = ctx.cwd;
+  let tokenLookupCwd: string | undefined;
   try {
     const status = await getBranchStatus(pi, ctx, ctx.signal);
     data.currentBranch = status.currentBranch;
@@ -107,6 +116,10 @@ export function registerBranchMeCommand(pi: Pick<ExtensionAPI, "registerCommand"
       const mode = parseBranchMeArgs(args);
       if (mode === "help") {
         emitCommandMessage(ctx, getBranchMeHelpText(), "info");
+        return;
+      }
+      if (mode === "unsupported") {
+        emitCommandMessage(ctx, formatUnsupportedBranchMeArgument(args), "warning");
         return;
       }
 

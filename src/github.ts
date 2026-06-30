@@ -33,17 +33,42 @@ export interface PullRequestFetchOptions {
   signal?: AbortSignal;
 }
 
+export interface GitHubBranchDetails {
+  name: string;
+  commitSha: string;
+}
+
 function stripGitSuffix(repo: string): string {
   return repo.endsWith(".git") ? repo.slice(0, -4) : repo;
+}
+
+function requireRepositorySegment(value: unknown, field: "owner" | "repo"): string {
+  if (typeof value !== "string") throw new Error(`GitHub repository ${field} must be a string.`);
+  if (!value) throw new Error(`GitHub repository ${field} is required.`);
+  if (value !== value.trim()) throw new Error(`GitHub repository ${field} cannot start or end with whitespace.`);
+  if (/[/\\]/u.test(value)) throw new Error(`GitHub repository ${field} must be a single path segment.`);
+  if (value === "." || value === "..") throw new Error(`GitHub repository ${field} cannot be a dot segment.`);
+  if (/[\u0000-\u001f\u007f]/u.test(value)) throw new Error(`GitHub repository ${field} cannot contain control characters.`);
+  if (/\s/u.test(value)) throw new Error(`GitHub repository ${field} cannot contain whitespace.`);
+  if (!/^[A-Za-z0-9._-]+$/u.test(value)) throw new Error(`GitHub repository ${field} contains unsupported characters.`);
+  return value;
+}
+
+export function validateGitHubRepository(repository: GitHubRepository): void {
+  if (!isRecord(repository)) throw new Error("GitHub repository must be an object.");
+  requireRepositorySegment(repository.owner, "owner");
+  requireRepositorySegment(repository.repo, "repo");
 }
 
 function normalizeRepository(owner: string, repo: string): GitHubRepository | null {
   const normalizedOwner = owner.trim();
   const normalizedRepo = stripGitSuffix(repo.trim());
-  if (!normalizedOwner || !normalizedRepo) return null;
-  if (/[\s\\]/u.test(normalizedOwner) || /[\s\\]/u.test(normalizedRepo)) return null;
-  if (normalizedOwner === "." || normalizedOwner === "..") return null;
-  if (normalizedRepo === "." || normalizedRepo === "..") return null;
+  try {
+    requireRepositorySegment(normalizedOwner, "owner");
+    requireRepositorySegment(normalizedRepo, "repo");
+  } catch {
+    return null;
+  }
   return { owner: normalizedOwner, repo: normalizedRepo };
 }
 
@@ -261,7 +286,7 @@ function truncate(value: string): string {
 export { redactSecrets } from "./redaction.ts";
 
 function encodePathSegment(value: string): string {
-  return encodeURIComponent(value).replace(/%2F/giu, "/");
+  return encodeURIComponent(value);
 }
 
 function requireStringRef(value: unknown, field: "headBranch" | "baseBranch"): string {
@@ -357,12 +382,101 @@ async function readBoundedResponseText(response: Response, signal: AbortSignal |
   return { text: truncated ? `${text}… [truncated]` : text, truncated };
 }
 
+function gitHubJsonHeaders(token: string): Record<string, string> {
+  return {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "User-Agent": GITHUB_USER_AGENT,
+    "X-GitHub-Api-Version": GITHUB_API_VERSION,
+  };
+}
+
+export async function ensureGitHubBranchExists(
+  repository: GitHubRepository,
+  branchName: string,
+  field: "headBranch" | "baseBranch",
+  token: string,
+  options: PullRequestFetchOptions = {},
+): Promise<GitHubBranchDetails> {
+  validateGitHubRepository(repository);
+  validatePullRequestBranchRef(branchName, field);
+
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable in this Node.js runtime.");
+
+  const branchLabel = redactSecrets(branchName);
+  const url = `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/branches/${encodePathSegment(branchName)}`;
+
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method: "GET",
+      headers: gitHubJsonHeaders(token),
+      signal: options.signal,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`GitHub branch preflight request failed for ${field} '${branchLabel}': ${redactSecrets(message, [token])}`);
+  }
+
+  if (response.ok) {
+    let body: BoundedResponseBody;
+    try {
+      body = await readBoundedResponseText(response, options.signal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`GitHub branch preflight response for ${field} '${branchLabel}' could not be read: ${redactSecrets(message, [token])}`);
+    }
+
+    if (body.truncated) throw new Error(`GitHub branch preflight response exceeded the ${GITHUB_RESPONSE_BODY_LIMIT_BYTES} byte limit.`);
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(body.text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`GitHub branch preflight response was not valid JSON: ${redactSecrets(message, [token])}`);
+    }
+
+    if (!isRecord(payload)) throw new Error("GitHub branch preflight response was not an object.");
+    const commit = isRecord(payload.commit) ? stringField(payload.commit.sha, "commit.sha") : "";
+    if (!/^[0-9a-f]{40,64}$/iu.test(commit)) throw new Error("GitHub branch preflight response is missing commit.sha.");
+
+    return {
+      name: typeof payload.name === "string" && payload.name ? payload.name : branchName,
+      commitSha: commit,
+    };
+  }
+
+  let body: BoundedResponseBody;
+  try {
+    body = await readBoundedResponseText(response, options.signal);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `GitHub branch preflight failed for ${field} '${branchLabel}' with HTTP ${response.status}: unable to read error response: ${redactSecrets(message, [token])}`,
+    );
+  }
+
+  if (response.status === 404) {
+    throw new Error(
+      `${field} branch '${branchLabel}' is not visible in ${repositoryLabel(repository)} on GitHub. Run push_branch and wait for it to complete before calling pull_request, then retry.`,
+    );
+  }
+
+  throw new Error(
+    `GitHub branch preflight failed for ${field} '${branchLabel}' with HTTP ${response.status}: ${redactSecrets(truncate(body.text), [token])}`,
+  );
+}
+
 export async function createGitHubPullRequest(
   repository: GitHubRepository,
   input: PullRequestInput,
   token: string,
   options: PullRequestFetchOptions = {},
 ): Promise<PullRequestDetails> {
+  validateGitHubRepository(repository);
   validatePullRequestInput(input);
 
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
@@ -381,13 +495,7 @@ export async function createGitHubPullRequest(
   try {
     response = await fetchImpl(url, {
       method: "POST",
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "User-Agent": GITHUB_USER_AGENT,
-        "X-GitHub-Api-Version": GITHUB_API_VERSION,
-      },
+      headers: gitHubJsonHeaders(token),
       body: JSON.stringify(requestBody),
       signal: options.signal,
     });

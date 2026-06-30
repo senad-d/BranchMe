@@ -19,17 +19,19 @@ Implemented git mutations are limited to:
 - `create_branch`: `git switch -c <branchName>` from current `HEAD` after branch-name validation and existing-branch checks.
 - `push_branch`: `git push <upstreamRemote> HEAD:<upstreamBranchRef>` for the current branch when an upstream exists, or `git push --set-upstream origin <currentBranch>` when no upstream exists.
 
-Branch switching can update working-tree files as normal Git checkout behavior. Mutating branch operations for the same repository are serialized to avoid same-turn branch races. BranchMe rejects dirty worktrees before `change_branch` and does not force checkout, stash, stage files, create commits, reset, rebase, merge, or edit files directly.
+Branch switching can update working-tree files as normal Git checkout behavior. Mutating branch operations for the same repository are serialized to avoid same-turn branch races. `pull_request` also uses the same repository queue around PR preflight and creation so it can wait behind an already-started same-repository push. BranchMe rejects dirty worktrees before `change_branch` and does not force checkout, stash, stage files, create commits, reset, rebase, merge, or edit files directly.
 
 ## Network behavior
 
 BranchMe makes network requests only for `pull_request`, which calls the GitHub REST API:
 
 ```text
+GET  https://api.github.com/repos/{owner}/{repo}/branches/{headBranch}
+GET  https://api.github.com/repos/{owner}/{repo}/branches/{baseBranch}
 POST https://api.github.com/repos/{owner}/{repo}/pulls
 ```
 
-The request body contains only the explicit PR fields supplied to the tool: title, head branch, base branch, body, and draft flag.
+The branch preflight requests have no body. BranchMe uses the `headBranch` preflight response to compare GitHub's branch commit with the local branch commit before creating the PR. The PR request body contains only the explicit PR fields supplied to the tool: title, head branch, base branch, body, and draft flag.
 
 ## Repository boundary
 
@@ -39,7 +41,8 @@ BranchMe operates on the current repository only.
 - Tool inputs never accept filesystem paths, `owner`, `repo`, or owner-prefixed `owner:branch` PR refs.
 - `change_branch` accepts only `branchName` and never creates branches, checks out remote branches, forces, stashes, or discards changes.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, PR creation fails closed.
-- PR branch inputs are validated as local branch-name refs; cross-repository `head` values are rejected before any GitHub request.
+- PR branch inputs are validated as existing local branch-name refs; missing local branches and cross-repository `head` values are rejected before token lookup or any GitHub request.
+- PR branch inputs must also be visible on GitHub before the PR is created, and `headBranch` must match the local branch commit; unpublished or stale `headBranch` values fail with guidance to run `push_branch`, wait for it to complete, and retry `pull_request`.
 
 ## Credentials
 

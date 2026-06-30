@@ -15,8 +15,40 @@ import {
 } from "../src/constants.ts";
 import { registerBranchMeTools } from "../src/tools/branchme-tools.ts";
 
+const LOCAL_HEAD_SHA = "a".repeat(40);
+const REMOTE_BASE_SHA = "b".repeat(40);
+const STALE_REMOTE_HEAD_SHA = "c".repeat(40);
+
 function result(overrides = {}) {
   return { stdout: "", stderr: "", code: 0, killed: false, ...overrides };
+}
+
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+function branchPayload(sha = LOCAL_HEAD_SHA) {
+  return { name: "branch", commit: { sha } };
+}
+
+function pullRequestPayload(overrides = {}) {
+  return {
+    number: 7,
+    html_url: "https://github.com/senad-d/branchme/pull/7",
+    state: "open",
+    draft: false,
+    head: { ref: "feature/current" },
+    base: { ref: "main" },
+    ...overrides,
+  };
 }
 
 function makePi(routes = {}) {
@@ -295,6 +327,7 @@ test("pull_request has required strict schema and rejects repository parameters"
   assert.equal("owner" in tool.parameters.properties, false);
   assert.equal("repo" in tool.parameters.properties, false);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(PULL_REQUEST_TOOL_NAME)));
+  assert.ok(tool.promptGuidelines.some((guideline) => /push_branch.*completed/i.test(guideline)));
 });
 
 test("pull_request rejects cross-repository and unsafe branch refs before creating a request", async () => {
@@ -305,7 +338,6 @@ test("pull_request rejects cross-repository and unsafe branch refs before creati
   };
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
-    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
   });
   registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
   const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
@@ -323,26 +355,270 @@ test("pull_request rejects cross-repository and unsafe branch refs before creati
   );
 
   assert.equal(called, false);
+  assert.equal(pi.calls.some((call) => call.args[0] === "remote"), false);
+});
+
+test("pull_request rejects missing local branch refs before repository, token, or fetch work", async () => {
+  let called = false;
+  const fetchImpl = async () => {
+    called = true;
+    throw new Error("fetch should not be called");
+  };
+
+  const missingHeadPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/missing"]: { code: 1 },
+  });
+  registerBranchMeTools(missingHeadPi, { env: {}, fetchImpl });
+  const missingHeadTool = toolByName(missingHeadPi, PULL_REQUEST_TOOL_NAME);
+
+  await assert.rejects(
+    () =>
+      missingHeadTool.execute(
+        "call-pr-missing-head",
+        { headBranch: "feature/missing", baseBranch: "main", title: "Title", body: "", draft: false },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    /headBranch local branch 'feature\/missing' does not exist/i,
+  );
+  assert.equal(missingHeadPi.calls.some((call) => call.args[0] === "remote"), false);
+
+  const missingBasePi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/current"]: { code: 0 },
+    ["show-ref\0--verify\0--quiet\0refs/heads/release/v1"]: { code: 1 },
+  });
+  registerBranchMeTools(missingBasePi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
+  const missingBaseTool = toolByName(missingBasePi, PULL_REQUEST_TOOL_NAME);
+
+  await assert.rejects(
+    () =>
+      missingBaseTool.execute(
+        "call-pr-missing-base",
+        { headBranch: "feature/current", baseBranch: "release/v1", title: "Title", body: "", draft: false },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    /baseBranch local branch 'release\/v1' does not exist/i,
+  );
+  assert.equal(missingBasePi.calls.some((call) => call.args[0] === "remote"), false);
+  assert.equal(called, false);
+});
+
+test("pull_request rejects GitHub-invisible branches before creating a pull request", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse({ message: "Not Found" }, 404);
+  };
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/unpublished"]: { code: 0 },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+  });
+  registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
+  const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+  await assert.rejects(
+    () =>
+      tool.execute(
+        "call-pr-unpublished",
+        { headBranch: "feature/unpublished", baseBranch: "main", title: "Title", body: "", draft: false },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    /Run push_branch and wait for it to complete before calling pull_request/i,
+  );
+
+  assert.deepEqual(requests.map((request) => [request.init.method, request.url]), [
+    ["GET", "https://api.github.com/repos/senad-d/branchme/branches/feature%2Funpublished"],
+  ]);
+});
+
+test("pull_request rejects a GitHub-visible head branch that does not match the local commit", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    if (url.endsWith("/branches/feature%2Fstale")) return jsonResponse(branchPayload(STALE_REMOTE_HEAD_SHA));
+    if (init.method === "GET") return jsonResponse(branchPayload(REMOTE_BASE_SHA));
+    throw new Error("pull request POST should not run when headBranch is stale");
+  };
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/stale"]: { code: 0 },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+    ["rev-parse\0--verify\0refs/heads/feature/stale^{commit}"]: { stdout: `${LOCAL_HEAD_SHA}\n` },
+  });
+  registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
+  const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+  await assert.rejects(
+    () =>
+      tool.execute(
+        "call-pr-stale",
+        { headBranch: "feature/stale", baseBranch: "main", title: "Title", body: "", draft: false },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    /points to .* but GitHub has .*Run push_branch and wait/i,
+  );
+
+  assert.deepEqual(requests.map((request) => [request.init.method, request.url]), [
+    ["GET", "https://api.github.com/repos/senad-d/branchme/branches/feature%2Fstale"],
+  ]);
+  assert.equal(requests.some((request) => request.init.method === "POST"), false);
+});
+
+test("pull_request queues behind an in-flight push_branch for the same repository", async () => {
+  const events = [];
+  const pushStarted = deferred();
+  const releasePush = deferred();
+  const pi = {
+    tools: [],
+    registerTool(tool) {
+      this.tools.push(tool);
+    },
+    async exec(command, args, options) {
+      assert.equal(command, "git");
+      assert.ok(Array.isArray(args));
+      assert.equal(options.cwd, "/repo");
+      const key = args.join("\0");
+      events.push(`git:${key}`);
+
+      if (key === "rev-parse\0--show-toplevel") return result({ stdout: "/repo\n" });
+      if (key === "symbolic-ref\0--quiet\0--short\0HEAD") return result({ stdout: "feature/current\n" });
+      if (key === "rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}") return result({ code: 1, stderr: "no upstream\n" });
+      if (key === "push\0--set-upstream\0origin\0feature/current") {
+        events.push("push:start");
+        pushStarted.resolve();
+        await releasePush.promise;
+        events.push("push:end");
+        return result({ stdout: "published\n" });
+      }
+      if (key === "show-ref\0--verify\0--quiet\0refs/heads/feature/current") return result({ code: 0 });
+      if (key === "show-ref\0--verify\0--quiet\0refs/heads/main") return result({ code: 0 });
+      if (key === "rev-parse\0--verify\0refs/heads/feature/current^{commit}") return result({ stdout: `${LOCAL_HEAD_SHA}\n` });
+      if (key === "remote\0get-url\0origin") return result({ stdout: "https://github.com/senad-d/branchme.git\n" });
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    },
+  };
+  const fetchImpl = async (url, init) => {
+    events.push(`fetch:${init.method}:${url}`);
+    if (init.method === "GET") return jsonResponse(branchPayload());
+    return jsonResponse(pullRequestPayload(), 201);
+  };
+  registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
+  const pushTool = toolByName(pi, PUSH_BRANCH_TOOL_NAME);
+  const pullRequestTool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+  const pushPromise = pushTool.execute("call-push-race", {}, undefined, undefined, ctx);
+  await pushStarted.promise;
+
+  const pullRequestPromise = pullRequestTool.execute(
+    "call-pr-race",
+    { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "Body", draft: false },
+    undefined,
+    undefined,
+    ctx,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.some((event) => event.startsWith("fetch:")), false);
+
+  releasePush.resolve();
+  const [pushOutput, pullRequestOutput] = await Promise.all([pushPromise, pullRequestPromise]);
+
+  assert.equal(pushOutput.details.mode, "publish");
+  assert.equal(pullRequestOutput.details.number, 7);
+  assert.ok(events.findIndex((event) => event === "push:end") < events.findIndex((event) => event.startsWith("fetch:")));
+});
+
+test("same-batch pull_request before push_branch fails early with retry guidance", async () => {
+  const events = [];
+  const branchCheckStarted = deferred();
+  const releaseBranchCheck = deferred();
+  const pi = {
+    tools: [],
+    registerTool(tool) {
+      this.tools.push(tool);
+    },
+    async exec(command, args, options) {
+      assert.equal(command, "git");
+      assert.ok(Array.isArray(args));
+      assert.equal(options.cwd, "/repo");
+      const key = args.join("\0");
+      events.push(`git:${key}`);
+
+      if (key === "rev-parse\0--show-toplevel") return result({ stdout: "/repo\n" });
+      if (key === "show-ref\0--verify\0--quiet\0refs/heads/feature/current") return result({ code: 0 });
+      if (key === "show-ref\0--verify\0--quiet\0refs/heads/main") return result({ code: 0 });
+      if (key === "remote\0get-url\0origin") return result({ stdout: "https://github.com/senad-d/branchme.git\n" });
+      if (key === "symbolic-ref\0--quiet\0--short\0HEAD") return result({ stdout: "feature/current\n" });
+      if (key === "rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}") return result({ code: 1, stderr: "no upstream\n" });
+      if (key === "push\0--set-upstream\0origin\0feature/current") return result({ stdout: "published\n" });
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    },
+  };
+  const fetchImpl = async (url, init) => {
+    events.push(`fetch:${init.method}:${url}`);
+    if (url.endsWith("/branches/feature%2Fcurrent")) {
+      branchCheckStarted.resolve();
+      await releaseBranchCheck.promise;
+      return jsonResponse({ message: "Not Found" }, 404);
+    }
+    if (init.method === "GET") return jsonResponse(branchPayload());
+    throw new Error("pull request POST should not run before branch preflight succeeds");
+  };
+  registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
+  const pullRequestTool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+  const pushTool = toolByName(pi, PUSH_BRANCH_TOOL_NAME);
+
+  const pullRequestPromise = pullRequestTool
+    .execute(
+      "call-pr-first",
+      { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "Body", draft: false },
+      undefined,
+      undefined,
+      ctx,
+    )
+    .then(
+      () => null,
+      (error) => error,
+    );
+  await branchCheckStarted.promise;
+
+  const pushPromise = pushTool.execute("call-push-second", {}, undefined, undefined, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.some((event) => event === "git:push\0--set-upstream\0origin\0feature/current"), false);
+
+  releaseBranchCheck.resolve();
+  const error = await pullRequestPromise;
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /Run push_branch and wait for it to complete before calling pull_request/i);
+
+  const pushOutput = await pushPromise;
+  assert.equal(pushOutput.details.mode, "publish");
+  assert.equal(events.some((event) => event.startsWith("fetch:POST")), false);
 });
 
 test("pull_request creates a PR in the resolved current repository without leaking token details", async () => {
   const requests = [];
   const fetchImpl = async (url, init) => {
     requests.push({ url, init });
-    return new Response(
-      JSON.stringify({
-        number: 7,
-        html_url: "https://github.com/senad-d/branchme/pull/7",
-        state: "open",
-        draft: false,
-        head: { ref: "feature/current" },
-        base: { ref: "main" },
-      }),
-      { status: 201, headers: { "content-type": "application/json" } },
-    );
+    if (init.method === "GET") return jsonResponse(branchPayload());
+    return jsonResponse(pullRequestPayload(), 201);
   };
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/current"]: { code: 0 },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+    ["rev-parse\0--verify\0refs/heads/feature/current^{commit}"]: { stdout: `${LOCAL_HEAD_SHA}\n` },
     ["remote\0get-url\0origin"]: { stdout: "git@github.com:senad-d/branchme.git\n" },
   });
   registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
@@ -365,9 +641,16 @@ test("pull_request creates a PR in the resolved current repository without leaki
     base: "main",
     draft: false,
   });
-  assert.equal(requests[0].url, "https://api.github.com/repos/senad-d/branchme/pulls");
-  assert.equal(requests[0].init.headers.Authorization, "Bearer ghp_secret123");
-  assert.deepEqual(JSON.parse(requests[0].init.body), {
+  assert.deepEqual(
+    requests.map((request) => [request.init.method, request.url]),
+    [
+      ["GET", "https://api.github.com/repos/senad-d/branchme/branches/feature%2Fcurrent"],
+      ["GET", "https://api.github.com/repos/senad-d/branchme/branches/main"],
+      ["POST", "https://api.github.com/repos/senad-d/branchme/pulls"],
+    ],
+  );
+  assert.equal(requests[2].init.headers.Authorization, "Bearer ghp_secret123");
+  assert.deepEqual(JSON.parse(requests[2].init.body), {
     title: "Title",
     head: "feature/current",
     base: "main",
@@ -385,20 +668,21 @@ test("pull_request can use a local .env token fallback", async () => {
     const requests = [];
     const fetchImpl = async (url, init) => {
       requests.push({ url, init });
-      return new Response(
-        JSON.stringify({
+      if (init.method === "GET") return jsonResponse(branchPayload());
+      return jsonResponse(
+        pullRequestPayload({
           number: 8,
           html_url: "https://github.com/senad-d/branchme/pull/8",
-          state: "open",
-          draft: false,
           head: { ref: "feature/env" },
-          base: { ref: "main" },
         }),
-        { status: 201, headers: { "content-type": "application/json" } },
+        201,
       );
     };
     const pi = makePi({
       ["rev-parse\0--show-toplevel"]: { stdout: `${cwd}\n` },
+      ["show-ref\0--verify\0--quiet\0refs/heads/feature/env"]: { code: 0 },
+      ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+      ["rev-parse\0--verify\0refs/heads/feature/env^{commit}"]: { stdout: `${LOCAL_HEAD_SHA}\n` },
       ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
     });
     registerBranchMeTools(pi, { env: {}, fetchImpl });
@@ -429,20 +713,21 @@ test("pull_request resolves .env token fallback from the verified git root", asy
     const requests = [];
     const fetchImpl = async (url, init) => {
       requests.push({ url, init });
-      return new Response(
-        JSON.stringify({
+      if (init.method === "GET") return jsonResponse(branchPayload());
+      return jsonResponse(
+        pullRequestPayload({
           number: 9,
           html_url: "https://github.com/senad-d/branchme/pull/9",
-          state: "open",
-          draft: false,
           head: { ref: "feature/root-env" },
-          base: { ref: "main" },
         }),
-        { status: 201, headers: { "content-type": "application/json" } },
+        201,
       );
     };
     const pi = makePi({
       ["rev-parse\0--show-toplevel"]: { stdout: `${root}\n` },
+      ["show-ref\0--verify\0--quiet\0refs/heads/feature/root-env"]: { code: 0 },
+      ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+      ["rev-parse\0--verify\0refs/heads/feature/root-env^{commit}"]: { stdout: `${LOCAL_HEAD_SHA}\n` },
       ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
     });
     registerBranchMeTools(pi, { env: {}, fetchImpl });
@@ -463,13 +748,15 @@ test("pull_request resolves .env token fallback from the verified git root", asy
 });
 
 test("pull_request redacts GitHub API errors", async () => {
-  const fetchImpl = async () =>
-    new Response(JSON.stringify({ message: "bad token ghp_secret123" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
+  const fetchImpl = async (_url, init) => {
+    if (init.method === "GET") return jsonResponse(branchPayload());
+    return jsonResponse({ message: "bad token ghp_secret123" }, 401);
+  };
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/current"]: { code: 0 },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+    ["rev-parse\0--verify\0refs/heads/feature/current^{commit}"]: { stdout: `${LOCAL_HEAD_SHA}\n` },
     ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
   });
   registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });

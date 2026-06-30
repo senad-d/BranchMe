@@ -28,7 +28,7 @@ export interface GitRunOptions {
 
 const repositoryMutationQueues = new Map<string, Promise<void>>();
 
-async function withRepositoryMutationQueue<T>(repoRoot: string, operation: () => Promise<T>): Promise<T> {
+export async function withRepositoryMutationQueue<T>(repoRoot: string, operation: () => Promise<T>): Promise<T> {
   const previous = repositoryMutationQueues.get(repoRoot) ?? Promise.resolve();
   let releaseCurrent!: () => void;
   const current = new Promise<void>((resolve) => {
@@ -328,6 +328,24 @@ export async function localBranchExists(
     allowFailure: true,
   });
   return result.code === 0;
+}
+
+export async function getLocalBranchCommit(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  branchName: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  validateBranchNameInput(branchName);
+  const result = await runGit(pi, ctx, ["rev-parse", "--verify", `refs/heads/${branchName}^{commit}`], {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+  });
+  const commit = trimOutput(result.stdout);
+  if (!/^[0-9a-f]{40,64}$/iu.test(commit)) {
+    throw new Error(`Unable to resolve local branch '${redactSecrets(branchName)}' to a commit: ${safeOutput(result.stdout) || "empty output"}`);
+  }
+  return commit;
 }
 
 export async function createLocalBranch(

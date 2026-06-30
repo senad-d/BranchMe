@@ -173,8 +173,8 @@ try {
     throw new Error(`Pi runtime smoke did not observe BranchMe command output. Output:\n${summarizeOutput(combinedOutput)}`);
   }
 
-  if (/token present|GITHUB_TOKEN|GH_TOKEN|ghp_|github_pat_/iu.test(cleanedOutput)) {
-    throw new Error(`Pi runtime smoke unexpectedly observed credential-related output. Output:\n${summarizeOutput(combinedOutput)}`);
+  if (/token present|Authorization:\s*Bearer|ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+/iu.test(cleanedOutput)) {
+    throw new Error(`Pi runtime smoke unexpectedly observed credential value output. Output:\n${summarizeOutput(combinedOutput)}`);
   }
 
   console.log("Pi runtime smoke passed: loaded BranchMe with pi --no-extensions -e <package> and observed non-mutating command output.");

@@ -19,7 +19,7 @@ pi --no-extensions -e .
 - `npm run smoke:pi` runs `pi --no-extensions -e <package>` with `/branchme help` followed by `/quit` from an isolated temporary working directory.
 - The smoke run accepts either `/branchme help` text or the read-only BranchMe status fallback as equivalent non-mutating command output.
 - The smoke run disables discovered extensions, skills, prompt templates, themes, context files, persistent sessions, telemetry, startup network checks, and GitHub token environment variables.
-- The smoke run is credential-free, does not call BranchMe mutation tools, and does not contact GitHub.
+- The smoke run is credential-free, allows documented credential variable names in help text, rejects credential value patterns, does not call BranchMe mutation tools, and does not contact GitHub.
 - Set `BRANCHME_SKIP_PI_SMOKE=1` to skip intentionally, or `BRANCHME_PI_BIN=/path/to/pi` to test a specific Pi binary.
 - If no Pi binary is available, the script prints an explicit skip message; default CI installs the Pi dev dependency, so `npm run validate` exercises the real Pi loading path.
 
@@ -28,7 +28,7 @@ pi --no-extensions -e .
 - `npm run validate` passed.
 - `npm run smoke:pi` loaded BranchMe through Pi and confirmed non-mutating BranchMe command output.
 - `npm run check:pack` confirmed the package contents are limited to public docs, images, source, license, package metadata, and `tsconfig.json`.
-- The isolated Pi smoke command loaded BranchMe and displayed BranchMe status output instead of template behavior.
+- The isolated Pi smoke command loaded BranchMe and displayed BranchMe help or status output instead of template behavior.
 - The bare `pi --no-extensions -e .` smoke command exited cleanly in this non-interactive validation environment.
 - No template command or template tool output was observed.
 

@@ -41,7 +41,7 @@ Approved on 2026-06-30.
 | Tool | `change_branch` | Switch to an existing local branch | Required `branchName`; rejects dirty worktrees |
 | Tool | `create_branch` | Create + checkout new branch from current `HEAD` | Required `branchName`; fail if exists/invalid |
 | Tool | `push_branch` | Push current branch with explicit upstream target; publish with upstream if needed | No commits/staging |
-| Tool | `pull_request` | Create PR via GitHub REST API | Required `headBranch`, `baseBranch`, `title`, `body`, `draft`; repo inferred from current checkout |
+| Tool | `pull_request` | Preflight branch visibility/commit state and create PR via GitHub REST API | Required `headBranch`, `baseBranch`, `title`, `body`, `draft`; repo inferred from current checkout |
 | Event | `session_start/session_shutdown` | Optional status footer cleanup | No long-lived resources |
 | UI | TUI panel | Compact BranchMe workflow/config view | No persisted config assumed |
 | Resource | none | No skills/prompts/themes planned | Keep package minimal |
@@ -59,7 +59,7 @@ Approved on 2026-06-30.
 - Module boundaries:
   - Extension entrypoint only registers command/tools/events.
   - Git helper owns `pi.exec("git", args)` calls and branch/repo validation.
-  - GitHub helper owns env token lookup and REST request.
+  - GitHub helper owns env token lookup, branch visibility/commit preflight, and REST requests.
   - Tools expose precise TypeBox schemas and structured details.
 - Dependencies:
   - Pi core packages as peer deps with `"*"`.
@@ -77,7 +77,7 @@ Approved on 2026-06-30.
 
 - Shell execution: only `git` via argv-style `pi.exec`, not shell strings.
 - File access/mutation: no working-tree file edits; git metadata changes only.
-- Network access: `pull_request` calls `https://api.github.com/repos/{owner}/{repo}/pulls`.
+- Network access: `pull_request` calls `https://api.github.com/repos/{owner}/{repo}/branches/{branch}` before `https://api.github.com/repos/{owner}/{repo}/pulls`.
 - Credentials/secrets: `GITHUB_TOKEN` / `GH_TOKEN` from process env or hardened local `.env` fallback; never log token.
 - Telemetry/retention: none.
 - User confirmations: no extra confirmation by default, to support automation; tools rely on explicit arguments.
@@ -93,7 +93,7 @@ Approved on 2026-06-30.
 ## 9. Validation plan
 
 - Typecheck: `npm run typecheck`
-- Tests: unit tests for commands, tools, git/GitHub helpers, package metadata, and TUI captures.
+- Tests: unit and isolated integration tests for commands, tools, git/GitHub helpers, package metadata, and TUI captures.
 - Package dry-run: `npm run check:pack`
 - Formatting: `npm run format:check`
 - Full validation: `npm run validate`
@@ -106,7 +106,7 @@ Approved on 2026-06-30.
 - Assumptions:
   - `/branchme` has no persisted config in v1.
   - `push_branch` uses `origin` when current branch has no upstream.
-  - `pull_request` infers owner/repo from current GitHub checkout or `GITHUB_REPOSITORY`, but never accepts owner/repo as tool input.
+  - `pull_request` infers owner/repo from current GitHub checkout or `GITHUB_REPOSITORY`, but never accepts owner/repo as tool input and requires local branch refs with `headBranch` matching GitHub.
 - Decisions:
   - No commit functionality.
   - Tools perform all actions; slash commands are help/config only.
