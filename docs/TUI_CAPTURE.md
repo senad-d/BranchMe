@@ -31,7 +31,7 @@ Commands only show info; BranchMe tools perform actions.
 ## Requirements
 
 - Run inside a Git repo with `git` available.
-- For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN`.
+- For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN` (environment or `.env`).
 - BranchMe never stages or commits.
 ```
 

@@ -31,7 +31,7 @@ export function getBranchMeHelpText(): string {
     "## Requirements",
     "",
     "- Run inside a Git repo with `git` available.",
-    "- For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN`.",
+    "- For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN` (environment or `.env`).",
     "- BranchMe never stages or commits.",
   ].join("\n");
 }
@@ -72,7 +72,7 @@ async function collectPanelData(
   }
 
   try {
-    data.tokenSource = resolveGitHubToken().source;
+    data.tokenSource = resolveGitHubToken(process.env, { cwd: ctx.cwd }).source;
   } catch {
     data.tokenSource = null;
   }

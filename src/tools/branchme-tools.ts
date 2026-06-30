@@ -173,12 +173,12 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
     promptGuidelines: [
       "Use pull_request only when the user provides explicit headBranch, baseBranch, title, body, and draft values.",
       "Use pull_request only for the resolved current repository; pull_request never accepts owner or repo parameters.",
-      "Use pull_request with GITHUB_TOKEN or GH_TOKEN from the process environment; pull_request must not expose token values.",
+      "Use pull_request with GITHUB_TOKEN or GH_TOKEN from the process environment or local .env fallback; pull_request must not expose token values.",
     ],
     parameters: PullRequestParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const repository = await resolveGitHubRepository(pi, ctx, signal, options.env);
-      const token = resolveGitHubToken(options.env).token;
+      const token = resolveGitHubToken(options.env, { cwd: ctx.cwd }).token;
 
       try {
         const details = await createGitHubPullRequest(repository, params, token, {

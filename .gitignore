@@ -16,6 +16,7 @@ coverage/
 # Environment, secrets, and local pi runtime state
 .env
 .env.*
+!.env.example
 .pi/
 
 # Local caches and generated reports

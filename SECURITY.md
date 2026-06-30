@@ -42,12 +42,12 @@ BranchMe operates on the current repository only.
 
 ## Credentials
 
-`pull_request` reads tokens from process environment variables only:
+`pull_request` checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`. If neither process token is set, BranchMe reads a local `.env` file in the directory where Pi is running and checks:
 
 - `GITHUB_TOKEN` (preferred)
 - `GH_TOKEN` (fallback)
 
-BranchMe does not read `.env` files, shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from thrown errors, tool content, and tool details.
+Only these two token keys are read from `.env`; other `.env` keys are ignored. BranchMe does not read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from thrown errors, tool content, and tool details.
 
 ## Telemetry
 
@@ -65,7 +65,7 @@ Do not open public issues for security-sensitive reports that include exploit de
 
 ## Secure development checklist
 
-- Do not commit secrets, tokens, local `.pi/` state, or generated artifacts.
+- Do not commit secrets, tokens, local `.env`, local `.pi/` state, or generated artifacts.
 - Keep tool schemas strict and reject unsupported fields.
 - Keep all git calls argv-style through `pi.exec("git", args)`.
 - Mock `pi.exec` and `fetch` in tests; do not touch real remotes.

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { branchMeExtension } from "../src/extension.ts";
 import {
@@ -311,6 +314,48 @@ test("pull_request creates a PR in the resolved current repository without leaki
     draft: false,
   });
   assert.doesNotMatch(JSON.stringify(output), /secret123/);
+});
+
+test("pull_request can use a local .env token fallback", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "branchme-tool-env-"));
+  try {
+    await writeFile(join(cwd, ".env"), "GH_TOKEN=ghp_filetoken123\n", "utf8");
+
+    const requests = [];
+    const fetchImpl = async (url, init) => {
+      requests.push({ url, init });
+      return new Response(
+        JSON.stringify({
+          number: 8,
+          html_url: "https://github.com/senad-d/branchme/pull/8",
+          state: "open",
+          draft: false,
+          head: { ref: "feature/env" },
+          base: { ref: "main" },
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    };
+    const pi = makePi({
+      ["rev-parse\0--show-toplevel"]: { stdout: `${cwd}\n` },
+      ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+    });
+    registerBranchMeTools(pi, { env: {}, fetchImpl });
+    const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+    const output = await tool.execute(
+      "call-env",
+      { headBranch: "feature/env", baseBranch: "main", title: "Title", body: "Body", draft: false },
+      undefined,
+      undefined,
+      { ...ctx, cwd },
+    );
+
+    assert.equal(requests[0].init.headers.Authorization, "Bearer ghp_filetoken123");
+    assert.doesNotMatch(JSON.stringify(output), /filetoken123/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("pull_request redacts GitHub API errors", async () => {

@@ -66,7 +66,7 @@ Approved on 2026-06-30.
 
 ## 6. Config, state, and persistence
 
-- Config source: none for v1; `/branchme` displays runtime status and workflow notes.
+- Config source: no BranchMe config file; `/branchme` displays runtime status and workflow notes. GitHub tokens may come from process environment or local `.env` fallback.
 - Session state: none; tool results include useful `details`.
 - Files written: none by extension code, except normal git metadata changes from branch checkout/push.
 - Cleanup behavior: clear any footer/status key on `session_shutdown` if used.
@@ -76,7 +76,7 @@ Approved on 2026-06-30.
 - Shell execution: only `git` via argv-style `pi.exec`, not shell strings.
 - File access/mutation: no working-tree file edits; git metadata changes only.
 - Network access: `pull_request` calls `https://api.github.com/repos/{owner}/{repo}/pulls`.
-- Credentials/secrets: `GITHUB_TOKEN` / `GH_TOKEN` process env only; never log token.
+- Credentials/secrets: `GITHUB_TOKEN` / `GH_TOKEN` from process env or local `.env` fallback; never log token.
 - Telemetry/retention: none.
 - User confirmations: no extra confirmation by default, to support automation; tools rely on explicit arguments.
 

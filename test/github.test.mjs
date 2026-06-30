@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   createGitHubPullRequest,
@@ -80,13 +83,35 @@ test("resolveGitHubRepository fails outside a git repository even with env fallb
   );
 });
 
-test("resolveGitHubToken uses environment only and prefers GITHUB_TOKEN", () => {
+test("resolveGitHubToken uses process environment and prefers GITHUB_TOKEN", () => {
   assert.deepEqual(resolveGitHubToken({ GITHUB_TOKEN: " github-token ", GH_TOKEN: "gh-token" }), {
     token: "github-token",
     source: "GITHUB_TOKEN",
   });
   assert.deepEqual(resolveGitHubToken({ GH_TOKEN: " gh-token " }), { token: "gh-token", source: "GH_TOKEN" });
   assert.throws(() => resolveGitHubToken({}), /GITHUB_TOKEN or GH_TOKEN/);
+});
+
+test("resolveGitHubToken falls back to local .env tokens", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "branchme-env-"));
+  try {
+    await writeFile(
+      join(cwd, ".env"),
+      ["# token fallback", "GITHUB_TOKEN= github_pat_from_file ", "GH_TOKEN=ghp_secondary"].join("\n"),
+      "utf8",
+    );
+
+    assert.deepEqual(resolveGitHubToken({}, { cwd }), {
+      token: "github_pat_from_file",
+      source: "GITHUB_TOKEN (.env)",
+    });
+    assert.deepEqual(resolveGitHubToken({ GH_TOKEN: " process-token " }, { cwd }), {
+      token: "process-token",
+      source: "GH_TOKEN",
+    });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("redactSecrets removes tokens and token-like request data", () => {

@@ -27,6 +27,7 @@
     "node": ">=22.19.0"
   },
   "files": [
+    ".env.example",
     "README.md",
     "LICENSE",
     "SECURITY.md",

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   GITHUB_API_BASE_URL,
@@ -8,9 +10,17 @@ import {
 import { getGitRoot, getOriginUrl, type GitCommandContext } from "./git.ts";
 import type { GitHubRepository, PullRequestDetails, PullRequestInput } from "./types.ts";
 
+type TokenEnvironmentKey = "GITHUB_TOKEN" | "GH_TOKEN";
+
+export type TokenResolutionSource = TokenEnvironmentKey | `${TokenEnvironmentKey} (.env)`;
+
 export interface TokenResolution {
   token: string;
-  source: "GITHUB_TOKEN" | "GH_TOKEN";
+  source: TokenResolutionSource;
+}
+
+export interface TokenResolutionOptions {
+  cwd?: string;
 }
 
 export interface PullRequestFetchOptions {
@@ -70,14 +80,105 @@ export function parseGitHubRepository(value: string): GitHubRepository | null {
   return normalizeRepository(parts[0] ?? "", parts[1] ?? "");
 }
 
-export function resolveGitHubToken(env: NodeJS.ProcessEnv = process.env): TokenResolution {
+function resolveProcessToken(env: NodeJS.ProcessEnv): TokenResolution | null {
   const githubToken = env.GITHUB_TOKEN?.trim();
   if (githubToken) return { token: githubToken, source: "GITHUB_TOKEN" };
 
   const ghToken = env.GH_TOKEN?.trim();
   if (ghToken) return { token: ghToken, source: "GH_TOKEN" };
 
-  throw new Error("GitHub token is required. Set GITHUB_TOKEN or GH_TOKEN in the process environment.");
+  return null;
+}
+
+function isTokenEnvironmentKey(value: string): value is TokenEnvironmentKey {
+  return value === "GITHUB_TOKEN" || value === "GH_TOKEN";
+}
+
+function decodeDoubleQuotedDotEnvValue(value: string): string {
+  return value.replace(/\\([nrt"\\])/gu, (_match, escaped: string) => {
+    switch (escaped) {
+      case "n":
+        return "\n";
+      case "r":
+        return "\r";
+      case "t":
+        return "\t";
+      default:
+        return escaped;
+    }
+  });
+}
+
+function parseDotEnvValue(rawValue: string): string {
+  const value = rawValue.trim();
+  if (!value) return "";
+
+  if (value.startsWith("\"") && value.endsWith("\"")) {
+    return decodeDoubleQuotedDotEnvValue(value.slice(1, -1)).trim();
+  }
+
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).trim();
+  }
+
+  return value.replace(/\s+#.*$/u, "").trim();
+}
+
+function parseDotEnvTokens(contents: string): Partial<Record<TokenEnvironmentKey, string>> {
+  const tokens: Partial<Record<TokenEnvironmentKey, string>> = {};
+
+  for (const line of contents.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const assignment = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trimStart() : trimmed;
+    const match = assignment.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/u);
+    if (!match) continue;
+
+    const key = match[1] ?? "";
+    if (!isTokenEnvironmentKey(key)) continue;
+
+    tokens[key] = parseDotEnvValue(match[2] ?? "");
+  }
+
+  return tokens;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
+}
+
+function readDotEnvTokens(cwd: string | undefined): Partial<Record<TokenEnvironmentKey, string>> {
+  if (!cwd) return {};
+
+  const envPath = join(cwd, ".env");
+  let contents: string;
+  try {
+    contents = readFileSync(envPath, "utf8");
+  } catch (error) {
+    if (isMissingFileError(error)) return {};
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to read .env file for GitHub token fallback: ${message}`);
+  }
+
+  return parseDotEnvTokens(contents);
+}
+
+export function resolveGitHubToken(
+  env: NodeJS.ProcessEnv = process.env,
+  options: TokenResolutionOptions = {},
+): TokenResolution {
+  const processToken = resolveProcessToken(env);
+  if (processToken) return processToken;
+
+  const dotEnvTokens = readDotEnvTokens(options.cwd);
+  const githubToken = dotEnvTokens.GITHUB_TOKEN?.trim();
+  if (githubToken) return { token: githubToken, source: "GITHUB_TOKEN (.env)" };
+
+  const ghToken = dotEnvTokens.GH_TOKEN?.trim();
+  if (ghToken) return { token: ghToken, source: "GH_TOKEN (.env)" };
+
+  throw new Error("GitHub token is required. Set GITHUB_TOKEN or GH_TOKEN in the process environment or local .env file.");
 }
 
 export async function resolveGitHubRepository(
