@@ -16,6 +16,8 @@ npm run typecheck
 npm run format:check
 npm run test
 npm run check:pack
+npm run smoke:pi
+npm run smoke:pi:packed # release gate for the installed npm artifact
 pi --no-extensions -e .
 ```
 

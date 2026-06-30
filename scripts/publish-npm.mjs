@@ -109,7 +109,7 @@ async function main() {
   }
 
   console.log("\nThis will:");
-  console.log(`- run npm validation`);
+  console.log(`- run npm release checks (validation plus installed-package smoke)`);
   console.log(`- run npm version ${version} to update package.json/package-lock.json`);
   console.log(`- create a release commit and git tag ${gitTag}`);
   console.log(`- run npm ${publishArgs.join(" ")}`);
@@ -122,7 +122,7 @@ async function main() {
 
   rl.close();
 
-  run("npm", ["run", "validate"]);
+  run("npm", ["run", "release:check"]);
   run("npm", ["version", version, "-m", "chore(release): v%s"]);
   run("npm", publishArgs);
 

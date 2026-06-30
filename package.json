@@ -44,10 +44,12 @@
     "format:check": "node scripts/check-format.mjs",
     "test": "node --test test/*.test.mjs",
     "smoke:pi": "node scripts/smoke-pi-runtime.mjs",
-    "check": "node --check scripts/check-package-contents.mjs",
+    "smoke:pi:packed": "node scripts/smoke-pi-installed-package.mjs",
+    "check": "node --check scripts/check-format.mjs && node --check scripts/check-package-contents.mjs && node --check scripts/publish-npm.mjs && node --check scripts/smoke-pi-installed-package.mjs && node --check scripts/smoke-pi-runtime.mjs",
     "pack:dry-run": "npm pack --dry-run --json",
     "check:pack": "node scripts/check-package-contents.mjs",
-    "validate": "npm run typecheck && npm run format:check && npm run test && npm run smoke:pi && npm run check && npm run check:pack"
+    "validate": "npm run typecheck && npm run format:check && npm run test && npm run smoke:pi && npm run check && npm run check:pack",
+    "release:check": "npm run validate && npm run smoke:pi:packed"
   },
   "pi": {
     "extensions": [

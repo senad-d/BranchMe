@@ -317,10 +317,12 @@ npm run format:check
 npm run test
 npm run check:pack
 npm run validate
+npm run smoke:pi:packed
 pi --no-extensions -e .
 ```
 
 `npm run check:pack` verifies the npm package does not include local state, specs, caches, `node_modules`, real environment files, or other private development artifacts. The safe `.env.example` template is included.
+`npm run smoke:pi:packed` is the release-gate smoke: it packs the npm artifact into a temporary directory, installs it with production dependency settings, and runs pi against the installed package.
 
 ---
 
@@ -331,10 +333,11 @@ BranchMe publishes to npm as `@senad-d/branchme`. You need an npm account with p
 ```bash
 npm login
 npm whoami
+npm run release:check # optional preflight; the publish script runs this too
 node scripts/publish-npm.mjs
 ```
 
-The publish script requires a clean working tree, asks for the version number, validates the package, runs `npm version <version>` to update `package.json` and `package-lock.json`, creates the `v<version>` git tag, publishes with `npm publish --access public`, and then offers to push the release commit and tag.
+The publish script requires a clean working tree, asks for the version number, runs `npm run release:check` (validation plus installed-package smoke), runs `npm version <version>` to update `package.json` and `package-lock.json`, creates the `v<version>` git tag, publishes with `npm publish --access public`, and then offers to push the release commit and tag.
 
 Run it only from a clean working tree after updating `CHANGELOG.md`.
 

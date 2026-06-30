@@ -97,7 +97,8 @@ Approved on 2026-06-30.
 - Package dry-run: `npm run check:pack`
 - Formatting: `npm run format:check`
 - Full validation: `npm run validate`
-- Isolated Pi smoke test: `pi --no-extensions -e .`
+- Checkout Pi smoke test: `npm run smoke:pi` / `pi --no-extensions -e .`
+- Installed-artifact release smoke: `npm run smoke:pi:packed`
 
 ## 10. Open questions and assumptions
 

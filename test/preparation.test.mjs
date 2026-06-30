@@ -17,7 +17,18 @@ test("package metadata identifies BranchMe", async () => {
   assert.deepEqual(packageJson.pi?.extensions, ["./src/extension.ts"]);
   assert.ok(packageJson.keywords.includes("pi-package"));
   assert.ok(packageJson.keywords.includes("branchme"));
+  assert.ok(packageJson.files.includes(".env.example"));
   await access(new URL("../src/extension.ts", import.meta.url));
+});
+
+test("environment token template is safe and packaged", async () => {
+  const envExample = await readProjectFile(".env.example");
+
+  assert.match(envExample, /^GITHUB_TOKEN=$/m);
+  assert.match(envExample, /^GH_TOKEN=$/m);
+  assert.doesNotMatch(envExample, /^(?:GITHUB_TOKEN|GH_TOKEN)=.+$/m);
+  assert.doesNotMatch(envExample, /ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|Authorization:\s*Bearer/iu);
+  assert.ok(packageJson.files.includes(".env.example"));
 });
 
 test("approved docs and specs exist", async () => {

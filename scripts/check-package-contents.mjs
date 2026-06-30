@@ -5,6 +5,31 @@ import { readFileSync } from "node:fs";
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const hiddenEnvironmentFilePattern = /^\.env(?:$|\.)/;
 const allowedEnvironmentExampleFiles = new Set([".env.example"]);
+const requiredPublicFiles = [
+  ".env.example",
+  "CHANGELOG.md",
+  "LICENSE",
+  "README.md",
+  "SECURITY.md",
+  "docs/PROJECT_DEFINITION_BRIEF.md",
+  "docs/SMOKE_TEST.md",
+  "docs/STRUCTURE.md",
+  "docs/TUI_CAPTURE.md",
+  "img/demo.gif",
+  "img/icon.png",
+  "img/icon.svg",
+  "package.json",
+  "src/commands/branchme-command.ts",
+  "src/constants.ts",
+  "src/extension.ts",
+  "src/git.ts",
+  "src/github.ts",
+  "src/redaction.ts",
+  "src/tools/branchme-tools.ts",
+  "src/types.ts",
+  "src/ui/branchme-panel.ts",
+  "tsconfig.json",
+];
 
 const forbiddenChecks = [
   {
@@ -35,7 +60,9 @@ function readPackFiles() {
 }
 
 const files = readPackFiles();
+const fileSet = new Set(files);
 const violations = [];
+const missingRequiredFiles = requiredPublicFiles.filter((file) => !fileSet.has(file));
 for (const file of files) {
   for (const check of forbiddenChecks) {
     if (check.test(file)) violations.push({ file, label: check.label });
@@ -44,6 +71,12 @@ for (const file of files) {
 
 console.log(`${pkg.name} package dry-run contains ${files.length} file(s).`);
 for (const file of files) console.log(`- ${file}`);
+
+if (missingRequiredFiles.length > 0) {
+  console.error("\nRequired public package files are missing:");
+  for (const file of missingRequiredFiles) console.error(`- ${file}`);
+  process.exitCode = 1;
+}
 
 if (violations.length > 0) {
   console.error("\nForbidden package contents detected:");
