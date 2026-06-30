@@ -94,12 +94,15 @@ async function withGitHubTokenEnvironment(env, fn) {
   const previous = {
     GITHUB_TOKEN: process.env.GITHUB_TOKEN,
     GH_TOKEN: process.env.GH_TOKEN,
+    GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
   };
 
   delete process.env.GITHUB_TOKEN;
   delete process.env.GH_TOKEN;
+  delete process.env.GITHUB_REPOSITORY;
   if (env.GITHUB_TOKEN !== undefined) process.env.GITHUB_TOKEN = env.GITHUB_TOKEN;
   if (env.GH_TOKEN !== undefined) process.env.GH_TOKEN = env.GH_TOKEN;
+  if (env.GITHUB_REPOSITORY !== undefined) process.env.GITHUB_REPOSITORY = env.GITHUB_REPOSITORY;
 
   try {
     await fn();
@@ -109,6 +112,9 @@ async function withGitHubTokenEnvironment(env, fn) {
 
     if (previous.GH_TOKEN === undefined) delete process.env.GH_TOKEN;
     else process.env.GH_TOKEN = previous.GH_TOKEN;
+
+    if (previous.GITHUB_REPOSITORY === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = previous.GITHUB_REPOSITORY;
   }
 }
 
@@ -258,6 +264,76 @@ test("/branchme print mode writes fallback text and JSON mode stays stdout-silen
     await jsonPi.commands[0].options.handler("", makeContext({ mode: "json", hasUI: false }));
     assert.deepEqual(logs, []);
   });
+});
+
+test("/branchme keeps absent repository and token as plain fallback values", async () => {
+  const routes = {
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { code: 1, stderr: "no upstream\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n" },
+    ["remote\0get-url\0origin"]: { code: 1, stderr: "missing\n" },
+  };
+
+  await withGitHubTokenEnvironment({}, async () => {
+    const pi = makePi(routes);
+    registerBranchMeCommand(pi);
+
+    await withCapturedConsoleLog(async (logs) => {
+      await pi.commands[0].options.handler("", makeContext({ mode: "print", hasUI: false }));
+      assert.equal(logs.length, 1);
+      assert.match(logs[0], /GitHub repository not resolved/);
+      assert.match(logs[0], /token not set/);
+      assert.doesNotMatch(logs[0], /warning:/i);
+    });
+  });
+});
+
+test("/branchme surfaces repository mismatch warnings in RPC and TUI output", async () => {
+  await withGitHubTokenEnvironment({ GITHUB_REPOSITORY: "other/repo", GITHUB_TOKEN: "ghp_secret123" }, async () => {
+    const rpcPi = makePi(branchStatusRoutes("/repo"));
+    registerBranchMeCommand(rpcPi);
+    const rpcCtx = makeContext({ mode: "rpc", hasUI: true });
+
+    await rpcPi.commands[0].options.handler("", rpcCtx);
+
+    assert.equal(rpcCtx.notifications[0].level, "warning");
+    assert.match(rpcCtx.notifications[0].message, /GitHub repository warning: Repository boundary mismatch/i);
+    assert.match(rpcCtx.notifications[0].message, /senad-d\/branchme/);
+    assert.match(rpcCtx.notifications[0].message, /other\/repo/);
+    assert.doesNotMatch(rpcCtx.notifications[0].message, /secret123|ghp_/u);
+
+    const tuiPi = makePi(branchStatusRoutes("/repo"));
+    registerBranchMeCommand(tuiPi);
+    const tuiCtx = makeContext({ mode: "tui", hasUI: true });
+
+    await tuiPi.commands[0].options.handler("", tuiCtx);
+
+    const rendered = tuiCtx.customCalls[0].component.render(80).join("\n");
+    assert.match(rendered, /Repository boundary mismatch/i);
+    assert.doesNotMatch(rendered, /secret123|ghp_/u);
+  });
+});
+
+test("/branchme surfaces token fallback errors as print-safe warnings", async () => {
+  const repoRoot = await mkdtemp(join(tmpdir(), "branchme-command-token-warning-"));
+  try {
+    await mkdir(join(repoRoot, ".env"));
+    await withGitHubTokenEnvironment({}, async () => {
+      const pi = makePi(branchStatusRoutes(repoRoot));
+      registerBranchMeCommand(pi);
+
+      await withCapturedConsoleLog(async (logs) => {
+        await pi.commands[0].options.handler("", makeContext({ cwd: repoRoot, mode: "print", hasUI: false }));
+        assert.equal(logs.length, 1);
+        assert.match(logs[0], /token warning: Unable to read \.env file for GitHub token fallback/i);
+        assert.match(logs[0], /regular file/i);
+        assert.doesNotMatch(logs[0], /token present|ghp_|secret/u);
+      });
+    });
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test("/branchme does not read local token files outside verified git roots", async () => {

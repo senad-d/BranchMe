@@ -6,6 +6,8 @@ export interface BranchMePanelData {
   githubRepository: string | null;
   tokenSource: string | null;
   statusNote?: string;
+  repositoryWarning?: string;
+  tokenWarning?: string;
 }
 
 interface PanelTheme {
@@ -121,11 +123,19 @@ function framedLine(content: PanelCell, width: number, theme?: PanelTheme): stri
   return `${border(theme, "│")}${formatCell(content, innerWidth, theme)}${border(theme, "│")}`;
 }
 
+function panelWarnings(data: BranchMePanelData): string[] {
+  return [data.statusNote, data.repositoryWarning, data.tokenWarning].filter((warning): warning is string => Boolean(warning));
+}
+
+function firstPanelWarning(data: BranchMePanelData): string | null {
+  return panelWarnings(data)[0] ?? null;
+}
+
 function statusValue(data: BranchMePanelData): { branch: string; repository: string; token: string } {
   return {
     branch: data.detached ? "detached HEAD" : data.currentBranch ?? "unknown",
-    repository: data.githubRepository ?? "not resolved",
-    token: getTokenLabel(data.tokenSource),
+    repository: data.repositoryWarning ? `warning: ${data.repositoryWarning}` : data.githubRepository ?? "not resolved",
+    token: data.tokenWarning ? `warning: ${data.tokenWarning}` : getTokenLabel(data.tokenSource),
   };
 }
 
@@ -160,7 +170,8 @@ function sectionIndex(section: BranchMePanelSection): number {
 }
 
 function sectionFooter(section: BranchMePanelSection, data: BranchMePanelData): string {
-  if (data.statusNote) return `warning • ${data.statusNote}`;
+  const warning = firstPanelWarning(data);
+  if (warning) return `warning • ${warning}`;
 
   switch (section) {
     case "status":
@@ -199,12 +210,13 @@ function fitLines(lines: string[], width: number): string[] {
 
 function renderTiny(data: BranchMePanelData, width: number): string[] {
   const values = statusValue(data);
+  const warning = firstPanelWarning(data);
   return fitLines(
     [
       clip("BranchMe", width),
       clip(`branch: ${values.branch}`, width),
       clip(`repo: ${values.repository}`, width),
-      clip("q quit", width),
+      clip(warning ? `warning: ${warning}` : "q quit", width),
     ],
     width,
   );

@@ -148,6 +148,46 @@ Width: 50
 ╰────────────────────────────────────────────────╯
 ```
 
+## Panel: Repository warning: boundary mismatch
+
+Width: 80
+
+```text
+╭ BranchMe ──────────────────────────────────────────────────────────── Status ╮
+│ ↑↓ section • q quit • /branchme help                                         │
+├─────────────────────┬────────────────────────────────────────────────────────┤
+│▶  Status            │ STATUS                                                 │
+│   Workflow          │  Current branch:    main                               │
+│                     │  GitHub repository: warning: Repository boundary misma…│
+│                     │  GitHub token:      present                            │
+│                     │                                                        │
+│                     │                                                        │
+│                     │                                                        │
+├─────────────────────┴────────────────────────────────────────────────────────┤
+│ 1/2 • warning • Repository boundary mismatch: local origin resolves to senad…│
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+## Panel: Token warning: fallback error
+
+Width: 72
+
+```text
+╭ BranchMe ──────────────────────────────────────────────────── Status ╮
+│ ↑↓ section • q quit • /branchme help                                 │
+├───────────────────┬──────────────────────────────────────────────────┤
+│▶  Status          │ STATUS                                           │
+│   Workflow        │  Current branch:    main                         │
+│                   │  GitHub repository: senad-d/branchme             │
+│                   │  GitHub token:      warning: Unable to read .env…│
+│                   │                                                  │
+│                   │                                                  │
+│                   │                                                  │
+├───────────────────┴──────────────────────────────────────────────────┤
+│ 1/2 • warning • Unable to read .env file for GitHub token fallback: …│
+╰──────────────────────────────────────────────────────────────────────╯
+```
+
 ## Panel: Long values: truncation
 
 Width: 72

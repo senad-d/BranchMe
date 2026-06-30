@@ -9,7 +9,7 @@ import {
   GITHUB_USER_AGENT,
   MAX_SUMMARY_OUTPUT_CHARS,
 } from "./constants.ts";
-import { getGitRoot, getOriginUrl, type GitCommandContext } from "./git.ts";
+import { getGitRoot, getOriginUrl, validateBranchNameInput, type GitCommandContext } from "./git.ts";
 import type { GitHubRepository, PullRequestDetails, PullRequestInput } from "./types.ts";
 
 type TokenEnvironmentKey = "GITHUB_TOKEN" | "GH_TOKEN";
@@ -290,9 +290,7 @@ function encodePathSegment(value: string): string {
 }
 
 function requireStringRef(value: unknown, field: "headBranch" | "baseBranch"): string {
-  if (typeof value !== "string") throw new Error(`${field} must be a string.`);
-  if (!value.trim()) throw new Error(`${field} is required.`);
-  if (value !== value.trim()) throw new Error(`${field} cannot start or end with whitespace.`);
+  validateBranchNameInput(value, field);
   return value;
 }
 
@@ -319,9 +317,11 @@ export function validatePullRequestBranchRef(value: unknown, field: "headBranch"
   }
 }
 
-function validatePullRequestInput(input: PullRequestInput): void {
+function validatePullRequestInput(input: unknown): asserts input is PullRequestInput {
+  if (!isRecord(input)) throw new Error("Pull request input must be an object.");
   validatePullRequestBranchRef(input.headBranch, "headBranch");
   validatePullRequestBranchRef(input.baseBranch, "baseBranch");
+  if (typeof input.title !== "string") throw new Error("title must be a string.");
   if (!input.title.trim()) throw new Error("title is required.");
   if (typeof input.body !== "string") throw new Error("body must be a string.");
   if (typeof input.draft !== "boolean") throw new Error("draft must be a boolean.");
@@ -333,6 +333,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringField(value: unknown, field: string): string {
   if (typeof value !== "string" || !value) throw new Error(`GitHub response is missing ${field}.`);
+  return value;
+}
+
+function pullRequestNumberField(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("GitHub response pull request number must be a finite positive safe integer.");
+  }
   return value;
 }
 
@@ -541,7 +548,7 @@ export async function createGitHubPullRequest(
   }
 
   if (!isRecord(payload)) throw new Error("GitHub pull request response was not an object.");
-  if (typeof payload.number !== "number") throw new Error("GitHub response is missing pull request number.");
+  const number = pullRequestNumberField(payload.number);
 
   const head = isRecord(payload.head) ? stringField(payload.head.ref, "head.ref") : input.headBranch;
   const base = isRecord(payload.base) ? stringField(payload.base.ref, "base.ref") : input.baseBranch;
@@ -549,7 +556,7 @@ export async function createGitHubPullRequest(
 
   return {
     repository,
-    number: payload.number,
+    number,
     url: stringField(payload.html_url, "html_url"),
     state: stringField(payload.state, "state"),
     head,

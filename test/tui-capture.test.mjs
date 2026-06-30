@@ -74,6 +74,28 @@ const panelCases = [
     },
   },
   {
+    title: "Repository warning: boundary mismatch",
+    width: 80,
+    data: {
+      currentBranch: "main",
+      detached: false,
+      githubRepository: null,
+      tokenSource: "GITHUB_TOKEN",
+      repositoryWarning: "Repository boundary mismatch: local origin resolves to senad-d/branchme but GITHUB_REPOSITORY resolves to other/repo.",
+    },
+  },
+  {
+    title: "Token warning: fallback error",
+    width: 72,
+    data: {
+      currentBranch: "main",
+      detached: false,
+      githubRepository: "senad-d/branchme",
+      tokenSource: null,
+      tokenWarning: "Unable to read .env file for GitHub token fallback: .env must be a small regular file.",
+    },
+  },
+  {
     title: "Long values: truncation",
     width: 72,
     data: {

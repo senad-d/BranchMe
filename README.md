@@ -287,7 +287,7 @@ npm run check:pack
 printf '/branchme help\n/quit\n' | pi --no-extensions -e .
 ```
 
-Validation covers TypeScript typechecking, formatting checks, unit tests, package checks, and package-content verification. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
+Validation covers TypeScript typechecking, formatting checks, unit tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all five BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
 
 Refresh TUI captures intentionally with:
 
@@ -322,6 +322,7 @@ pi --no-extensions -e .
 ```
 
 `npm run check:pack` verifies the npm package does not include local state, specs, caches, `node_modules`, real environment files, or other private development artifacts. The safe `.env.example` template is included.
+`npm run smoke:pi` is the checkout runtime smoke and verifies BranchMe command output plus real Pi tool registration metadata.
 `npm run smoke:pi:packed` is the release-gate smoke: it packs the npm artifact into a temporary directory, installs it with production dependency settings, and runs pi against the installed package.
 
 ---

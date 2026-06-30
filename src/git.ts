@@ -82,7 +82,8 @@ function safeCommandLabel(args: readonly string[], tokens: readonly string[] = [
 }
 
 export function formatGitFailure(args: readonly string[], result: GitExecResult, tokens: readonly string[] = []): string {
-  const reason = safeOutput(result.stderr || result.stdout, tokens) || `exit code ${result.code}`;
+  const fallbackReason = result.killed ? "command was killed or timed out" : `exit code ${result.code}`;
+  const reason = safeOutput(result.stderr || result.stdout, tokens) || fallbackReason;
   const killed = result.killed ? " (killed)" : "";
   return `${safeCommandLabel(args, tokens)} failed${killed}: ${reason}`;
 }
@@ -98,6 +99,10 @@ export async function runGit(
     signal: options.signal,
     timeout: options.timeout ?? GIT_STATUS_TIMEOUT_MS,
   });
+
+  if (result.killed) {
+    throw new Error(formatGitFailure(args, result));
+  }
 
   if (!options.allowFailure && result.code !== 0) {
     throw new Error(formatGitFailure(args, result));
@@ -290,16 +295,16 @@ export async function getAheadBehindCount(
   return { ahead, behind };
 }
 
-export function validateBranchNameInput(branchName: string): void {
-  if (typeof branchName !== "string") throw new Error("Branch name must be a string.");
-  if (branchName.length === 0) throw new Error("Branch name is required.");
-  if (branchName.trim().length === 0) throw new Error("Branch name cannot be blank.");
-  if (branchName !== branchName.trim()) throw new Error("Branch name cannot start or end with whitespace.");
-  if (branchName.startsWith("-")) throw new Error("Branch name cannot start with '-'.");
+export function validateBranchNameInput(branchName: unknown, label = "Branch name"): asserts branchName is string {
+  if (typeof branchName !== "string") throw new Error(`${label} must be a string.`);
+  if (branchName.length === 0) throw new Error(`${label} is required.`);
+  if (branchName.trim().length === 0) throw new Error(`${label} cannot be blank.`);
+  if (branchName !== branchName.trim()) throw new Error(`${label} cannot start or end with whitespace.`);
+  if (branchName.startsWith("-")) throw new Error(`${label} cannot start with '-'.`);
   if (/[\u0000-\u001f\u007f]/u.test(branchName)) {
-    throw new Error("Branch name cannot contain NUL, newline, or control characters.");
+    throw new Error(`${label} cannot contain NUL, newline, or control characters.`);
   }
-  if (/\s/u.test(branchName)) throw new Error("Branch name cannot contain whitespace.");
+  if (/\s/u.test(branchName)) throw new Error(`${label} cannot contain whitespace.`);
 }
 
 export async function validateBranchName(

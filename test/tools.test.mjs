@@ -27,6 +27,12 @@ function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
 }
 
+function abortLikeError() {
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((next) => {
@@ -71,6 +77,7 @@ function makePi(routes = {}) {
       calls.push({ command, args: [...args], options });
       const key = args.join("\0");
       const route = routes[key];
+      if (!route && args[0] === "check-ref-format" && args[1] === "--branch") return result({ stdout: `${args[2]}\n` });
       if (!route) throw new Error(`Unexpected git command: ${args.join(" ")}`);
       if (Array.isArray(route)) {
         const next = route.shift();
@@ -317,6 +324,190 @@ test("push_branch pushes current branch with and without upstream", async () => 
   assert.equal(publishPi.calls.some((call) => ["commit", "add"].includes(call.args[0])), false);
 });
 
+test("public BranchMe tools propagate abort signals to git and fetch calls", async () => {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const gitToolCases = [
+    {
+      name: CREATE_BRANCH_TOOL_NAME,
+      params: { branchName: "feature/signal-create" },
+      routes: {
+        ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+        ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+        ["check-ref-format\0--branch\0feature/signal-create"]: { stdout: "feature/signal-create\n" },
+        ["show-ref\0--verify\0--quiet\0refs/heads/feature/signal-create"]: { code: 1 },
+        ["switch\0-c\0feature/signal-create"]: { stdout: "" },
+      },
+    },
+    {
+      name: CHANGE_BRANCH_TOOL_NAME,
+      params: { branchName: "feature/signal-change" },
+      routes: {
+        ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+        ["check-ref-format\0--branch\0feature/signal-change"]: { stdout: "feature/signal-change\n" },
+        ["show-ref\0--verify\0--quiet\0refs/heads/feature/signal-change"]: { code: 0 },
+        ["symbolic-ref\0--quiet\0--short\0HEAD"]: [{ stdout: "main\n" }, { stdout: "feature/signal-change\n" }],
+        ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n" },
+        ["switch\0feature/signal-change"]: { stdout: "" },
+      },
+    },
+    {
+      name: PUSH_BRANCH_TOOL_NAME,
+      params: {},
+      routes: {
+        ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+        ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/signal-push\n" },
+        ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/signal-push\n" },
+        ["config\0--get\0branch.feature/signal-push.remote"]: { stdout: "origin\n" },
+        ["config\0--get\0branch.feature/signal-push.merge"]: { stdout: "refs/heads/feature/signal-push\n" },
+        ["push\0origin\0HEAD:refs/heads/feature/signal-push"]: { stdout: "Everything up-to-date\n" },
+      },
+    },
+  ];
+
+  for (const gitToolCase of gitToolCases) {
+    const pi = makePi(gitToolCase.routes);
+    registerBranchMeTools(pi);
+    const tool = toolByName(pi, gitToolCase.name);
+
+    await tool.execute(`call-${gitToolCase.name}-signal`, gitToolCase.params, signal, undefined, ctx);
+
+    assert.ok(pi.calls.length > 0, `${gitToolCase.name} should execute git commands`);
+    assert.ok(
+      pi.calls.every((call) => call.options.signal === signal),
+      `${gitToolCase.name} should pass the provided AbortSignal to every git command`,
+    );
+  }
+
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    if (init.method === "GET") return jsonResponse(branchPayload(url.endsWith("/branches/feature%2Fsignal-pr") ? LOCAL_HEAD_SHA : REMOTE_BASE_SHA));
+    return jsonResponse(pullRequestPayload({ head: { ref: "feature/signal-pr" } }), 201);
+  };
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/signal-pr"]: { code: 0 },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+    ["rev-parse\0--verify\0refs/heads/feature/signal-pr^{commit}"]: { stdout: `${LOCAL_HEAD_SHA}\n` },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+  });
+  registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
+  const pullRequestTool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+  await pullRequestTool.execute(
+    "call-pr-signal",
+    { headBranch: "feature/signal-pr", baseBranch: "main", title: "Title", body: "Body", draft: false },
+    signal,
+    undefined,
+    ctx,
+  );
+
+  assert.ok(pi.calls.every((call) => call.options.signal === signal));
+  assert.deepEqual(
+    requests.map((request) => request.init.signal),
+    [signal, signal, signal],
+  );
+});
+
+test("public BranchMe tools fail on killed status, switch, and push operations", async () => {
+  const statusPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0feature/timeout"]: { stdout: "feature/timeout\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/timeout"]: { code: 0 },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { code: 0, killed: true, stderr: "operation timed out\n" },
+  });
+  registerBranchMeTools(statusPi);
+  const statusTool = toolByName(statusPi, CHANGE_BRANCH_TOOL_NAME);
+
+  await assert.rejects(
+    () => statusTool.execute("call-change-timeout", { branchName: "feature/timeout" }, undefined, undefined, ctx),
+    /git status .*failed \(killed\).*timed out/i,
+  );
+  assert.equal(statusPi.calls.some((call) => call.args[0] === "switch"), false);
+
+  const switchPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["check-ref-format\0--branch\0feature/timeout"]: { stdout: "feature/timeout\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/timeout"]: { code: 1 },
+    ["switch\0-c\0feature/timeout"]: { code: 0, killed: true, stderr: "operation timed out\n" },
+  });
+  registerBranchMeTools(switchPi);
+  const switchTool = toolByName(switchPi, CREATE_BRANCH_TOOL_NAME);
+
+  await assert.rejects(
+    () => switchTool.execute("call-create-timeout", { branchName: "feature/timeout" }, undefined, undefined, ctx),
+    /git switch -c feature\/timeout failed \(killed\).*timed out/i,
+  );
+
+  const pushPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/timeout\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/timeout\n" },
+    ["config\0--get\0branch.feature/timeout.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/timeout.merge"]: { stdout: "refs/heads/feature/timeout\n" },
+    ["push\0origin\0HEAD:refs/heads/feature/timeout"]: { code: 0, killed: true, stderr: "operation timed out\n" },
+  });
+  registerBranchMeTools(pushPi);
+  const pushTool = toolByName(pushPi, PUSH_BRANCH_TOOL_NAME);
+
+  await assert.rejects(() => pushTool.execute("call-push-timeout", {}, undefined, undefined, ctx), /git push .*failed \(killed\).*timed out/i);
+});
+
+test("pull_request stops after abort-like GitHub fetch failures", async () => {
+  const scenarios = [
+    { name: "head preflight", failAt: 1, expectedMethods: ["GET"] },
+    { name: "base preflight", failAt: 2, expectedMethods: ["GET", "GET"] },
+    { name: "pull request creation", failAt: 3, expectedMethods: ["GET", "GET", "POST"] },
+  ];
+
+  for (const scenario of scenarios) {
+    const requests = [];
+    const fetchImpl = async (url, init) => {
+      requests.push({ url, init });
+      if (requests.length === scenario.failAt) throw abortLikeError();
+      if (init.method === "GET") return jsonResponse(branchPayload(url.endsWith("/branches/feature%2Fabort") ? LOCAL_HEAD_SHA : REMOTE_BASE_SHA));
+      return jsonResponse(pullRequestPayload({ head: { ref: "feature/abort" } }), 201);
+    };
+    const pi = makePi({
+      ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+      ["show-ref\0--verify\0--quiet\0refs/heads/feature/abort"]: { code: 0 },
+      ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+      ["rev-parse\0--verify\0refs/heads/feature/abort^{commit}"]: { stdout: `${LOCAL_HEAD_SHA}\n` },
+      ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+    });
+    registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_secret123" }, fetchImpl });
+    const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+    await assert.rejects(
+      () =>
+        tool.execute(
+          `call-pr-abort-${scenario.failAt}`,
+          { headBranch: "feature/abort", baseBranch: "main", title: "Title", body: "Body", draft: false },
+          undefined,
+          undefined,
+          ctx,
+        ),
+      /abort/i,
+      scenario.name,
+    );
+
+    assert.deepEqual(
+      requests.map((request) => request.init.method),
+      scenario.expectedMethods,
+      scenario.name,
+    );
+    if (scenario.failAt < 3) {
+      assert.equal(requests.some((request) => request.init.method === "POST"), false, scenario.name);
+    }
+    if (scenario.failAt === 1) {
+      assert.equal(pi.calls.some((call) => call.args.join("\0") === "rev-parse\0--verify\0refs/heads/feature/abort^{commit}"), false);
+    }
+  }
+});
+
 test("pull_request has required strict schema and rejects repository parameters", () => {
   const pi = makePi();
   registerBranchMeTools(pi);
@@ -355,6 +546,65 @@ test("pull_request rejects cross-repository and unsafe branch refs before creati
   );
 
   assert.equal(called, false);
+  assert.equal(pi.calls.some((call) => call.args[0] === "remote"), false);
+});
+
+test("pull_request rejects Git-invalid branch refs before repository, token, existence, or fetch work", async () => {
+  let called = false;
+  const fetchImpl = async () => {
+    called = true;
+    throw new Error("fetch should not be called");
+  };
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0feature/.hidden"]: { code: 1, stderr: "fatal: invalid branch name\n" },
+  });
+  registerBranchMeTools(pi, { env: {}, fetchImpl });
+  const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+  await assert.rejects(
+    () =>
+      tool.execute(
+        "call-pr-dot-component",
+        { headBranch: "feature/.hidden", baseBranch: "main", title: "Title", body: "", draft: false },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    /headBranch is not a valid local branch name/i,
+  );
+
+  assert.equal(called, false);
+  assert.equal(pi.calls.some((call) => call.args[0] === "show-ref"), false);
+  assert.equal(pi.calls.some((call) => call.args[0] === "remote"), false);
+});
+
+test("pull_request rejects full refs before repository, token, existence, or fetch work", async () => {
+  let called = false;
+  const fetchImpl = async () => {
+    called = true;
+    throw new Error("fetch should not be called");
+  };
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+  });
+  registerBranchMeTools(pi, { env: {}, fetchImpl });
+  const tool = toolByName(pi, PULL_REQUEST_TOOL_NAME);
+
+  await assert.rejects(
+    () =>
+      tool.execute(
+        "call-pr-full-ref",
+        { headBranch: "refs/heads/feature/current", baseBranch: "main", title: "Title", body: "", draft: false },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    /must be a branch name, not a full ref path/i,
+  );
+
+  assert.equal(called, false);
+  assert.equal(pi.calls.some((call) => call.args[0] === "check-ref-format"), false);
   assert.equal(pi.calls.some((call) => call.args[0] === "remote"), false);
 });
 
@@ -506,6 +756,7 @@ test("pull_request queues behind an in-flight push_branch for the same repositor
       if (key === "show-ref\0--verify\0--quiet\0refs/heads/main") return result({ code: 0 });
       if (key === "rev-parse\0--verify\0refs/heads/feature/current^{commit}") return result({ stdout: `${LOCAL_HEAD_SHA}\n` });
       if (key === "remote\0get-url\0origin") return result({ stdout: "https://github.com/senad-d/branchme.git\n" });
+      if (args[0] === "check-ref-format" && args[1] === "--branch") return result({ stdout: `${args[2]}\n` });
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     },
   };
@@ -562,6 +813,7 @@ test("same-batch pull_request before push_branch fails early with retry guidance
       if (key === "symbolic-ref\0--quiet\0--short\0HEAD") return result({ stdout: "feature/current\n" });
       if (key === "rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}") return result({ code: 1, stderr: "no upstream\n" });
       if (key === "push\0--set-upstream\0origin\0feature/current") return result({ stdout: "published\n" });
+      if (args[0] === "check-ref-format" && args[1] === "--branch") return result({ stdout: `${args[2]}\n` });
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     },
   };

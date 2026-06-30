@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { BRANCHME_COMMAND_NAME, EXTENSION_DISPLAY_NAME } from "../constants.ts";
 import { getBranchStatus } from "../git.ts";
-import { repositoryLabel, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
+import { redactSecrets, repositoryLabel, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
 import { BranchMePanel, type BranchMePanelData } from "../ui/branchme-panel.ts";
 
 export type BranchMeCommandMode = "panel" | "help" | "unsupported";
@@ -56,6 +56,39 @@ function emitCommandMessage(ctx: ExtensionCommandContext, message: string, level
   }
 }
 
+function safeWarningText(error: unknown): string {
+  return redactSecrets(error instanceof Error ? error.message : String(error));
+}
+
+function repositoryWarningFromError(error: unknown): string | null {
+  const message = safeWarningText(error);
+  if (/Unable to resolve a GitHub repository from origin or GITHUB_REPOSITORY/iu.test(message)) return null;
+  if (/Not a git repository/iu.test(message)) return null;
+  return message;
+}
+
+function tokenWarningFromError(error: unknown): string | null {
+  const message = safeWarningText(error);
+  if (/GitHub token is required\. Set GITHUB_TOKEN or GH_TOKEN/iu.test(message)) return null;
+  return message;
+}
+
+function hasPanelWarning(data: BranchMePanelData): boolean {
+  return Boolean(data.statusNote || data.repositoryWarning || data.tokenWarning);
+}
+
+function summaryRepository(data: BranchMePanelData): string {
+  return data.repositoryWarning ? `warning: ${data.repositoryWarning}` : data.githubRepository ?? "not resolved";
+}
+
+function summaryToken(data: BranchMePanelData): string {
+  return data.tokenWarning ? `warning: ${data.tokenWarning}` : data.tokenSource ? `present (${data.tokenSource})` : "not set";
+}
+
+function summaryStatusWarning(data: BranchMePanelData): string {
+  return data.statusNote ? `; warning: ${data.statusNote}` : "";
+}
+
 async function collectPanelData(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: ExtensionCommandContext,
@@ -74,20 +107,24 @@ async function collectPanelData(
     data.detached = status.detached;
     tokenLookupCwd = status.repoRoot;
   } catch (error) {
-    data.statusNote = error instanceof Error ? error.message : String(error);
+    data.statusNote = safeWarningText(error);
   }
 
-  try {
-    const repository = await resolveGitHubRepository(pi, ctx, ctx.signal);
-    data.githubRepository = repositoryLabel(repository);
-  } catch {
-    data.githubRepository = null;
+  if (!data.statusNote) {
+    try {
+      const repository = await resolveGitHubRepository(pi, ctx, ctx.signal);
+      data.githubRepository = repositoryLabel(repository);
+    } catch (error) {
+      data.githubRepository = null;
+      data.repositoryWarning = repositoryWarningFromError(error) ?? undefined;
+    }
   }
 
   try {
     data.tokenSource = (await resolveGitHubToken(process.env, { cwd: tokenLookupCwd, signal: ctx.signal })).source;
-  } catch {
+  } catch (error) {
     data.tokenSource = null;
+    data.tokenWarning = tokenWarningFromError(error) ?? undefined;
   }
 
   return data;
@@ -100,8 +137,8 @@ async function showPanel(pi: Pick<ExtensionAPI, "exec">, ctx: ExtensionCommandCo
     const branch = data.detached ? "detached HEAD" : data.currentBranch ?? "unknown";
     emitCommandMessage(
       ctx,
-      `${EXTENSION_DISPLAY_NAME}: branch ${branch}; GitHub repository ${data.githubRepository ?? "not resolved"}; token ${data.tokenSource ? `present (${data.tokenSource})` : "not set"}.`,
-      data.statusNote ? "warning" : "info",
+      `${EXTENSION_DISPLAY_NAME}: branch ${branch}; GitHub repository ${summaryRepository(data)}; token ${summaryToken(data)}${summaryStatusWarning(data)}.`,
+      hasPanelWarning(data) ? "warning" : "info",
     );
     return;
   }

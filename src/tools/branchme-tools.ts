@@ -15,6 +15,7 @@ import {
   getLocalBranchCommit,
   localBranchExists,
   pushCurrentBranch,
+  validateBranchName,
   withRepositoryMutationQueue,
 } from "../git.ts";
 import {
@@ -83,14 +84,30 @@ export function formatPullRequest(details: PullRequestDetails): string {
   return `Created pull request #${details.number} (${details.state}) for ${repositoryLabel(details.repository)}: ${details.url}`;
 }
 
-async function requireExistingLocalPullRequestBranch(
+async function validateLocalPullRequestBranchName(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: { cwd: string },
   branchName: string,
   field: "headBranch" | "baseBranch",
   signal?: AbortSignal,
 ): Promise<void> {
+  // Keep PR-specific safety rules and local branch semantics on one path before existence checks.
   validatePullRequestBranchRef(branchName, field);
+  try {
+    await validateBranchName(pi, ctx, branchName, signal);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${field} is not a valid local branch name: ${redactSecrets(message)}.`);
+  }
+}
+
+async function requireExistingValidatedLocalPullRequestBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: { cwd: string },
+  branchName: string,
+  field: "headBranch" | "baseBranch",
+  signal?: AbortSignal,
+): Promise<void> {
   if (await localBranchExists(pi, ctx, branchName, signal)) return;
   throw new Error(`${field} local branch '${redactSecrets(branchName)}' does not exist.`);
 }
@@ -223,8 +240,10 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const rootCtx = { cwd: repoRoot };
 
       return withRepositoryMutationQueue(repoRoot, async () => {
-        await requireExistingLocalPullRequestBranch(pi, rootCtx, params.headBranch, "headBranch", signal);
-        await requireExistingLocalPullRequestBranch(pi, rootCtx, params.baseBranch, "baseBranch", signal);
+        await validateLocalPullRequestBranchName(pi, rootCtx, params.headBranch, "headBranch", signal);
+        await validateLocalPullRequestBranchName(pi, rootCtx, params.baseBranch, "baseBranch", signal);
+        await requireExistingValidatedLocalPullRequestBranch(pi, rootCtx, params.headBranch, "headBranch", signal);
+        await requireExistingValidatedLocalPullRequestBranch(pi, rootCtx, params.baseBranch, "baseBranch", signal);
         const repository = await resolveGitHubRepository(pi, rootCtx, signal, options.env);
         const token = (await resolveGitHubToken(options.env, { cwd: repoRoot, signal })).token;
 

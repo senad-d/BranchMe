@@ -220,6 +220,29 @@ test("createGitHubPullRequest rejects owner-prefixed head branches before fetch"
   assert.equal(called, false);
 });
 
+test("createGitHubPullRequest validates direct input field types before fetch", async () => {
+  const cases = [
+    ["non-string title", { headBranch: "feature/current", baseBranch: "main", title: 42, body: "Body", draft: false }, /title must be a string/i],
+    ["missing body", { headBranch: "feature/current", baseBranch: "main", title: "Title", draft: false }, /body must be a string/i],
+    ["invalid body", { headBranch: "feature/current", baseBranch: "main", title: "Title", body: 42, draft: false }, /body must be a string/i],
+    ["invalid draft", { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "Body", draft: "false" }, /draft must be a boolean/i],
+  ];
+
+  for (const [name, input, messagePattern] of cases) {
+    let called = false;
+    const fetchImpl = async () => {
+      called = true;
+      throw new Error("fetch should not be called");
+    };
+
+    await assert.rejects(
+      () => createGitHubPullRequest({ owner: "senad-d", repo: "branchme" }, input, "ghp_secret123", { fetchImpl }),
+      (error) => error instanceof Error && messagePattern.test(error.message) && !/TypeError|secret123/u.test(error.message),
+    );
+    assert.equal(called, false, `${name} should fail before fetch`);
+  }
+});
+
 test("createGitHubPullRequest validates repository owner and repo before fetch", async () => {
   const invalidRepositories = [
     [{ owner: "", repo: "branchme" }, /owner is required/i],
@@ -305,6 +328,46 @@ test("createGitHubPullRequest sends expected request and parses response", async
     body: "Body",
     draft: true,
   });
+});
+
+test("createGitHubPullRequest rejects malformed pull request response numbers", async () => {
+  const basePayload = {
+    html_url: "https://github.com/senad-d/branchme/pull/42",
+    state: "open",
+    draft: false,
+    head: { ref: "feature/current" },
+    base: { ref: "main" },
+  };
+  const responseWithNumber = (numberJson) => `{"number":${numberJson},"html_url":"${basePayload.html_url}","state":"open","draft":false,"head":{"ref":"feature/current"},"base":{"ref":"main"}}`;
+  const cases = [
+    ["missing", JSON.stringify(basePayload)],
+    ["string", JSON.stringify({ ...basePayload, number: "42" })],
+    ["non-integer", JSON.stringify({ ...basePayload, number: 1.5 })],
+    ["non-finite", responseWithNumber("1e999")],
+    ["zero", JSON.stringify({ ...basePayload, number: 0 })],
+    ["negative", JSON.stringify({ ...basePayload, number: -1 })],
+    ["unsafe", responseWithNumber(String(Number.MAX_SAFE_INTEGER + 1))],
+  ];
+
+  for (const [name, body] of cases) {
+    const fetchImpl = async () =>
+      new Response(body, {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+
+    await assert.rejects(
+      () =>
+        createGitHubPullRequest(
+          { owner: "senad-d", repo: "branchme" },
+          { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "Body", draft: false },
+          "ghp_secret123",
+          { fetchImpl },
+        ),
+      (error) => error instanceof Error && /pull request number.*finite positive safe integer/i.test(error.message),
+      `${name} response number should be rejected`,
+    );
+  }
 });
 
 test("createGitHubPullRequest redacts API errors", async () => {
