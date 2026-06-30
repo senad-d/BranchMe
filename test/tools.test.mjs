@@ -123,6 +123,31 @@ test("branch_status has strict schema, prompt metadata, and read-only details", 
   assert.deepEqual(mutatingCommands, []);
 });
 
+test("branch_status reports partial status warnings when ahead/behind is unavailable", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/stale\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/stale\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/stale...origin/feature/stale\n" },
+    ["rev-list\0--left-right\0--count\0HEAD...@{u}"]: { code: 128, stderr: "fatal: upstream is gone\n" },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+  });
+  registerBranchMeTools(pi, { env: {} });
+  const tool = toolByName(pi, BRANCH_STATUS_TOOL_NAME);
+
+  const output = await tool.execute("call-status-warning", {}, undefined, undefined, ctx);
+
+  assert.equal(output.details.currentBranch, "feature/stale");
+  assert.equal(output.details.hasChanges, false);
+  assert.equal(output.details.ahead, null);
+  assert.equal(output.details.behind, null);
+  assert.match(output.details.warnings[0], /ahead\/behind unavailable/i);
+  assert.match(output.content[0].text, /feature\/stale/);
+  assert.match(output.content[0].text, /clean/);
+  assert.match(output.content[0].text, /ahead\/behind unavailable/);
+  assert.match(output.content[0].text, /warning:/);
+});
+
 test("create_branch schema accepts only branchName and constructs git switch", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },

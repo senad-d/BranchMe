@@ -257,3 +257,90 @@ test("createGitHubPullRequest redacts API errors", async () => {
     (error) => error instanceof Error && /HTTP 401/.test(error.message) && !/secret123/.test(error.message),
   );
 });
+
+test("createGitHubPullRequest bounds oversized API error bodies", async () => {
+  const fetchImpl = async () =>
+    new Response(`bad token ghp_secret123\n${"x".repeat(80 * 1024)}`, {
+      status: 500,
+      headers: { "content-type": "text/plain" },
+    });
+
+  await assert.rejects(
+    () =>
+      createGitHubPullRequest(
+        { owner: "senad-d", repo: "branchme" },
+        { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "", draft: false },
+        "ghp_secret123",
+        { fetchImpl },
+      ),
+    (error) =>
+      error instanceof Error &&
+      /HTTP 500/.test(error.message) &&
+      /truncated/.test(error.message) &&
+      !/secret123/.test(error.message) &&
+      error.message.length < 5_000,
+  );
+});
+
+test("createGitHubPullRequest fails oversized malformed JSON before parsing", async () => {
+  const fetchImpl = async () =>
+    new Response(`{"number":${"1".repeat(80 * 1024)}`, {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+
+  await assert.rejects(
+    () =>
+      createGitHubPullRequest(
+        { owner: "senad-d", repo: "branchme" },
+        { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "", draft: false },
+        "ghp_secret123",
+        { fetchImpl },
+      ),
+    (error) => error instanceof Error && /byte limit/.test(error.message) && error.message.length < 200,
+  );
+});
+
+test("createGitHubPullRequest rejects non-object JSON responses", async () => {
+  const fetchImpl = async () =>
+    new Response("[]", {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+
+  await assert.rejects(
+    () =>
+      createGitHubPullRequest(
+        { owner: "senad-d", repo: "branchme" },
+        { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "", draft: false },
+        "ghp_secret123",
+        { fetchImpl },
+      ),
+    /response was not an object/i,
+  );
+});
+
+test("createGitHubPullRequest respects aborts before response body parsing", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const fetchImpl = async () =>
+    new Response(
+      JSON.stringify({
+        number: 42,
+        html_url: "https://github.com/senad-d/branchme/pull/42",
+        state: "open",
+      }),
+      { status: 201, headers: { "content-type": "application/json" } },
+    );
+
+  await assert.rejects(
+    () =>
+      createGitHubPullRequest(
+        { owner: "senad-d", repo: "branchme" },
+        { headBranch: "feature/current", baseBranch: "main", title: "Title", body: "", draft: false },
+        "ghp_secret123",
+        { fetchImpl, signal: controller.signal },
+      ),
+    /aborted/i,
+  );
+});

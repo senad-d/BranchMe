@@ -48,7 +48,7 @@
 
 ## Ordered tasks
 
-- [ ] Add automated non-mutating Pi runtime smoke coverage for the packaged extension
+- [x] Add automated non-mutating Pi runtime smoke coverage for the packaged extension
 
 #### Why
 
@@ -69,7 +69,7 @@ Current tests instantiate BranchMe with fake Pi APIs and inspect helper behavior
 - The check has clear skip/failure behavior when Pi is unavailable.
 - Relevant validation commands pass or documented blockers explain why the smoke check is deferred.
 
-- [ ] Make `branch_status` resilient to partial git status failures
+- [x] Make `branch_status` resilient to partial git status failures
 
 #### Why
 
@@ -90,7 +90,7 @@ Current tests instantiate BranchMe with fake Pi APIs and inspect helper behavior
 - Tests cover stale/unavailable upstream count behavior.
 - Relevant validation commands pass.
 
-- [ ] Bound GitHub API response consumption and error parsing
+- [x] Bound GitHub API response consumption and error parsing
 
 #### Why
 
@@ -111,7 +111,7 @@ Current tests instantiate BranchMe with fake Pi APIs and inspect helper behavior
 - Existing successful PR response parsing still works.
 - Relevant validation commands pass.
 
-- [ ] Add runtime schema-validation tests for BranchMe tool inputs
+- [x] Add runtime schema-validation tests for BranchMe tool inputs
 
 #### Why
 

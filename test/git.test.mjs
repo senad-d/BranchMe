@@ -82,6 +82,31 @@ test("getBranchStatus reads current git state with argv-style commands", async (
   );
 });
 
+test("getBranchStatus preserves partial status when ahead/behind counting fails", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/stale\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/stale\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/stale...origin/feature/stale\n M src/a.ts\n" },
+    ["rev-list\0--left-right\0--count\0HEAD...@{u}"]: {
+      code: 128,
+      stderr: "fatal: ambiguous argument 'HEAD...@{u}': unknown revision\n",
+    },
+  });
+
+  const details = await getBranchStatus(pi, ctx);
+
+  assert.equal(details.repoRoot, "/repo");
+  assert.equal(details.currentBranch, "feature/stale");
+  assert.equal(details.detached, false);
+  assert.equal(details.upstream, "origin/feature/stale");
+  assert.equal(details.hasChanges, true);
+  assert.equal(details.ahead, null);
+  assert.equal(details.behind, null);
+  assert.match(details.warnings[0], /ahead\/behind unavailable/i);
+  assert.match(details.warnings[0], /rev-list|ambiguous/i);
+});
+
 test("validateBranchName uses local checks and git check-ref-format", async () => {
   assert.throws(() => validateBranchNameInput("bad\nname"), /control/i);
   assert.throws(() => validateBranchNameInput("bad name"), /whitespace/i);

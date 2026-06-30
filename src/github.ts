@@ -5,6 +5,7 @@ import { redactSecrets } from "./redaction.ts";
 import {
   GITHUB_API_BASE_URL,
   GITHUB_API_VERSION,
+  GITHUB_RESPONSE_BODY_LIMIT_BYTES,
   GITHUB_USER_AGENT,
   MAX_SUMMARY_OUTPUT_CHARS,
 } from "./constants.ts";
@@ -302,12 +303,58 @@ function validatePullRequestInput(input: PullRequestInput): void {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringField(value: unknown, field: string): string {
   if (typeof value !== "string" || !value) throw new Error(`GitHub response is missing ${field}.`);
   return value;
+}
+
+interface BoundedResponseBody {
+  text: string;
+  truncated: boolean;
+}
+
+function throwIfResponseReadAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error("GitHub pull request response read was aborted.");
+}
+
+async function readBoundedResponseText(response: Response, signal: AbortSignal | undefined): Promise<BoundedResponseBody> {
+  throwIfResponseReadAborted(signal);
+  if (!response.body) return { text: "", truncated: false };
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let capturedBytes = 0;
+  let truncated = false;
+
+  try {
+    while (true) {
+      throwIfResponseReadAborted(signal);
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+
+      const remainingBytes = GITHUB_RESPONSE_BODY_LIMIT_BYTES - capturedBytes;
+      if (remainingBytes > 0) {
+        const capturedChunk = value.byteLength <= remainingBytes ? value : value.subarray(0, remainingBytes);
+        chunks.push(Buffer.from(capturedChunk));
+        capturedBytes += capturedChunk.byteLength;
+      }
+
+      if (value.byteLength > remainingBytes) {
+        truncated = true;
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const text = Buffer.concat(chunks).toString("utf8");
+  return { text: truncated ? `${text}… [truncated]` : text, truncated };
 }
 
 export async function createGitHubPullRequest(
@@ -350,15 +397,36 @@ export async function createGitHubPullRequest(
   }
 
   if (!response.ok) {
-    const body = await response.text().catch(() => "");
+    let body: BoundedResponseBody;
+    try {
+      body = await readBoundedResponseText(response, options.signal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `GitHub pull request request failed with HTTP ${response.status}: unable to read error response: ${redactSecrets(message, [token])}`,
+      );
+    }
+
     throw new Error(
-      `GitHub pull request request failed with HTTP ${response.status}: ${redactSecrets(truncate(body), [token])}`,
+      `GitHub pull request request failed with HTTP ${response.status}: ${redactSecrets(truncate(body.text), [token])}`,
     );
+  }
+
+  let responseBody: BoundedResponseBody;
+  try {
+    responseBody = await readBoundedResponseText(response, options.signal);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`GitHub pull request response could not be read: ${redactSecrets(message, [token])}`);
+  }
+
+  if (responseBody.truncated) {
+    throw new Error(`GitHub pull request response exceeded the ${GITHUB_RESPONSE_BODY_LIMIT_BYTES} byte limit.`);
   }
 
   let payload: unknown;
   try {
-    payload = await response.json();
+    payload = JSON.parse(responseBody.text);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`GitHub pull request response was not valid JSON: ${redactSecrets(message, [token])}`);

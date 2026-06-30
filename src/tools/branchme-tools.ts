@@ -59,7 +59,8 @@ export function formatBranchStatus(details: BranchStatusDetails): string {
   const tree = details.hasChanges ? "dirty" : "clean";
   const upstream = details.upstream ? `upstream ${details.upstream}` : "no upstream";
   const counts = details.ahead === null || details.behind === null ? "ahead/behind unavailable" : `ahead ${details.ahead}, behind ${details.behind}`;
-  return `BranchMe status: ${branch}; ${tree}; ${upstream}; ${counts}; GitHub ${repositoryText(details)}.`;
+  const warning = details.warnings?.length ? `; warning: ${details.warnings.join("; ")}` : "";
+  return `BranchMe status: ${branch}; ${tree}; ${upstream}; ${counts}; GitHub ${repositoryText(details)}${warning}.`;
 }
 
 export function formatChangeBranch(details: ChangeBranchDetails): string {

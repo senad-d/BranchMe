@@ -455,7 +455,17 @@ export async function getBranchStatus(
   const current = await getCurrentBranch(pi, ctx, signal);
   const upstream = current.detached ? null : await getUpstreamBranch(pi, ctx, signal);
   const hasChanges = await hasWorkingTreeChanges(pi, ctx, signal);
-  const counts = upstream ? await getAheadBehindCount(pi, ctx, signal) : { ahead: null, behind: null };
+  const warnings: string[] = [];
+  let counts: AheadBehindCount = { ahead: null, behind: null };
+  if (upstream) {
+    try {
+      counts = await getAheadBehindCount(pi, ctx, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const message = safeOutput(error instanceof Error ? error.message : String(error)) || "git rev-list failed";
+      warnings.push(`ahead/behind unavailable: ${message}`);
+    }
+  }
 
   return {
     repoRoot,
@@ -465,5 +475,6 @@ export async function getBranchStatus(
     hasChanges,
     ahead: counts.ahead,
     behind: counts.behind,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

@@ -24,3 +24,4 @@ export const GITHUB_API_VERSION = "2022-11-28";
 export const GITHUB_USER_AGENT = "BranchMe Pi extension";
 
 export const MAX_SUMMARY_OUTPUT_CHARS = 4_000;
+export const GITHUB_RESPONSE_BODY_LIMIT_BYTES = 64 * 1024;

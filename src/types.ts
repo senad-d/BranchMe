@@ -21,6 +21,7 @@ export interface BranchStatusDetails {
   hasChanges: boolean;
   ahead: number | null;
   behind: number | null;
+  warnings?: string[];
   githubRepository?: GitHubRepository;
 }
 
