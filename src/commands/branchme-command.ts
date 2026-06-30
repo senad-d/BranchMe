@@ -87,7 +87,7 @@ async function showPanel(pi: Pick<ExtensionAPI, "exec">, ctx: ExtensionCommandCo
     return;
   }
 
-  await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => new BranchMePanel(data, theme, () => done(undefined)));
+  await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new BranchMePanel(data, theme, () => done(undefined), () => tui.requestRender()));
 }
 
 export function registerBranchMeCommand(pi: Pick<ExtensionAPI, "registerCommand" | "exec">): void {

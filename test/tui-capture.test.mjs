@@ -30,13 +30,46 @@ const panelCases = [
     },
   },
   {
-    title: "Wide mode: clean branch with token",
+    title: "Wide mode: Status selected",
     width: 80,
+    selectedSection: "status",
     data: {
       currentBranch: "feature/current",
       detached: false,
       githubRepository: "senad-d/branchme",
       tokenSource: "GITHUB_TOKEN",
+    },
+  },
+  {
+    title: "Wide mode: Workflow selected",
+    width: 80,
+    selectedSection: "workflow",
+    data: {
+      currentBranch: "feature/current",
+      detached: false,
+      githubRepository: "senad-d/branchme",
+      tokenSource: "GITHUB_TOKEN",
+    },
+  },
+  {
+    title: "Wide mode: Safety selected",
+    width: 80,
+    selectedSection: "safety",
+    data: {
+      currentBranch: "feature/current",
+      detached: false,
+      githubRepository: "senad-d/branchme",
+      tokenSource: "GITHUB_TOKEN",
+    },
+  },
+  {
+    title: "Very wide terminal: panel width capped",
+    width: 112,
+    data: {
+      currentBranch: "main",
+      detached: false,
+      githubRepository: "senad-d/BranchMe",
+      tokenSource: null,
     },
   },
   {
@@ -90,11 +123,12 @@ function renderCapture() {
   ];
 
   for (const panelCase of panelCases) {
-    const renderedLines = renderBranchMePanelLines(panelCase.data, panelCase.width);
+    const renderedLines = renderBranchMePanelLines(panelCase.data, panelCase.width, undefined, panelCase.selectedSection);
     assert.ok(
       renderedLines.every((line) => line.length <= panelCase.width),
       `${panelCase.title} exceeded width ${panelCase.width}`,
     );
+    assert.ok(renderedLines.length <= 14, `${panelCase.title} exceeded maximum height`);
 
     lines.push(
       "",

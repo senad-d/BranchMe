@@ -83,6 +83,10 @@ test("/branchme fallback uses read-only git status and no mutation commands", as
   assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add"].includes(call.args[0])), false);
 });
 
+function stripAnsi(value) {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
 test("BranchMe panel renderer clips every line to terminal width", () => {
   const data = {
     currentBranch: "feature/current",
@@ -91,9 +95,53 @@ test("BranchMe panel renderer clips every line to terminal width", () => {
     tokenSource: "GITHUB_TOKEN",
   };
 
-  for (const width of [12, 24, 50, 80]) {
+  for (const width of [12, 24, 50, 80, 112]) {
     const lines = renderBranchMePanelLines(data, width);
     assert.ok(lines.length > 0);
+    assert.ok(lines.length <= 14, `panel exceeded maximum height at width ${width}: ${lines.length} lines`);
     assert.ok(lines.every((line) => line.length <= width), `line exceeded width ${width}: ${lines.join("\n")}`);
   }
+});
+
+test("BranchMe wide panel shows only the selected right-side section", () => {
+  const data = {
+    currentBranch: "main",
+    detached: false,
+    githubRepository: "senad-d/BranchMe",
+    tokenSource: null,
+  };
+
+  const visibleText = renderBranchMePanelLines(data, 80, undefined, "workflow").join("\n");
+
+  assert.match(visibleText, /WORKFLOW/);
+  assert.match(visibleText, /▶  Workflow/);
+  assert.doesNotMatch(visibleText, /STATUS/);
+  assert.doesNotMatch(visibleText, /SAFETY/);
+  assert.equal(visibleText.split("\n").length <= 14, true);
+});
+
+test("BranchMe panel renderer does not leak ANSI escape bodies into visible text", () => {
+  const data = {
+    currentBranch: "main",
+    detached: false,
+    githubRepository: "senad-d/BranchMe",
+    tokenSource: null,
+  };
+  const theme = {
+    fg(_role, value) {
+      return `\u001b[38;2;54;249;246m${value}\u001b[39m`;
+    },
+    bold(value) {
+      return `\u001b[1m${value}\u001b[22m`;
+    },
+  };
+
+  const visibleText = renderBranchMePanelLines(data, 112, theme).map(stripAnsi).join("\n");
+
+  assert.doesNotMatch(visibleText, /\[[0-9;]+m/);
+  assert.match(visibleText, /STATUS/);
+  assert.match(visibleText, /Workflow/);
+  assert.match(visibleText, /Safety/);
+  assert.doesNotMatch(visibleText, /WORKFLOW\s*\n/);
+  assert.doesNotMatch(visibleText, /SAFETY\s*\n/);
 });
