@@ -52,17 +52,6 @@ const panelCases = [
     },
   },
   {
-    title: "Wide mode: Safety selected",
-    width: 80,
-    selectedSection: "safety",
-    data: {
-      currentBranch: "feature/current",
-      detached: false,
-      githubRepository: "senad-d/branchme",
-      tokenSource: "GITHUB_TOKEN",
-    },
-  },
-  {
     title: "Very wide terminal: panel width capped",
     width: 112,
     data: {
@@ -84,7 +73,7 @@ const panelCases = [
     },
   },
   {
-    title: "Long values: truncation and tail preservation",
+    title: "Long values: truncation",
     width: 72,
     data: {
       currentBranch: "feature/super-long-branch-name-for-layout-regression-capture",

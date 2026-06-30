@@ -15,10 +15,11 @@ BranchMe runs local `git` commands through Pi's extension API with argv-style ar
 
 Implemented git mutations are limited to:
 
+- `change_branch`: `git switch <branchName>` after branch-name validation, local `refs/heads/<branchName>` verification, and clean-worktree preflight.
 - `create_branch`: `git switch -c <branchName>` from current `HEAD` after branch-name validation and existing-branch checks.
 - `push_branch`: `git push` for the current branch, or `git push --set-upstream origin <currentBranch>` when no upstream exists.
 
-BranchMe does not stage files, create commits, stash, reset, rebase, merge, or edit working-tree files.
+Branch switching can update working-tree files as normal Git checkout behavior. BranchMe rejects dirty worktrees before `change_branch` and does not force checkout, stash, stage files, create commits, reset, rebase, merge, or edit files directly.
 
 ## Network behavior
 
@@ -36,6 +37,7 @@ BranchMe operates on the current repository only.
 
 - The GitHub repository is inferred from local `origin` and/or `GITHUB_REPOSITORY`.
 - Tool inputs never accept filesystem paths, `owner`, or `repo` fields.
+- `change_branch` accepts only `branchName` and never creates branches, checks out remote branches, forces, stashes, or discards changes.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, PR creation fails closed.
 
 ## Credentials

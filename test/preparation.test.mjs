@@ -54,6 +54,7 @@ test("public documentation describes implemented behavior", async () => {
 
   const readme = await readProjectFile("README.md");
   assert.match(readme, /branch_status/);
+  assert.match(readme, /change_branch/);
   assert.match(readme, /create_branch/);
   assert.match(readme, /push_branch/);
   assert.match(readme, /pull_request/);

@@ -16,17 +16,23 @@ UPDATE_TUI_CAPTURE=1 node --test test/tui-capture.test.mjs
 ```text
 # BranchMe
 
-BranchMe adds current-repository branch workflow tools to Pi.
+Current-repository branch workflow tools for Pi.
+
+Commands only show info; BranchMe tools perform actions.
 
 ## Workflow
 
-1. Use `branch_status` to inspect the current repository and branch state.
-2. Use `create_branch` with an explicit `branchName` to create and checkout a branch from current `HEAD`.
-3. Create commits outside BranchMe.
-4. Use `push_branch` to push the current branch, publishing it to `origin` when no upstream exists.
-5. Use `pull_request` with explicit PR fields to open a GitHub pull request in the current repository.
+1. `branch_status` — inspect repo and branch state.
+2. `change_branch` / `create_branch` — switch to an existing clean branch or create one from `HEAD`.
+3. Commit outside BranchMe.
+4. `push_branch` — push the current branch.
+5. `pull_request` — open a PR in the current GitHub repo.
 
-BranchMe slash commands are informational only; they never create branches, push, commit, or open pull requests.
+## Requirements
+
+- Run inside a Git repo with `git` available.
+- For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN`.
+- BranchMe never stages or commits.
 ```
 
 ## Panel: Tiny mode: clean branch with token
@@ -47,17 +53,17 @@ Width: 40
 ```text
 ╭ BranchMe ──────────────────── Status ╮
 │current repo only • informational     │
-│↑↓ section • q quit • /branchme help  │
+│ ↑↓ section • q quit • /branchme help │
 ├──────────────────────────────────────┤
-│STATUS                                │
-│Current branch feature/current        │
-│GitHub repository …nad-d/branchme     │
-│GitHub token present                  │
+│ STATUS                               │
+│  Current branch:    feature/current  │
+│  GitHub repository: senad-d/branchme │
+│  GitHub token:      present          │
 │                                      │
 │                                      │
 │                                      │
 ├──────────────────────────────────────┤
-│1/3 • status • current repository onl…│
+│ 1/2 • status • current repository on…│
 ╰──────────────────────────────────────╯
 ```
 
@@ -67,17 +73,17 @@ Width: 80
 
 ```text
 ╭ BranchMe ──────────────────────────────────────────────────────────── Status ╮
-│↑↓ section • q quit • /branchme help                                          │
+│ ↑↓ section • q quit • /branchme help                                         │
 ├─────────────────────┬────────────────────────────────────────────────────────┤
-│▶  Status            │STATUS                                                  │
-│   Workflow          │Current branch feature/current                          │
-│   Safety            │GitHub repository senad-d/branchme                      │
-│                     │GitHub token present                                    │
+│▶  Status            │ STATUS                                                 │
+│   Workflow          │  Current branch:    feature/current                    │
+│                     │  GitHub repository: senad-d/branchme                   │
+│                     │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│1/3 • status • current repository only • tools perform actions                │
+│ 1/2 • status • current repository only • tools perform actions               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -87,37 +93,17 @@ Width: 80
 
 ```text
 ╭ BranchMe ────────────────────────────────────────────────────────── Workflow ╮
-│↑↓ section • q quit • /branchme help                                          │
+│ ↑↓ section • q quit • /branchme help                                         │
 ├─────────────────────┬────────────────────────────────────────────────────────┤
-│   Status            │WORKFLOW                                                │
-│▶  Workflow          │1 branch_status inspect                                 │
-│   Safety            │2 create_branch from HEAD                               │
-│                     │3 push_branch current branch                            │
-│                     │4 pull_request current repo PR                          │
-│                     │                                                        │
+│   Status            │ WORKFLOW                                               │
+│▶  Workflow          │  branch_status  -> inspect                             │
+│                     │  change_branch  -> existing local                      │
+│                     │  create_branch  -> from HEAD                           │
+│                     │  push_branch    -> current branch                      │
+│                     │  pull_request   -> current repo PR                     │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│2/3 • workflow • inspect → branch → push → PR                                 │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-## Panel: Wide mode: Safety selected
-
-Width: 80
-
-```text
-╭ BranchMe ──────────────────────────────────────────────────────────── Safety ╮
-│↑↓ section • q quit • /branchme help                                          │
-├─────────────────────┬────────────────────────────────────────────────────────┤
-│   Status            │SAFETY                                                  │
-│   Workflow          │Commits never                                           │
-│▶  Safety            │Staging never                                           │
-│                     │File edits never                                        │
-│                     │Repository current only                                 │
-│                     │Token source env only                                   │
-│                     │                                                        │
-├─────────────────────┴────────────────────────────────────────────────────────┤
-│3/3 • safety • no commits/staging/file edits                                  │
+│ 2/2 • workflow • inspect → change/create → push → PR                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -127,17 +113,17 @@ Width: 112
 
 ```text
 ╭ BranchMe ──────────────────────────────────────────────────────────────────────────── Status ╮
-│↑↓ section • q quit • /branchme help                                                          │
+│ ↑↓ section • q quit • /branchme help                                                         │
 ├──────────────────────┬───────────────────────────────────────────────────────────────────────┤
-│▶  Status             │STATUS                                                                 │
-│   Workflow           │Current branch main                                                    │
-│   Safety             │GitHub repository senad-d/BranchMe                                     │
-│                      │GitHub token not set                                                   │
+│▶  Status             │ STATUS                                                                │
+│   Workflow           │  Current branch:    main                                              │
+│                      │  GitHub repository: senad-d/BranchMe                                  │
+│                      │  GitHub token:      not set                                           │
 │                      │                                                                       │
 │                      │                                                                       │
 │                      │                                                                       │
 ├──────────────────────┴───────────────────────────────────────────────────────────────────────┤
-│1/3 • status • current repository only • tools perform actions                                │
+│ 1/2 • status • current repository only • tools perform actions                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -148,36 +134,36 @@ Width: 50
 ```text
 ╭ BranchMe ────────────────────────────── Status ╮
 │current repo only • informational               │
-│↑↓ section • q quit • /branchme help            │
+│ ↑↓ section • q quit • /branchme help           │
 ├────────────────────────────────────────────────┤
-│STATUS                                          │
-│Current branch detached HEAD                    │
-│GitHub repository not resolved                  │
-│GitHub token not set                            │
+│ STATUS                                         │
+│  Current branch:    detached HEAD              │
+│  GitHub repository: not resolved               │
+│  GitHub token:      not set                    │
 │                                                │
 │                                                │
 │                                                │
 ├────────────────────────────────────────────────┤
-│1/3 • warning • Unable to resolve a GitHub repo…│
+│ 1/2 • warning • Unable to resolve a GitHub rep…│
 ╰────────────────────────────────────────────────╯
 ```
 
-## Panel: Long values: truncation and tail preservation
+## Panel: Long values: truncation
 
 Width: 72
 
 ```text
 ╭ BranchMe ──────────────────────────────────────────────────── Status ╮
-│↑↓ section • q quit • /branchme help                                  │
+│ ↑↓ section • q quit • /branchme help                                 │
 ├───────────────────┬──────────────────────────────────────────────────┤
-│▶  Status          │STATUS                                            │
-│   Workflow        │Current branch …t-regression-capture              │
-│   Safety          │GitHub repository …ry-name-for-branchme           │
-│                   │GitHub token present                              │
+│▶  Status          │ STATUS                                           │
+│   Workflow        │  Current branch:    feature/super-long-branch-na…│
+│                   │  GitHub repository: very-long-owner-name/very-lo…│
+│                   │  GitHub token:      present                      │
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
 ├───────────────────┴──────────────────────────────────────────────────┤
-│1/3 • warning • This deliberately long status note is captured to det…│
+│ 1/2 • warning • This deliberately long status note is captured to de…│
 ╰──────────────────────────────────────────────────────────────────────╯
 ```

@@ -20,14 +20,14 @@ type PanelCell =
       preserveLeading?: boolean;
     };
 
-export type BranchMePanelSection = "status" | "workflow" | "safety";
+export type BranchMePanelSection = "status" | "workflow";
 
 const NARROW_MIN_WIDTH = 24;
 const WIDE_MIN_WIDTH = 72;
 const MAX_PANEL_WIDTH = 96;
 const MAX_PANEL_HEIGHT = 14;
 const BODY_HEIGHT = 7;
-const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow", "safety"];
+const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow"];
 
 function sanitize(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f\u009b]/gu, " ").replace(/\s+/gu, " ").trim();
@@ -61,18 +61,6 @@ function padLayout(value: string, width: number): string {
   return clipLayout(value, width).padEnd(Math.max(0, width), " ");
 }
 
-function tailClip(value: string, width: number): string {
-  if (width <= 0) return "";
-  const text = sanitize(value);
-  if (text.length <= width) return text;
-  if (width === 1) return "…";
-  return `…${text.slice(-(width - 1))}`;
-}
-
-function rightAlignTail(value: string, width: number): string {
-  return tailClip(value, width).padStart(Math.max(0, width), " ");
-}
-
 function style(theme: PanelTheme | undefined, role: string, value: string): string {
   return theme ? theme.fg(role, value) : value;
 }
@@ -86,8 +74,12 @@ function formatCell(cell: PanelCell, width: number, theme?: PanelTheme): string 
   return theme.fg(cell.role, styled);
 }
 
+function layoutCell(text: string, role?: string, bold = false): PanelCell {
+  return { text, role, bold, preserveLeading: true };
+}
+
 function heading(text: string): PanelCell {
-  return { text, role: "accent", bold: true };
+  return layoutCell(` ${text}`, "accent", true);
 }
 
 function category(text: string, selected: boolean): PanelCell {
@@ -127,19 +119,20 @@ function framedLine(content: PanelCell, width: number, theme?: PanelTheme): stri
   return `${border(theme, "│")}${formatCell(content, innerWidth, theme)}${border(theme, "│")}`;
 }
 
-function statusValue(data: BranchMePanelData): { branch: string; repository: string; token: string; footer: string } {
+function statusValue(data: BranchMePanelData): { branch: string; repository: string; token: string } {
   return {
     branch: data.detached ? "detached HEAD" : data.currentBranch ?? "unknown",
     repository: data.githubRepository ?? "not resolved",
     token: getTokenLabel(data.tokenSource),
-    footer: data.statusNote ?? "status • no commits/staging/file edits • tools perform actions",
   };
 }
 
-function statusRow(label: string, value: string, width: number): string {
-  const valueWidth = Math.min(30, Math.max(8, Math.floor(width * 0.42)));
-  const labelWidth = Math.max(1, width - valueWidth - 1);
-  return `${pad(label, labelWidth)} ${rightAlignTail(value, valueWidth)}`;
+function statusDetailRow(label: string, value: string): PanelCell {
+  return layoutCell(`  ${label.padEnd(19, " ")}${sanitize(value)}`);
+}
+
+function workflowDetailRow(tool: string, description: string): PanelCell {
+  return layoutCell(`  ${tool.padEnd(15, " ")}-> ${sanitize(description)}`);
 }
 
 function sectionTitle(section: BranchMePanelSection): string {
@@ -148,8 +141,6 @@ function sectionTitle(section: BranchMePanelSection): string {
       return "STATUS";
     case "workflow":
       return "WORKFLOW";
-    case "safety":
-      return "SAFETY";
   }
 }
 
@@ -173,39 +164,29 @@ function sectionFooter(section: BranchMePanelSection, data: BranchMePanelData): 
     case "status":
       return "status • current repository only • tools perform actions";
     case "workflow":
-      return "workflow • inspect → branch → push → PR";
-    case "safety":
-      return "safety • no commits/staging/file edits";
+      return "workflow • inspect → change/create → push → PR";
   }
 }
 
-function sectionRows(section: BranchMePanelSection, data: BranchMePanelData, width: number): PanelCell[] {
+function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): PanelCell[] {
   const values = statusValue(data);
 
   switch (section) {
     case "status":
       return [
         heading("STATUS"),
-        statusRow("Current branch", values.branch, width),
-        statusRow("GitHub repository", values.repository, width),
-        statusRow("GitHub token", values.token, width),
+        statusDetailRow("Current branch:", values.branch),
+        statusDetailRow("GitHub repository:", values.repository),
+        statusDetailRow("GitHub token:", values.token),
       ];
     case "workflow":
       return [
         heading("WORKFLOW"),
-        statusRow("1 branch_status", "inspect", width),
-        statusRow("2 create_branch", "from HEAD", width),
-        statusRow("3 push_branch", "current branch", width),
-        statusRow("4 pull_request", "current repo PR", width),
-      ];
-    case "safety":
-      return [
-        heading("SAFETY"),
-        statusRow("Commits", "never", width),
-        statusRow("Staging", "never", width),
-        statusRow("File edits", "never", width),
-        statusRow("Repository", "current only", width),
-        statusRow("Token source", "env only", width),
+        workflowDetailRow("branch_status", "inspect"),
+        workflowDetailRow("change_branch", "existing local"),
+        workflowDetailRow("create_branch", "from HEAD"),
+        workflowDetailRow("push_branch", "current branch"),
+        workflowDetailRow("pull_request", "current repo PR"),
       ];
   }
 }
@@ -222,13 +203,12 @@ function renderTiny(data: BranchMePanelData, width: number): string[] {
 
 function renderNarrow(data: BranchMePanelData, width: number, selectedSection: BranchMePanelSection, theme?: PanelTheme): string[] {
   const section = normalizeSection(selectedSection);
-  const innerWidth = Math.max(0, width - 2);
-  const rows = sectionRows(section, data, innerWidth).slice(0, BODY_HEIGHT);
+  const rows = sectionRows(section, data).slice(0, BODY_HEIGHT);
   const counter = `${sectionIndex(section) + 1}/${PANEL_SECTIONS.length}`;
   const lines = [
     titleBorder(width, sectionLabel(section), theme),
     framedLine("current repo only • informational", width, theme),
-    framedLine("↑↓ section • q quit • /branchme help", width, theme),
+    framedLine(layoutCell(" ↑↓ section • q quit • /branchme help"), width, theme),
     horizontal(width, "├", "─", "┤", theme),
   ];
 
@@ -239,7 +219,7 @@ function renderNarrow(data: BranchMePanelData, width: number, selectedSection: B
 
   lines.push(
     horizontal(width, "├", "─", "┤", theme),
-    framedLine(`${counter} • ${sectionFooter(section, data)}`, width, theme),
+    framedLine(layoutCell(` ${counter} • ${sectionFooter(section, data)}`), width, theme),
     horizontal(width, "╰", "─", "╯", theme),
   );
 
@@ -258,12 +238,12 @@ function renderWide(data: BranchMePanelData, width: number, selectedSection: Bra
   const section = normalizeSection(selectedSection);
   const leftPaneWidth = Math.min(22, Math.max(16, Math.floor(width * 0.27)));
   const rightPaneWidth = Math.max(10, width - leftPaneWidth - 3);
-  const rightRows = sectionRows(section, data, rightPaneWidth).slice(0, BODY_HEIGHT);
+  const rightRows = sectionRows(section, data).slice(0, BODY_HEIGHT);
   const leftRows = PANEL_SECTIONS.map((candidate) => category(sectionLabel(candidate), candidate === section));
 
   const lines = [
     titleBorder(width, sectionLabel(section), theme),
-    framedLine("↑↓ section • q quit • /branchme help", width, theme),
+    framedLine(layoutCell(" ↑↓ section • q quit • /branchme help"), width, theme),
     paneSeparator(width, leftPaneWidth, rightPaneWidth, "┬", theme),
   ];
 
@@ -273,7 +253,7 @@ function renderWide(data: BranchMePanelData, width: number, selectedSection: Bra
 
   lines.push(
     paneSeparator(width, leftPaneWidth, rightPaneWidth, "┴", theme),
-    framedLine(`${sectionIndex(section) + 1}/${PANEL_SECTIONS.length} • ${sectionFooter(section, data)}`, width, theme),
+    framedLine(layoutCell(` ${sectionIndex(section) + 1}/${PANEL_SECTIONS.length} • ${sectionFooter(section, data)}`), width, theme),
     horizontal(width, "╰", "─", "╯", theme),
   );
 

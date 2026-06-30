@@ -14,9 +14,9 @@
 
 ---
 
-BranchMe is a minimal Pi extension for branch workflow automation. It adds one informational slash command and four agent-callable tools that inspect the current repository, create a branch from current `HEAD`, push the current branch, and create a GitHub pull request.
+BranchMe is a minimal Pi extension for branch workflow automation. It adds one informational slash command and five agent-callable tools that inspect the current repository, switch to an existing local branch, create a branch from current `HEAD`, push the current branch, and create a GitHub pull request.
 
-BranchMe intentionally does **not** stage files, create commits, edit working-tree files, or generate commit messages.
+BranchMe intentionally does **not** stage files, create commits, force checkout, stash changes, edit files directly, or generate commit messages.
 
 ## Installation
 
@@ -51,6 +51,7 @@ Slash commands are informational only. Ask the agent to use BranchMe tools for a
 
 ```text
 Use branch_status, then create a branch named feature/update-docs.
+Switch to an existing local branch with change_branch.
 Push the current branch with push_branch.
 Create a draft pull request from feature/update-docs to main titled "Update docs" with this body: "...".
 ```
@@ -60,20 +61,21 @@ Create a draft pull request from feature/update-docs to main titled "Update docs
 | Command | Behavior |
 | --- | --- |
 | `/branchme` | Shows a compact status panel/fallback with current branch, GitHub repository resolution, token presence, and workflow notes. |
-| `/branchme help`, `/branchme --help`, `/branchme -h` | Shows concise BranchMe workflow help. |
+| `/branchme help`, `/branchme --help`, `/branchme -h` | Shows concise BranchMe workflow help and runtime requirements. |
 
-The command never creates branches, pushes, commits, stages, edits files, or opens pull requests.
+The command never changes branches, creates branches, pushes, commits, stages, edits files, or opens pull requests.
 
 ## Tools
 
 | Tool | Schema | Behavior |
 | --- | --- | --- |
 | `branch_status` | `{}` | Read-only git status: repo root, current branch/detached state, upstream, dirty state, ahead/behind counts, and GitHub repository when resolvable. |
+| `change_branch` | `{ "branchName": string }` | Validates `branchName`, requires `refs/heads/<branchName>` to exist locally, rejects dirty worktrees, and runs `git switch <branchName>`. |
 | `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
 | `push_branch` | `{}` | Pushes the current branch with `git push`, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
 | `pull_request` | `{ "headBranch": string, "baseBranch": string, "title": string, "body": string, "draft": boolean }` | Creates a GitHub pull request in the resolved current repository via `POST /repos/{owner}/{repo}/pulls`. |
 
-All schemas reject additional properties. `pull_request` never accepts `owner` or `repo`; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
+All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `pull_request` never accepts `owner` or `repo`; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
 
 ## Environment variables
 
@@ -120,6 +122,7 @@ Use BranchMe from Pi prompts or automation that drives Pi with explicit tool cal
 BranchMe operates only on the repository where Pi is running:
 
 - Git commands use `pi.exec("git", args, { cwd: ctx.cwd })` with argv arrays.
+- `change_branch` switches only to existing local branches and has no `force`, `stash`, `discard`, remote, or path input.
 - `create_branch` creates from the current `HEAD` only and has no `baseRef` input.
 - `push_branch` pushes only the current branch and has no `branchName` input.
 - `pull_request` creates PRs only for the resolved current GitHub repository.
@@ -143,8 +146,10 @@ Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and
 | Problem | Try |
 | --- | --- |
 | Not a git repository | Start Pi from inside a git checkout. |
-| Detached HEAD | Checkout a branch before `create_branch` or `push_branch`. |
-| Branch already exists | Choose a new local branch name. |
+| Detached HEAD | Use `change_branch` to switch to an existing local branch, or checkout a branch before `create_branch` or `push_branch`. |
+| Branch already exists | Choose a new local branch name for `create_branch`, or use `change_branch` to switch to it. |
+| Branch does not exist locally | Create a local branch first; `change_branch` does not checkout remote branches. |
+| Dirty worktree before branch switch | Commit, stash, or discard changes outside BranchMe before using `change_branch`. |
 | PR auth fails | Set `GITHUB_TOKEN` or `GH_TOKEN`. |
 | Repository mismatch | Make `origin` and `GITHUB_REPOSITORY` refer to the same `owner/repo`. |
 | Need a commit | Use CommitMe or normal git commands; BranchMe never commits. |

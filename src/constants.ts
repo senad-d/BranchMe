@@ -4,12 +4,14 @@ export const BRANCHME_COMMAND_NAME = "branchme";
 
 export const BRANCH_STATUS_TOOL_NAME = "branch_status";
 export const CREATE_BRANCH_TOOL_NAME = "create_branch";
+export const CHANGE_BRANCH_TOOL_NAME = "change_branch";
 export const PUSH_BRANCH_TOOL_NAME = "push_branch";
 export const PULL_REQUEST_TOOL_NAME = "pull_request";
 
 export const BRANCHME_TOOL_NAMES = [
   BRANCH_STATUS_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
+  CHANGE_BRANCH_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
 ] as const;

@@ -5,6 +5,7 @@ import {
   BRANCHME_TOOL_NAMES,
   BRANCHME_COMMAND_NAME,
   BRANCH_STATUS_TOOL_NAME,
+  CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
@@ -54,7 +55,7 @@ function toolByName(pi, name) {
 
 const ctx = { cwd: "/repo", signal: undefined };
 
-test("branchMeExtension registers exactly the BranchMe command and four prompt-ready tools", () => {
+test("branchMeExtension registers exactly the BranchMe command and five prompt-ready tools", () => {
   const pi = makePi();
   branchMeExtension(pi);
 
@@ -62,7 +63,7 @@ test("branchMeExtension registers exactly the BranchMe command and four prompt-r
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(pi.tools.length, 4);
+  assert.equal(pi.tools.length, 5);
   assert.deepEqual(
     pi.tools.map((tool) => tool.name).sort(),
     [...BRANCHME_TOOL_NAMES].sort(),
@@ -140,6 +141,79 @@ test("create_branch schema accepts only branchName and constructs git switch", a
   assert.deepEqual(output.details, { repoRoot: "/repo", previousBranch: "main", newBranch: "feature/tool" });
   assert.deepEqual(pi.calls.at(-1).args, ["switch", "-c", "feature/tool"]);
   assert.equal(pi.calls.some((call) => ["commit", "add", "push"].includes(call.args[0])), false);
+});
+
+test("change_branch schema switches existing local branches and reports safe details", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0feature/tool"]: { stdout: "feature/tool\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/tool"]: { code: 0 },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: [{ stdout: "main\n" }, { stdout: "feature/tool\n" }],
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n" },
+    ["switch\0feature/tool"]: { stdout: "" },
+  });
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, CHANGE_BRANCH_TOOL_NAME);
+
+  assert.deepEqual(tool.parameters.required, ["branchName"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["branchName"]);
+  assert.equal(tool.parameters.additionalProperties, false);
+  for (const unsupported of ["baseRef", "force", "stash", "discard", "create", "owner", "repo", "path"]) {
+    assert.equal(unsupported in tool.parameters.properties, false);
+  }
+  assert.ok(tool.description.includes(CHANGE_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptSnippet.includes(CHANGE_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(CHANGE_BRANCH_TOOL_NAME)));
+
+  const output = await tool.execute("call-change", { branchName: "feature/tool" }, undefined, undefined, ctx);
+
+  assert.deepEqual(output.details, {
+    repoRoot: "/repo",
+    previousBranch: "main",
+    previousDetached: false,
+    currentBranch: "feature/tool",
+    hasChangesBeforeSwitch: false,
+  });
+  assert.equal(output.content[0].text, "Changed branch from main to feature/tool.");
+  assert.deepEqual(pi.calls.filter((call) => call.args[0] === "switch").map((call) => call.args), [["switch", "feature/tool"]]);
+  assert.equal(
+    pi.calls.some((call) => ["checkout", "stash", "reset", "merge", "rebase", "add", "commit", "push"].includes(call.args[0])),
+    false,
+  );
+});
+
+test("change_branch rejects dirty worktrees before switching", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0feature/tool"]: { stdout: "feature/tool\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/tool"]: { code: 0 },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n M src/a.ts\n" },
+  });
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, CHANGE_BRANCH_TOOL_NAME);
+
+  await assert.rejects(
+    () => tool.execute("call-change-dirty", { branchName: "feature/tool" }, undefined, undefined, ctx),
+    /uncommitted changes/,
+  );
+  assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
+});
+
+test("change_branch rejects missing local branches", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0feature/missing"]: { stdout: "feature/missing\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/missing"]: { code: 1 },
+  });
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, CHANGE_BRANCH_TOOL_NAME);
+
+  await assert.rejects(
+    () => tool.execute("call-change-missing", { branchName: "feature/missing" }, undefined, undefined, ctx),
+    /does not exist/,
+  );
+  assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
 });
 
 test("push_branch pushes current branch with and without upstream", async () => {

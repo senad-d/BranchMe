@@ -8,6 +8,7 @@ import {
 import type {
   AheadBehindCount,
   BranchStatusDetails,
+  ChangeBranchDetails,
   CreateBranchDetails,
   CurrentBranchInfo,
   GitExecResult,
@@ -168,6 +169,7 @@ export function validateBranchNameInput(branchName: string): void {
   if (/[\u0000-\u001f\u007f]/u.test(branchName)) {
     throw new Error("Branch name cannot contain NUL, newline, or control characters.");
   }
+  if (/\s/u.test(branchName)) throw new Error("Branch name cannot contain whitespace.");
 }
 
 export async function validateBranchName(
@@ -218,6 +220,47 @@ export async function createLocalBranch(
   });
 
   return { repoRoot, previousBranch, newBranch: branchName };
+}
+
+export async function changeExistingLocalBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  branchName: string,
+  signal?: AbortSignal,
+): Promise<ChangeBranchDetails> {
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  await validateBranchName(pi, ctx, branchName, signal);
+
+  if (!(await localBranchExists(pi, ctx, branchName, signal))) {
+    throw new Error(`Local branch '${branchName}' does not exist.`);
+  }
+
+  const previous = await getCurrentBranch(pi, ctx, signal);
+  if (!previous.detached && previous.currentBranch === branchName) {
+    throw new Error(`Already on branch '${branchName}'.`);
+  }
+
+  if (await hasWorkingTreeChanges(pi, ctx, signal)) {
+    throw new Error("Working tree has uncommitted changes; clean it before changing branches.");
+  }
+
+  await runGit(pi, ctx, ["switch", branchName], {
+    signal,
+    timeout: GIT_MUTATION_TIMEOUT_MS,
+  });
+
+  const current = await getCurrentBranch(pi, ctx, signal);
+  if (current.detached || current.currentBranch !== branchName) {
+    throw new Error(`git switch did not end on branch '${branchName}'.`);
+  }
+
+  return {
+    repoRoot,
+    previousBranch: previous.currentBranch,
+    previousDetached: previous.detached,
+    currentBranch: current.currentBranch,
+    hasChangesBeforeSwitch: false,
+  };
 }
 
 export async function pushCurrentBranch(

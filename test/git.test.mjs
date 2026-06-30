@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  changeExistingLocalBranch,
   createLocalBranch,
   getBranchStatus,
   pushCurrentBranch,
@@ -37,6 +38,17 @@ function makePi(routes) {
 
 const ctx = { cwd: "/repo" };
 
+function assertNoUnsafeBranchSwitchCommands(calls) {
+  const forbiddenCommands = new Set(["checkout", "stash", "reset", "merge", "rebase", "add", "commit", "push"]);
+  const unsafe = calls.filter(
+    (call) => forbiddenCommands.has(call.args[0]) || call.args.includes("--force") || call.args.includes("-f"),
+  );
+  assert.deepEqual(
+    unsafe.map((call) => call.args),
+    [],
+  );
+}
+
 test("getBranchStatus reads current git state with argv-style commands", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
@@ -71,6 +83,7 @@ test("getBranchStatus reads current git state with argv-style commands", async (
 
 test("validateBranchName uses local checks and git check-ref-format", async () => {
   assert.throws(() => validateBranchNameInput("bad\nname"), /control/i);
+  assert.throws(() => validateBranchNameInput("bad name"), /whitespace/i);
   assert.throws(() => validateBranchNameInput("-bad"), /start/);
 
   const pi = makePi({
@@ -106,6 +119,104 @@ test("createLocalBranch creates from current HEAD with git switch -c", async () 
 
   assert.deepEqual(details, { repoRoot: "/repo", previousBranch: "main", newBranch: "feature/new" });
   assert.deepEqual(pi.calls.at(-1).args, ["switch", "-c", "feature/new"]);
+});
+
+test("changeExistingLocalBranch switches from current branch with argv-style git switch", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0feature/foo"]: { stdout: "feature/foo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/foo"]: { code: 0 },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: [{ stdout: "main\n" }, { stdout: "feature/foo\n" }],
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n" },
+    ["switch\0feature/foo"]: { stdout: "" },
+  });
+
+  const details = await changeExistingLocalBranch(pi, ctx, "feature/foo");
+
+  assert.deepEqual(details, {
+    repoRoot: "/repo",
+    previousBranch: "main",
+    previousDetached: false,
+    currentBranch: "feature/foo",
+    hasChangesBeforeSwitch: false,
+  });
+  assert.deepEqual(
+    pi.calls.filter((call) => call.args[0] === "switch").map((call) => call.args),
+    [["switch", "feature/foo"]],
+  );
+  assertNoUnsafeBranchSwitchCommands(pi.calls);
+});
+
+test("changeExistingLocalBranch switches from detached HEAD when HEAD is valid", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0main"]: { stdout: "main\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: [
+      { code: 1, stderr: "fatal: ref HEAD is not a symbolic ref\n" },
+      { stdout: "main\n" },
+    ],
+    ["rev-parse\0--verify\0HEAD"]: { stdout: "abc123\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## HEAD (no branch)\n" },
+    ["switch\0main"]: { stdout: "" },
+  });
+
+  const details = await changeExistingLocalBranch(pi, ctx, "main");
+
+  assert.deepEqual(details, {
+    repoRoot: "/repo",
+    previousBranch: null,
+    previousDetached: true,
+    currentBranch: "main",
+    hasChangesBeforeSwitch: false,
+  });
+  assert.deepEqual(pi.calls.filter((call) => call.args[0] === "switch").map((call) => call.args), [["switch", "main"]]);
+  assertNoUnsafeBranchSwitchCommands(pi.calls);
+});
+
+test("changeExistingLocalBranch rejects invalid branch names before git switch", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+  });
+
+  await assert.rejects(() => changeExistingLocalBranch(pi, ctx, "bad name"), /whitespace/i);
+  assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
+});
+
+test("changeExistingLocalBranch rejects missing local branches", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0feature/missing"]: { stdout: "feature/missing\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/missing"]: { code: 1 },
+  });
+
+  await assert.rejects(() => changeExistingLocalBranch(pi, ctx, "feature/missing"), /does not exist/);
+  assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
+});
+
+test("changeExistingLocalBranch rejects dirty worktrees before git switch", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0feature/foo"]: { stdout: "feature/foo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/foo"]: { code: 0 },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n M src/a.ts\n" },
+  });
+
+  await assert.rejects(() => changeExistingLocalBranch(pi, ctx, "feature/foo"), /uncommitted changes/);
+  assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
+});
+
+test("changeExistingLocalBranch rejects switching to the already-current branch", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0main"]: { stdout: "main\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+  });
+
+  await assert.rejects(() => changeExistingLocalBranch(pi, ctx, "main"), /Already on branch 'main'/);
+  assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
 });
 
 test("pushCurrentBranch fails clearly on detached HEAD", async () => {

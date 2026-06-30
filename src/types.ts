@@ -34,6 +34,14 @@ export interface CreateBranchDetails {
   newBranch: string;
 }
 
+export interface ChangeBranchDetails {
+  repoRoot: string;
+  previousBranch: string | null;
+  previousDetached: boolean;
+  currentBranch: string;
+  hasChangesBeforeSwitch: false;
+}
+
 export interface PushBranchDetails {
   repoRoot: string;
   currentBranch: string;

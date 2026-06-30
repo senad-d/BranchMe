@@ -2,11 +2,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import {
   BRANCH_STATUS_TOOL_NAME,
+  CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
 } from "../constants.ts";
-import { createLocalBranch, getBranchStatus, pushCurrentBranch } from "../git.ts";
+import { changeExistingLocalBranch, createLocalBranch, getBranchStatus, pushCurrentBranch } from "../git.ts";
 import {
   createGitHubPullRequest,
   redactSecrets,
@@ -14,13 +15,20 @@ import {
   resolveGitHubRepository,
   resolveGitHubToken,
 } from "../github.ts";
-import type { BranchStatusDetails, PullRequestDetails } from "../types.ts";
+import type { BranchStatusDetails, ChangeBranchDetails, PullRequestDetails } from "../types.ts";
 
 export const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
 
 export const CreateBranchParametersSchema = Type.Object(
   {
     branchName: Type.String({ minLength: 1, description: "Name of the new branch to create from current HEAD." }),
+  },
+  { additionalProperties: false },
+);
+
+export const ChangeBranchParametersSchema = Type.Object(
+  {
+    branchName: Type.String({ minLength: 1, description: "Name of the existing local branch to switch to." }),
   },
   { additionalProperties: false },
 );
@@ -37,6 +45,7 @@ export const PullRequestParametersSchema = Type.Object(
 );
 
 export type CreateBranchParameters = Static<typeof CreateBranchParametersSchema>;
+export type ChangeBranchParameters = Static<typeof ChangeBranchParametersSchema>;
 export type PullRequestParameters = Static<typeof PullRequestParametersSchema>;
 
 export interface BranchMeToolOptions {
@@ -56,6 +65,11 @@ export function formatBranchStatus(details: BranchStatusDetails): string {
   return `BranchMe status: ${branch}; ${tree}; ${upstream}; ${counts}; GitHub ${repositoryText(details)}.`;
 }
 
+export function formatChangeBranch(details: ChangeBranchDetails): string {
+  const previous = details.previousDetached ? "detached HEAD" : details.previousBranch ?? "unknown branch";
+  return `Changed branch from ${previous} to ${details.currentBranch}.`;
+}
+
 export function formatPullRequest(details: PullRequestDetails): string {
   return `Created pull request #${details.number} (${details.state}) for ${repositoryLabel(details.repository)}: ${details.url}`;
 }
@@ -67,7 +81,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
     description: "branch_status inspects the current git repository, branch, upstream, dirty state, ahead/behind counts, and GitHub repository if available. branch_status is read-only.",
     promptSnippet: "branch_status: inspect current-repository git branch status without mutating files or git state",
     promptGuidelines: [
-      "Use branch_status before create_branch, push_branch, or pull_request when the user asks about the current branch state.",
+      "Use branch_status before change_branch, create_branch, push_branch, or pull_request when the user asks about the current branch state.",
       "Use branch_status only for read-only inspection; branch_status never creates branches, pushes, commits, stages, or edits files.",
     ],
     parameters: EmptyParametersSchema,
@@ -106,6 +120,26 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
             text: `Created and checked out branch ${details.newBranch} from ${details.previousBranch}.`,
           },
         ],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: CHANGE_BRANCH_TOOL_NAME,
+    label: "Change Branch",
+    description: "change_branch switches to an existing local branch in the current repository only. change_branch rejects dirty worktrees and never creates branches, forces checkout, stashes, stages, commits, pushes, or edits files directly.",
+    promptSnippet: "change_branch: switch to an existing local branch with branchName after a clean-worktree preflight",
+    promptGuidelines: [
+      "Use change_branch only when the user explicitly wants to switch to an existing local branch in the current repository.",
+      "Use change_branch with only branchName; change_branch never accepts baseRef, force, stash, discard, create, owner, repo, or path inputs.",
+      "Use change_branch only on a clean working tree; change_branch rejects dirty worktrees and never stages, commits, pushes, stashes, or force-switches.",
+    ],
+    parameters: ChangeBranchParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await changeExistingLocalBranch(pi, ctx, params.branchName, signal);
+      return {
+        content: [{ type: "text", text: formatChangeBranch(details) }],
         details,
       };
     },

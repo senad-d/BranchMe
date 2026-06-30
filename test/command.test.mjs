@@ -50,19 +50,23 @@ test("parseBranchMeArgs recognizes help aliases", () => {
   assert.equal(parseBranchMeArgs("-h"), "help");
 });
 
-test("/branchme help returns concise workflow notes", async () => {
+test("/branchme help returns concise workflow and requirements", async () => {
   const pi = makePi();
   registerBranchMeCommand(pi);
   const ctx = makeContext();
 
   await pi.commands[0].options.handler("--help", ctx);
 
+  assert.match(ctx.notifications[0].message, /## Workflow/);
+  assert.match(ctx.notifications[0].message, /## Requirements/);
   assert.match(ctx.notifications[0].message, /branch_status/);
+  assert.match(ctx.notifications[0].message, /change_branch/);
   assert.match(ctx.notifications[0].message, /create_branch/);
   assert.match(ctx.notifications[0].message, /push_branch/);
   assert.match(ctx.notifications[0].message, /pull_request/);
+  assert.doesNotMatch(ctx.notifications[0].message, /\| Tool \|/);
   assert.equal(pi.calls.length, 0);
-  assert.equal(getBranchMeHelpText().includes("informational only"), true);
+  assert.equal(getBranchMeHelpText().includes("Commands only show info"), true);
 });
 
 test("/branchme fallback uses read-only git status and no mutation commands", async () => {
@@ -115,6 +119,8 @@ test("BranchMe wide panel shows only the selected right-side section", () => {
 
   assert.match(visibleText, /WORKFLOW/);
   assert.match(visibleText, /▶  Workflow/);
+  assert.match(visibleText, /branch_status\s+-> inspect/);
+  assert.doesNotMatch(visibleText, /1 branch_status/);
   assert.doesNotMatch(visibleText, /STATUS/);
   assert.doesNotMatch(visibleText, /SAFETY/);
   assert.equal(visibleText.split("\n").length <= 14, true);
@@ -141,7 +147,6 @@ test("BranchMe panel renderer does not leak ANSI escape bodies into visible text
   assert.doesNotMatch(visibleText, /\[[0-9;]+m/);
   assert.match(visibleText, /STATUS/);
   assert.match(visibleText, /Workflow/);
-  assert.match(visibleText, /Safety/);
+  assert.doesNotMatch(visibleText, /Safety/);
   assert.doesNotMatch(visibleText, /WORKFLOW\s*\n/);
-  assert.doesNotMatch(visibleText, /SAFETY\s*\n/);
 });
