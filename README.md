@@ -6,6 +6,7 @@
   <a href="https://pi.dev"><img alt="pi package" src="https://img.shields.io/badge/pi-package-6f42c1?style=flat-square" /></a>
   <a href="https://www.npmjs.com/package/@senad-d/branchme"><img alt="npm" src="https://img.shields.io/npm/v/%40senad-d%2Fbranchme?style=flat-square" /></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" /></a>
+  <a align="center" href="https://sonarcloud.io/summary/new_code?id=senad-d_BranchMe"><img alt="Quality Gate Status" src="https://sonarcloud.io/api/project_badges/measure?project=senad-d_BranchMe&metric=alert_status" /></a>
 </p>
 
 <p align="center">
@@ -272,7 +273,7 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | PR branch does not exist locally | Create or fetch/check out the local `headBranch` and `baseBranch` branches first; BranchMe does not use remote-only or cross-repository PR refs. |
 | PR branch is not visible or is stale on GitHub | Run `push_branch`, wait for it to complete, then retry `pull_request`; do not batch `push_branch` and `pull_request` in the same assistant tool call. |
 | Repository mismatch | Make `origin` and `GITHUB_REPOSITORY` refer to the same `owner/repo`. |
-| Need a commit | Use CommitMe or normal git commands; BranchMe never commits. |
+| Need a commit | Use BranchMe or normal git commands; BranchMe never commits. |
 | Other extensions interfere | Test with `pi --no-extensions -e .`. |
 
 ---
