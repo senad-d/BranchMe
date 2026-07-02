@@ -290,7 +290,7 @@ export async function getAheadBehindCount(
   const ahead = Number(aheadText);
   const behind = Number(behindText);
   if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
-    throw new Error(`Unable to parse ahead/behind counts from git output: ${safeOutput(result.stdout)}`);
+    throw new TypeError(`Unable to parse ahead/behind counts from git output: ${safeOutput(result.stdout)}`);
   }
   return { ahead, behind };
 }

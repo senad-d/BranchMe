@@ -149,8 +149,6 @@ function decodeDoubleQuotedDotEnvValue(value: string): string {
   });
 }
 
-const DOTENV_ASSIGNMENT_PATTERN = /^([A-Za-z_]\w*)[^\S\r\n]*=[^\S\r\n]*(.*)$/u;
-
 function isWhitespaceCharacter(character: string): boolean {
   return character.trim() === "";
 }
@@ -188,13 +186,13 @@ function parseDotEnvTokens(contents: string): Partial<Record<TokenEnvironmentKey
     if (!trimmed || trimmed.startsWith("#")) continue;
 
     const assignment = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trimStart() : trimmed;
-    const match = DOTENV_ASSIGNMENT_PATTERN.exec(assignment);
-    if (!match) continue;
+    const separatorIndex = assignment.indexOf("=");
+    if (separatorIndex === -1) continue;
 
-    const key = match[1] ?? "";
+    const key = assignment.slice(0, separatorIndex).trim();
     if (!isTokenEnvironmentKey(key)) continue;
 
-    tokens[key] = parseDotEnvValue(match[2] ?? "");
+    tokens[key] = parseDotEnvValue(assignment.slice(separatorIndex + 1).trimStart());
   }
 
   return tokens;
