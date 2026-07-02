@@ -82,7 +82,9 @@ function summaryRepository(data: BranchMePanelData): string {
 }
 
 function summaryToken(data: BranchMePanelData): string {
-  return data.tokenWarning ? `warning: ${data.tokenWarning}` : data.tokenSource ? `present (${data.tokenSource})` : "not set";
+  if (data.tokenWarning) return `warning: ${data.tokenWarning}`;
+  if (data.tokenSource) return `present (${data.tokenSource})`;
+  return "not set";
 }
 
 function summaryStatusWarning(data: BranchMePanelData): string {

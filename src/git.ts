@@ -52,7 +52,7 @@ export async function withRepositoryMutationQueue<T>(repoRoot: string, operation
 }
 
 function trimOutput(value: string): string {
-  return value.replace(/\s+$/u, "");
+  return value.trimEnd();
 }
 
 function compactOutput(value: string): string {
@@ -191,7 +191,7 @@ function validateRemoteName(remote: string): void {
   if (remote.includes(":") || remote.includes("@")) {
     throw new Error("Unable to push current branch: upstream remote name cannot be a URL or user-prefixed target.");
   }
-  if (/[\u0000-\u001f\u007f\s]/u.test(remote)) {
+  if (/[\u0000-\u001f\u007f]/u.test(remote) || /\s/u.test(remote)) {
     throw new Error("Unable to push current branch: upstream remote contains whitespace or control characters.");
   }
 }
@@ -296,7 +296,7 @@ export async function getAheadBehindCount(
 }
 
 export function validateBranchNameInput(branchName: unknown, label = "Branch name"): asserts branchName is string {
-  if (typeof branchName !== "string") throw new Error(`${label} must be a string.`);
+  if (typeof branchName !== "string") throw new TypeError(`${label} must be a string.`);
   if (branchName.length === 0) throw new Error(`${label} is required.`);
   if (branchName.trim().length === 0) throw new Error(`${label} cannot be blank.`);
   if (branchName !== branchName.trim()) throw new Error(`${label} cannot start or end with whitespace.`);

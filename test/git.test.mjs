@@ -5,6 +5,7 @@ import {
   createLocalBranch,
   formatGitFailure,
   getBranchStatus,
+  getGitRoot,
   pushCurrentBranch,
   validateBranchName,
   validateBranchNameInput,
@@ -82,6 +83,14 @@ test("getBranchStatus reads current git state with argv-style commands", async (
   );
 });
 
+test("getGitRoot trims trailing whitespace from git output", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo \t\n\n" },
+  });
+
+  assert.equal(await getGitRoot(pi, ctx), "/repo");
+});
+
 test("getBranchStatus preserves partial status when ahead/behind counting fails", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
@@ -108,6 +117,10 @@ test("getBranchStatus preserves partial status when ahead/behind counting fails"
 });
 
 test("validateBranchName uses local checks and git check-ref-format", async () => {
+  assert.throws(
+    () => validateBranchNameInput(42),
+    (error) => error instanceof TypeError && /Branch name must be a string/u.test(error.message),
+  );
   assert.throws(() => validateBranchNameInput("bad\nname"), /control/i);
   assert.throws(() => validateBranchNameInput("bad name"), /whitespace/i);
   assert.throws(() => validateBranchNameInput("-bad"), /start/);
@@ -387,6 +400,21 @@ test("pushCurrentBranch rejects incomplete or non-remote upstream configuration"
 
   await assert.rejects(() => pushCurrentBranch(localUpstreamPi, ctx), /local branch/i);
   assert.equal(localUpstreamPi.calls.some((call) => call.args[0] === "push"), false);
+});
+
+test("pushCurrentBranch rejects upstream remote names with whitespace or control characters", async () => {
+  for (const remote of ["bad remote", "bad\tremote", "bad\nremote", `bad${String.fromCharCode(0)}remote`]) {
+    const pi = makePi({
+      ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+      ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+      ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
+      ["config\0--get\0branch.feature/current.remote"]: { stdout: `${remote}\n` },
+      ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+    });
+
+    await assert.rejects(() => pushCurrentBranch(pi, ctx), /whitespace or control/i);
+    assert.equal(pi.calls.some((call) => call.args[0] === "push"), false);
+  }
 });
 
 test("pushCurrentBranch publishes current branch when upstream is missing", async () => {

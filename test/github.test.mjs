@@ -39,15 +39,24 @@ test("parseGitHubRepository supports HTTPS, SSH, and owner/repo formats", () => 
     owner: "senad-d",
     repo: "branchme",
   });
+  assert.deepEqual(parseGitHubRepository("https://github.com/senad-d/branchme.git/"), {
+    owner: "senad-d",
+    repo: "branchme",
+  });
   assert.deepEqual(parseGitHubRepository("git@github.com:senad-d/branchme.git"), {
     owner: "senad-d",
     repo: "branchme",
   });
+  assert.equal(parseGitHubRepository("git@github.com:senad-d"), null);
   assert.deepEqual(parseGitHubRepository("ssh://git@github.com/senad-d/branchme.git"), {
     owner: "senad-d",
     repo: "branchme",
   });
   assert.deepEqual(parseGitHubRepository("senad-d/branchme"), { owner: "senad-d", repo: "branchme" });
+  assert.equal(parseGitHubRepository("senad-d/branchme/extra"), null);
+  assert.equal(parseGitHubRepository("https://github.com/senad-d"), null);
+  assert.equal(parseGitHubRepository("https://github.com/senad-d/branchme/extra"), null);
+  assert.equal(parseGitHubRepository("https://github.com/senad-d//branchme"), null);
   assert.equal(parseGitHubRepository("https://example.com/senad-d/branchme.git"), null);
 });
 
@@ -99,7 +108,9 @@ test("resolveGitHubToken falls back to local .env tokens", async () => {
   try {
     await writeFile(
       join(cwd, ".env"),
-      ["# token fallback", "GITHUB_TOKEN= github_pat_from_file ", "GH_TOKEN=ghp_secondary"].join("\n"),
+      ["# token fallback", "NOT_A_TOKEN=ignored", "malformed token line", "GITHUB_TOKEN= github_pat_from_file # inline comment", "GH_TOKEN=ghp_secondary"].join(
+        "\n",
+      ),
       "utf8",
     );
 
@@ -110,6 +121,12 @@ test("resolveGitHubToken falls back to local .env tokens", async () => {
     assert.deepEqual(await resolveGitHubToken({ GH_TOKEN: " process-token " }, { cwd }), {
       token: "process-token",
       source: "GH_TOKEN",
+    });
+
+    await writeFile(join(cwd, ".env"), ["NOT_A_TOKEN=ignored", "export GH_TOKEN = \" ghp_quoted#token \""].join("\n"), "utf8");
+    assert.deepEqual(await resolveGitHubToken({}, { cwd }), {
+      token: "ghp_quoted#token",
+      source: "GH_TOKEN (.env)",
     });
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -141,12 +158,24 @@ test("resolveGitHubToken rejects unsafe, oversized, and aborted .env fallback re
 test("redactSecrets removes tokens and token-like request data", () => {
   const token = "ghp_secret123";
   const redacted = redactSecrets(
-    `Authorization: Bearer ${token}; token=${token}; github_pat_abc123; plain ${token}`,
+    [
+      `Authorization: Bearer ${token}`,
+      `token=${token}`,
+      `plain ${token}`,
+      "clone https://user:ghp_urlsecret123@github.com/senad-d/branchme.git",
+      "safe https://github.com/senad-d/branchme",
+      "header Bearer bearer_token-123+/=",
+      "classic ghp_classic_ABC123",
+      "fine github_pat_fg_ABC123",
+    ].join("; "),
     [token],
   );
 
-  assert.doesNotMatch(redacted, /secret123|github_pat_abc123/);
-  assert.match(redacted, /\[REDACTED\]/);
+  assert.doesNotMatch(redacted, /secret123|bearer_token|ghp_classic|github_pat_fg/u);
+  assert.match(redacted, /https:\/\/\[REDACTED\]@github\.com\/senad-d\/branchme\.git/u);
+  assert.match(redacted, /safe https:\/\/github\.com\/senad-d\/branchme/u);
+  assert.match(redacted, /header Bearer \[REDACTED\]/u);
+  assert.match(redacted, /\[REDACTED\]/u);
 });
 
 test("validatePullRequestBranchRef accepts local branch names and rejects cross-repository or unsafe refs", () => {
@@ -159,9 +188,15 @@ test("validatePullRequestBranchRef accepts local branch names and rejects cross-
     "feature/../main",
     "feature branch",
     "feature\nmain",
+    "feature\\main",
+    "feature~main",
+    "feature@{upstream}",
     "refs/heads/feature",
     "feature.lock",
     "feature//main",
+    "/feature",
+    "feature.",
+    "@",
   ]) {
     assert.throws(() => validatePullRequestBranchRef(value, "headBranch"), /headBranch/u);
   }
@@ -198,6 +233,50 @@ test("ensureGitHubBranchExists checks encoded branch refs and returns push guida
       !/secret123/u.test(error.message),
   );
   assert.equal(requests[1].url, "https://api.github.com/repos/senad-d/branchme/branches/feature%2Fmissing");
+});
+
+function unreadableResponse(status) {
+  return new Response(
+    new ReadableStream({
+      pull(controller) {
+        controller.error(new Error("read failed ghp_secret123"));
+      },
+    }),
+    { status },
+  );
+}
+
+test("ensureGitHubBranchExists reports malformed, truncated, and failed responses safely", async () => {
+  const repository = { owner: "senad-d", repo: "branchme" };
+  const branchName = "feature/current";
+  const token = "ghp_secret123";
+  const validSha = "a".repeat(40);
+  const cases = [
+    ["invalid json", async () => new Response("not json", { status: 200 }), /not valid JSON/i],
+    ["invalid payload", async () => new Response(JSON.stringify({ name: branchName, commit: { sha: "bad" } }), { status: 200 }), /missing commit\.sha/i],
+    ["truncated response", async () => new Response(JSON.stringify({ name: branchName, commit: { sha: validSha }, pad: "x".repeat(70 * 1024) }), { status: 200 }), /byte limit/i],
+    ["http error", async () => new Response("bad token ghp_secret123", { status: 500 }), /HTTP 500/i],
+    ["read failure", async () => unreadableResponse(200), /could not be read/i],
+    ["error read failure", async () => unreadableResponse(500), /unable to read error response/i],
+  ];
+
+  for (const [name, fetchImpl, messagePattern] of cases) {
+    await assert.rejects(
+      () => ensureGitHubBranchExists(repository, branchName, "headBranch", token, { fetchImpl }),
+      (error) => error instanceof Error && messagePattern.test(error.message) && !/secret123/u.test(error.message),
+      `${name} should fail safely`,
+    );
+  }
+
+  await assert.rejects(
+    () =>
+      ensureGitHubBranchExists(repository, branchName, "headBranch", token, {
+        fetchImpl: async () => {
+          throw new Error("network failed ghp_secret123");
+        },
+      }),
+    (error) => error instanceof Error && /request failed/i.test(error.message) && !/secret123/u.test(error.message),
+  );
 });
 
 test("createGitHubPullRequest rejects owner-prefixed head branches before fetch", async () => {

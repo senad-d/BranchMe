@@ -80,16 +80,26 @@ export function repositoryLabel(repository: GitHubRepository): string {
   return `${repository.owner}/${repository.repo}`;
 }
 
+function trimPathSlashes(pathname: string): string {
+  let start = 0;
+  let end = pathname.length;
+
+  while (start < end && pathname.charAt(start) === "/") start += 1;
+  while (end > start && pathname.charAt(end - 1) === "/") end -= 1;
+
+  return pathname.slice(start, end);
+}
+
 export function parseGitHubRepository(value: string): GitHubRepository | null {
   const input = value.trim();
   if (!input) return null;
 
-  const scpLike = input.match(/^git@github\.com:([^\s/]+)\/([^\s/]+)$/iu);
+  const scpLike = /^git@github\.com:([^\s/]+)\/([^\s/]+)$/iu.exec(input);
   if (scpLike) {
     return normalizeRepository(scpLike[1] ?? "", scpLike[2] ?? "");
   }
 
-  const shorthand = input.match(/^([^\s/:]+)\/([^\s/]+)$/u);
+  const shorthand = /^([^\s/:]+)\/([^\s/]+)$/u.exec(input);
   if (shorthand) {
     return normalizeRepository(shorthand[1] ?? "", shorthand[2] ?? "");
   }
@@ -105,7 +115,7 @@ export function parseGitHubRepository(value: string): GitHubRepository | null {
   if (parsed.protocol !== "https:" && parsed.protocol !== "ssh:") return null;
   if (parsed.protocol === "ssh:" && parsed.username && parsed.username !== "git") return null;
 
-  const parts = parsed.pathname.replace(/^\/+|\/+$/gu, "").split("/");
+  const parts = trimPathSlashes(parsed.pathname).split("/");
   if (parts.length !== 2) return null;
   return normalizeRepository(parts[0] ?? "", parts[1] ?? "");
 }
@@ -139,6 +149,22 @@ function decodeDoubleQuotedDotEnvValue(value: string): string {
   });
 }
 
+const DOTENV_ASSIGNMENT_PATTERN = /^([A-Za-z_]\w*)[^\S\r\n]*=[^\S\r\n]*(.*)$/u;
+
+function isWhitespaceCharacter(character: string): boolean {
+  return character.trim() === "";
+}
+
+function stripDotEnvInlineComment(value: string): string {
+  for (let index = 1; index < value.length; index += 1) {
+    if (value.charAt(index) === "#" && isWhitespaceCharacter(value.charAt(index - 1))) {
+      return value.slice(0, index);
+    }
+  }
+
+  return value;
+}
+
 function parseDotEnvValue(rawValue: string): string {
   const value = rawValue.trim();
   if (!value) return "";
@@ -151,7 +177,7 @@ function parseDotEnvValue(rawValue: string): string {
     return value.slice(1, -1).trim();
   }
 
-  return value.replace(/\s+#.*$/u, "").trim();
+  return stripDotEnvInlineComment(value).trim();
 }
 
 function parseDotEnvTokens(contents: string): Partial<Record<TokenEnvironmentKey, string>> {
@@ -162,7 +188,7 @@ function parseDotEnvTokens(contents: string): Partial<Record<TokenEnvironmentKey
     if (!trimmed || trimmed.startsWith("#")) continue;
 
     const assignment = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trimStart() : trimmed;
-    const match = assignment.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/u);
+    const match = DOTENV_ASSIGNMENT_PATTERN.exec(assignment);
     if (!match) continue;
 
     const key = match[1] ?? "";
@@ -294,27 +320,38 @@ function requireStringRef(value: unknown, field: "headBranch" | "baseBranch"): s
   return value;
 }
 
-export function validatePullRequestBranchRef(value: unknown, field: "headBranch" | "baseBranch"): void {
-  const ref = requireStringRef(value, field);
+const PULL_REQUEST_REF_INVALID_CHARACTER_PATTERN = /[~^?*[\]]/u;
 
-  if (/[\u0000-\u001f\u007f]/u.test(ref)) throw new Error(`${field} cannot contain control characters.`);
-  if (/\s/u.test(ref)) throw new Error(`${field} cannot contain whitespace.`);
+function validatePullRequestRefCharacters(ref: string, field: "headBranch" | "baseBranch"): void {
   if (ref.includes(":")) throw new Error(`${field} cannot contain ':' or an owner-prefixed cross-repository ref.`);
   if (ref.includes("\\")) throw new Error(`${field} cannot contain backslashes.`);
-  if (/[~^?*[\]]/u.test(ref)) throw new Error(`${field} contains characters that are not valid in a branch ref.`);
+  if (PULL_REQUEST_REF_INVALID_CHARACTER_PATTERN.test(ref)) {
+    throw new Error(`${field} contains characters that are not valid in a branch ref.`);
+  }
+}
+
+function validatePullRequestRefPathShape(ref: string, field: "headBranch" | "baseBranch"): void {
   if (ref.includes("..")) throw new Error(`${field} cannot contain path traversal-like '..' segments.`);
   if (ref.includes("@{")) throw new Error(`${field} cannot contain '@{'.`);
   if (ref.includes("//")) throw new Error(`${field} cannot contain empty path segments.`);
   if (ref.startsWith("/") || ref.endsWith("/")) throw new Error(`${field} cannot start or end with '/'.`);
-  if (ref.startsWith("-")) throw new Error(`${field} cannot start with '-'.`);
   if (ref.endsWith(".")) throw new Error(`${field} cannot end with '.'.`);
   if (ref === "@") throw new Error(`${field} cannot be '@'.`);
   if (ref.startsWith("refs/")) throw new Error(`${field} must be a branch name, not a full ref path.`);
+}
 
+function validatePullRequestRefSegments(ref: string, field: "headBranch" | "baseBranch"): void {
   for (const segment of ref.split("/")) {
     if (segment === "." || segment === "..") throw new Error(`${field} cannot contain path traversal segments.`);
     if (segment.endsWith(".lock")) throw new Error(`${field} cannot contain '.lock' path segments.`);
   }
+}
+
+export function validatePullRequestBranchRef(value: unknown, field: "headBranch" | "baseBranch"): void {
+  const ref = requireStringRef(value, field);
+  validatePullRequestRefCharacters(ref, field);
+  validatePullRequestRefPathShape(ref, field);
+  validatePullRequestRefSegments(ref, field);
 }
 
 function validatePullRequestInput(input: unknown): asserts input is PullRequestInput {
@@ -399,72 +436,110 @@ function gitHubJsonHeaders(token: string): Record<string, string> {
   };
 }
 
-export async function ensureGitHubBranchExists(
-  repository: GitHubRepository,
+function requireFetchImplementation(fetchImpl: typeof fetch | undefined): typeof fetch {
+  if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable in this Node.js runtime.");
+  return fetchImpl;
+}
+
+function redactedErrorMessage(error: unknown, tokens: readonly string[]): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return redactSecrets(message, tokens);
+}
+
+async function fetchGitHubResponse(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  failurePrefix: string,
+  token: string,
+): Promise<Response> {
+  try {
+    return await fetchImpl(url, init);
+  } catch (error) {
+    throw new Error(`${failurePrefix}: ${redactedErrorMessage(error, [token])}`);
+  }
+}
+
+async function readGitHubResponseBody(
+  response: Response,
+  signal: AbortSignal | undefined,
+  failurePrefix: string,
+  token: string,
+): Promise<BoundedResponseBody> {
+  try {
+    return await readBoundedResponseText(response, signal);
+  } catch (error) {
+    throw new Error(`${failurePrefix}: ${redactedErrorMessage(error, [token])}`);
+  }
+}
+
+function parseGitHubJson(text: string, responseContext: string, token: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${responseContext} was not valid JSON: ${redactedErrorMessage(error, [token])}`);
+  }
+}
+
+function requireGitHubResponseObject(payload: unknown, responseContext: string): Record<string, unknown> {
+  if (!isRecord(payload)) throw new Error(`${responseContext} was not an object.`);
+  return payload;
+}
+
+async function readGitHubJsonObject(
+  response: Response,
+  signal: AbortSignal | undefined,
+  token: string,
+  responseContext: string,
+  readFailurePrefix: string,
+): Promise<Record<string, unknown>> {
+  const body = await readGitHubResponseBody(response, signal, readFailurePrefix, token);
+  if (body.truncated) throw new Error(`${responseContext} exceeded the ${GITHUB_RESPONSE_BODY_LIMIT_BYTES} byte limit.`);
+  return requireGitHubResponseObject(parseGitHubJson(body.text, responseContext, token), responseContext);
+}
+
+function parseGitHubBranchDetails(payload: Record<string, unknown>, branchName: string): GitHubBranchDetails {
+  const commit = isRecord(payload.commit) ? stringField(payload.commit.sha, "commit.sha") : "";
+  if (!/^[0-9a-f]{40,64}$/iu.test(commit)) throw new Error("GitHub branch preflight response is missing commit.sha.");
+
+  return {
+    name: typeof payload.name === "string" && payload.name ? payload.name : branchName,
+    commitSha: commit,
+  };
+}
+
+async function readGitHubBranchDetails(
+  response: Response,
+  signal: AbortSignal | undefined,
+  token: string,
   branchName: string,
   field: "headBranch" | "baseBranch",
-  token: string,
-  options: PullRequestFetchOptions = {},
+  branchLabel: string,
 ): Promise<GitHubBranchDetails> {
-  validateGitHubRepository(repository);
-  validatePullRequestBranchRef(branchName, field);
+  const payload = await readGitHubJsonObject(
+    response,
+    signal,
+    token,
+    "GitHub branch preflight response",
+    `GitHub branch preflight response for ${field} '${branchLabel}' could not be read`,
+  );
+  return parseGitHubBranchDetails(payload, branchName);
+}
 
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable in this Node.js runtime.");
-
-  const branchLabel = redactSecrets(branchName);
-  const url = `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/branches/${encodePathSegment(branchName)}`;
-
-  let response: Response;
-  try {
-    response = await fetchImpl(url, {
-      method: "GET",
-      headers: gitHubJsonHeaders(token),
-      signal: options.signal,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`GitHub branch preflight request failed for ${field} '${branchLabel}': ${redactSecrets(message, [token])}`);
-  }
-
-  if (response.ok) {
-    let body: BoundedResponseBody;
-    try {
-      body = await readBoundedResponseText(response, options.signal);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`GitHub branch preflight response for ${field} '${branchLabel}' could not be read: ${redactSecrets(message, [token])}`);
-    }
-
-    if (body.truncated) throw new Error(`GitHub branch preflight response exceeded the ${GITHUB_RESPONSE_BODY_LIMIT_BYTES} byte limit.`);
-
-    let payload: unknown;
-    try {
-      payload = JSON.parse(body.text);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`GitHub branch preflight response was not valid JSON: ${redactSecrets(message, [token])}`);
-    }
-
-    if (!isRecord(payload)) throw new Error("GitHub branch preflight response was not an object.");
-    const commit = isRecord(payload.commit) ? stringField(payload.commit.sha, "commit.sha") : "";
-    if (!/^[0-9a-f]{40,64}$/iu.test(commit)) throw new Error("GitHub branch preflight response is missing commit.sha.");
-
-    return {
-      name: typeof payload.name === "string" && payload.name ? payload.name : branchName,
-      commitSha: commit,
-    };
-  }
-
-  let body: BoundedResponseBody;
-  try {
-    body = await readBoundedResponseText(response, options.signal);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `GitHub branch preflight failed for ${field} '${branchLabel}' with HTTP ${response.status}: unable to read error response: ${redactSecrets(message, [token])}`,
-    );
-  }
+async function throwGitHubBranchPreflightHttpError(
+  response: Response,
+  signal: AbortSignal | undefined,
+  token: string,
+  repository: GitHubRepository,
+  field: "headBranch" | "baseBranch",
+  branchLabel: string,
+): Promise<never> {
+  const body = await readGitHubResponseBody(
+    response,
+    signal,
+    `GitHub branch preflight failed for ${field} '${branchLabel}' with HTTP ${response.status}: unable to read error response`,
+    token,
+  );
 
   if (response.status === 404) {
     throw new Error(
@@ -477,79 +552,45 @@ export async function ensureGitHubBranchExists(
   );
 }
 
-export async function createGitHubPullRequest(
-  repository: GitHubRepository,
-  input: PullRequestInput,
-  token: string,
-  options: PullRequestFetchOptions = {},
-): Promise<PullRequestDetails> {
-  validateGitHubRepository(repository);
-  validatePullRequestInput(input);
-
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable in this Node.js runtime.");
-
-  const url = `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/pulls`;
-  const requestBody = {
+function pullRequestRequestBody(input: PullRequestInput): Record<string, unknown> {
+  return {
     title: input.title,
     head: input.headBranch,
     base: input.baseBranch,
     body: input.body,
     draft: input.draft,
   };
+}
 
-  let response: Response;
-  try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: gitHubJsonHeaders(token),
-      body: JSON.stringify(requestBody),
-      signal: options.signal,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`GitHub pull request request failed: ${redactSecrets(message, [token])}`);
-  }
+async function throwGitHubPullRequestHttpError(
+  response: Response,
+  signal: AbortSignal | undefined,
+  token: string,
+): Promise<never> {
+  const body = await readGitHubResponseBody(
+    response,
+    signal,
+    `GitHub pull request request failed with HTTP ${response.status}: unable to read error response`,
+    token,
+  );
 
-  if (!response.ok) {
-    let body: BoundedResponseBody;
-    try {
-      body = await readBoundedResponseText(response, options.signal);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `GitHub pull request request failed with HTTP ${response.status}: unable to read error response: ${redactSecrets(message, [token])}`,
-      );
-    }
+  throw new Error(`GitHub pull request request failed with HTTP ${response.status}: ${redactSecrets(truncate(body.text), [token])}`);
+}
 
-    throw new Error(
-      `GitHub pull request request failed with HTTP ${response.status}: ${redactSecrets(truncate(body.text), [token])}`,
-    );
-  }
+async function readPullRequestPayload(
+  response: Response,
+  signal: AbortSignal | undefined,
+  token: string,
+): Promise<Record<string, unknown>> {
+  return readGitHubJsonObject(response, signal, token, "GitHub pull request response", "GitHub pull request response could not be read");
+}
 
-  let responseBody: BoundedResponseBody;
-  try {
-    responseBody = await readBoundedResponseText(response, options.signal);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`GitHub pull request response could not be read: ${redactSecrets(message, [token])}`);
-  }
-
-  if (responseBody.truncated) {
-    throw new Error(`GitHub pull request response exceeded the ${GITHUB_RESPONSE_BODY_LIMIT_BYTES} byte limit.`);
-  }
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(responseBody.text);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`GitHub pull request response was not valid JSON: ${redactSecrets(message, [token])}`);
-  }
-
-  if (!isRecord(payload)) throw new Error("GitHub pull request response was not an object.");
+function pullRequestDetailsFromPayload(
+  repository: GitHubRepository,
+  input: PullRequestInput,
+  payload: Record<string, unknown>,
+): PullRequestDetails {
   const number = pullRequestNumberField(payload.number);
-
   const head = isRecord(payload.head) ? stringField(payload.head.ref, "head.ref") : input.headBranch;
   const base = isRecord(payload.base) ? stringField(payload.base.ref, "base.ref") : input.baseBranch;
   const draft = typeof payload.draft === "boolean" ? payload.draft : input.draft;
@@ -563,4 +604,63 @@ export async function createGitHubPullRequest(
     base,
     draft,
   };
+}
+
+export async function ensureGitHubBranchExists(
+  repository: GitHubRepository,
+  branchName: string,
+  field: "headBranch" | "baseBranch",
+  token: string,
+  options: PullRequestFetchOptions = {},
+): Promise<GitHubBranchDetails> {
+  validateGitHubRepository(repository);
+  validatePullRequestBranchRef(branchName, field);
+
+  const fetchImpl = requireFetchImplementation(options.fetchImpl ?? globalThis.fetch);
+  const branchLabel = redactSecrets(branchName);
+  const url = `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/branches/${encodePathSegment(branchName)}`;
+  const response = await fetchGitHubResponse(
+    fetchImpl,
+    url,
+    { method: "GET", headers: gitHubJsonHeaders(token), signal: options.signal },
+    `GitHub branch preflight request failed for ${field} '${branchLabel}'`,
+    token,
+  );
+
+  if (!response.ok) {
+    return throwGitHubBranchPreflightHttpError(response, options.signal, token, repository, field, branchLabel);
+  }
+
+  return readGitHubBranchDetails(response, options.signal, token, branchName, field, branchLabel);
+}
+
+export async function createGitHubPullRequest(
+  repository: GitHubRepository,
+  input: PullRequestInput,
+  token: string,
+  options: PullRequestFetchOptions = {},
+): Promise<PullRequestDetails> {
+  validateGitHubRepository(repository);
+  validatePullRequestInput(input);
+
+  const fetchImpl = requireFetchImplementation(options.fetchImpl ?? globalThis.fetch);
+  const url = `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/pulls`;
+  const requestBody = pullRequestRequestBody(input);
+  const response = await fetchGitHubResponse(
+    fetchImpl,
+    url,
+    {
+      method: "POST",
+      headers: gitHubJsonHeaders(token),
+      body: JSON.stringify(requestBody),
+      signal: options.signal,
+    },
+    "GitHub pull request request failed",
+    token,
+  );
+
+  if (!response.ok) return throwGitHubPullRequestHttpError(response, options.signal, token);
+
+  const payload = await readPullRequestPayload(response, options.signal, token);
+  return pullRequestDetailsFromPayload(repository, input, payload);
 }

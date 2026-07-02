@@ -32,11 +32,11 @@ const MAX_PANEL_WIDTH = 96;
 const MAX_PANEL_HEIGHT = 14;
 const BODY_HEIGHT = 7;
 const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow"];
-const ANSI_RESET = /\u001b\[0m/gu;
+const ANSI_RESET = "\u001b[0m";
 
 function truncateVisible(value: string, width: number, ellipsis = "…", pad = false): string {
   const truncated = truncateToWidth(value, width, ellipsis, pad);
-  return value.includes("\u001b") ? truncated : truncated.replace(ANSI_RESET, "");
+  return value.includes("\u001b") ? truncated : truncated.replaceAll(ANSI_RESET, "");
 }
 
 function sanitize(value: string): string {
@@ -334,7 +334,9 @@ export class BranchMePanel {
     }
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    // Intentional no-op: BranchMePanel has no external cache to refresh; input handlers request renders through onChange.
+  }
 
   private moveSelection(delta: number): void {
     const currentIndex = sectionIndex(this.selectedSection);
