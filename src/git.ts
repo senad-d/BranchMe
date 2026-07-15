@@ -1,5 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  GIT_CONTEXT_CHANGE_LIMIT,
+  GIT_CONTEXT_RECENT_COMMIT_LIMIT,
+  GIT_CONTEXT_VALUE_LIMIT_CHARS,
   GIT_MUTATION_TIMEOUT_MS,
   GIT_PUSH_TIMEOUT_MS,
   GIT_STATUS_TIMEOUT_MS,
@@ -13,7 +16,11 @@ import type {
   CreateBranchDetails,
   CurrentBranchInfo,
   GitExecResult,
+  GitFileChange,
+  GitFileChangeSummary,
   PushBranchDetails,
+  RecentCommit,
+  WorkingTreeDetails,
 } from "./types.ts";
 
 export interface GitCommandContext {
@@ -275,6 +282,220 @@ export async function hasWorkingTreeChanges(
   return result.stdout
     .split("\n")
     .some((line) => line.length > 0 && !line.startsWith("## "));
+}
+
+export interface WorkingTreeStatus {
+  workingTree: WorkingTreeDetails;
+  unstagedChanges: GitFileChangeSummary;
+}
+
+const UNMERGED_GIT_STATUSES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
+const GIT_STATUS_CODE_PATTERN = /^[ MADRCUT?!]{2}$/u;
+const GIT_LOG_FIELD_SEPARATOR = "\u001f";
+const NUL_SEPARATOR = "\u0000";
+const GIT_LOG_FORMAT = `%x00%H%x1f%h%x1f%ad%x1f%s`;
+
+function truncateGitContextValue(value: string): string {
+  if (value.length <= GIT_CONTEXT_VALUE_LIMIT_CHARS) return value;
+
+  let end = GIT_CONTEXT_VALUE_LIMIT_CHARS - 1;
+  const lastCodeUnit = value.charCodeAt(end - 1);
+  const nextCodeUnit = value.charCodeAt(end);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff && nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+    end -= 1;
+  }
+  return `${value.slice(0, end)}…`;
+}
+
+function escapeGitContextControlCharacter(character: string): string {
+  const codePoint = character.codePointAt(0);
+  return codePoint === undefined ? "" : `\\u${codePoint.toString(16).padStart(4, "0")}`;
+}
+
+function safeGitContextValue(value: string): string {
+  const redacted = redactSecrets(value);
+  const escaped = redacted.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, escapeGitContextControlCharacter);
+  return truncateGitContextValue(escaped);
+}
+
+function isRenameOrCopyStatus(status: string): boolean {
+  return status[0] === "R" || status[0] === "C" || status[1] === "R" || status[1] === "C";
+}
+
+function parsePorcelainRecord(record: string): { status: string; path: string } {
+  if (record.length < 4 || record[2] !== " ") {
+    throw new TypeError("Unable to parse working-tree state: malformed git status record.");
+  }
+
+  const status = record.slice(0, 2);
+  const path = record.slice(3);
+  if (!GIT_STATUS_CODE_PATTERN.test(status) || status === "  " || path.length === 0) {
+    throw new TypeError("Unable to parse working-tree state: malformed git status record.");
+  }
+  return { status, path };
+}
+
+function appendUnstagedChange(
+  entries: GitFileChange[],
+  change: GitFileChange,
+  omitted: number,
+): number {
+  if (entries.length < GIT_CONTEXT_CHANGE_LIMIT) {
+    entries.push(change);
+    return omitted;
+  }
+  return omitted + 1;
+}
+
+export function parseWorkingTreeStatus(output: string): WorkingTreeStatus {
+  const records = output.split(NUL_SEPARATOR);
+  const entries: GitFileChange[] = [];
+  let staged = 0;
+  let unstaged = 0;
+  let untracked = 0;
+  let omitted = 0;
+  let dirty = false;
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record.length === 0) continue;
+
+    const parsed = parsePorcelainRecord(record);
+    const { status } = parsed;
+    let originalPath: string | undefined;
+    if (isRenameOrCopyStatus(status)) {
+      index += 1;
+      originalPath = records[index];
+      if (originalPath === undefined || originalPath.length === 0) {
+        throw new TypeError("Unable to parse working-tree state: rename or copy source path is missing.");
+      }
+    }
+
+    if (status === "!!") continue;
+    dirty = true;
+
+    const isUntracked = status === "??";
+    const isUnmerged = UNMERGED_GIT_STATUSES.has(status);
+    const hasStagedChange = !isUntracked && !isUnmerged && status[0] !== " ";
+    const hasUnstagedChange = !isUntracked && (isUnmerged || status[1] !== " ");
+
+    if (hasStagedChange) staged += 1;
+    if (hasUnstagedChange) unstaged += 1;
+    if (isUntracked) untracked += 1;
+
+    if (isUntracked || hasUnstagedChange) {
+      const change: GitFileChange = {
+        status,
+        path: safeGitContextValue(parsed.path),
+        ...(originalPath === undefined ? {} : { originalPath: safeGitContextValue(originalPath) }),
+      };
+      omitted = appendUnstagedChange(entries, change, omitted);
+    }
+  }
+
+  return {
+    workingTree: {
+      state: dirty ? "dirty" : "clean",
+      staged,
+      unstaged,
+      untracked,
+    },
+    unstagedChanges: { entries, omitted },
+  };
+}
+
+export async function getWorkingTreeStatus(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<WorkingTreeStatus> {
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  const args = ["status", "--porcelain=v1", "-z", "--untracked-files=normal"];
+  const result = await runGit(pi, { cwd: repoRoot }, args, {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+  });
+  return parseWorkingTreeStatus(result.stdout);
+}
+
+function stripGitLogRecordTerminator(record: string): string {
+  if (record.endsWith("\r\n")) return record.slice(0, -2);
+  if (record.endsWith("\n")) return record.slice(0, -1);
+  return record;
+}
+
+function parseRecentCommitRecord(record: string): RecentCommit {
+  const firstSeparator = record.indexOf(GIT_LOG_FIELD_SEPARATOR);
+  const secondSeparator = record.indexOf(GIT_LOG_FIELD_SEPARATOR, firstSeparator + 1);
+  const thirdSeparator = record.indexOf(GIT_LOG_FIELD_SEPARATOR, secondSeparator + 1);
+  if (firstSeparator < 1 || secondSeparator <= firstSeparator + 1 || thirdSeparator <= secondSeparator + 1) {
+    throw new TypeError("Unable to parse recent commits: malformed git log output.");
+  }
+
+  const hash = record.slice(0, firstSeparator);
+  const shortHash = record.slice(firstSeparator + 1, secondSeparator);
+  const date = record.slice(secondSeparator + 1, thirdSeparator);
+  const subject = record.slice(thirdSeparator + 1);
+  if (
+    !/^[0-9a-f]{40,64}$/iu.test(hash) ||
+    !/^[0-9a-f]{4,64}$/iu.test(shortHash) ||
+    !hash.toLowerCase().startsWith(shortHash.toLowerCase()) ||
+    !/^\d{4}-\d{2}-\d{2}$/u.test(date)
+  ) {
+    throw new TypeError("Unable to parse recent commits: malformed git log output.");
+  }
+
+  return {
+    hash,
+    shortHash,
+    date,
+    subject: safeGitContextValue(subject),
+  };
+}
+
+export function parseRecentCommits(output: string): RecentCommit[] {
+  const records = output.split(NUL_SEPARATOR);
+  const commits: RecentCommit[] = [];
+  for (const rawRecord of records) {
+    if (rawRecord.length === 0) continue;
+    const record = stripGitLogRecordTerminator(rawRecord);
+    if (record.length === 0) continue;
+    commits.push(parseRecentCommitRecord(record));
+    if (commits.length === GIT_CONTEXT_RECENT_COMMIT_LIMIT) break;
+  }
+  return commits;
+}
+
+export async function getRecentCommits(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<RecentCommit[]> {
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  const rootCtx = { cwd: repoRoot };
+  const args = [
+    "log",
+    "-n",
+    String(GIT_CONTEXT_RECENT_COMMIT_LIMIT),
+    "--date=short",
+    `--format=${GIT_LOG_FORMAT}`,
+    "HEAD",
+  ];
+  const result = await runGit(pi, rootCtx, args, {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  if (result.code === 0) return parseRecentCommits(result.stdout);
+  if (signal?.aborted) throw new Error(formatGitFailure(args, result));
+
+  const verifyHead = await runGit(pi, rootCtx, ["rev-parse", "--verify", "HEAD"], {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  if (verifyHead.code !== 0) return [];
+  throw new Error(formatGitFailure(args, result));
 }
 
 export async function getAheadBehindCount(

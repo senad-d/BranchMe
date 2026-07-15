@@ -18,6 +18,12 @@ export const BRANCHME_TOOL_NAMES = [
 export const GIT_STATUS_TIMEOUT_MS = 5_000;
 export const GIT_MUTATION_TIMEOUT_MS = 30_000;
 export const GIT_PUSH_TIMEOUT_MS = 120_000;
+export const GITHUB_RELATED_PR_TIMEOUT_MS = 4_000;
+
+export const GIT_CONTEXT_RECENT_COMMIT_LIMIT = 5;
+export const GIT_CONTEXT_CHANGE_LIMIT = 20;
+export const GIT_CONTEXT_VALUE_LIMIT_CHARS = 512;
+export const GIT_CONTEXT_SUMMARY_LIMIT_CHARS = 4_000;
 
 export const GITHUB_API_BASE_URL = "https://api.github.com";
 export const GITHUB_API_VERSION = "2022-11-28";

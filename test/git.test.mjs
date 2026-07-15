@@ -6,6 +6,10 @@ import {
   formatGitFailure,
   getBranchStatus,
   getGitRoot,
+  getRecentCommits,
+  getWorkingTreeStatus,
+  parseRecentCommits,
+  parseWorkingTreeStatus,
   pushCurrentBranch,
   validateBranchName,
   validateBranchNameInput,
@@ -39,6 +43,19 @@ function makePi(routes) {
 }
 
 const ctx = { cwd: "/repo" };
+const detailedStatusArgs = ["status", "--porcelain=v1", "-z", "--untracked-files=normal"];
+const recentLogArgs = [
+  "log",
+  "-n",
+  "5",
+  "--date=short",
+  "--format=%x00%H%x1f%h%x1f%ad%x1f%s",
+  "HEAD",
+];
+
+function recentLogRecord(hash, shortHash, date, subject) {
+  return `\0${hash}\u001f${shortHash}\u001f${date}\u001f${subject}\n`;
+}
 
 function assertNoUnsafeBranchSwitchCommands(calls) {
   const forbiddenCommands = new Set(["checkout", "stash", "reset", "merge", "rebase", "add", "commit", "push"]);
@@ -114,6 +131,166 @@ test("getBranchStatus preserves partial status when ahead/behind counting fails"
   assert.equal(details.behind, null);
   assert.match(details.warnings[0], /ahead\/behind unavailable/i);
   assert.match(details.warnings[0], /rev-list|ambiguous/i);
+});
+
+test("getWorkingTreeStatus uses bounded porcelain v1 -z data from the verified repository root", async () => {
+  const controller = new AbortController();
+  const output = [
+    "M  staged.ts",
+    " M unstaged.ts",
+    "MM staged-and-unstaged.ts",
+    "?? untracked file.ts",
+    " R renamed.ts",
+    "old-name.ts",
+    " C copied.ts",
+    "source.ts",
+    "UU conflicted.ts",
+    "",
+  ].join("\0");
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    [detailedStatusArgs.join("\0")]: { stdout: output },
+  });
+
+  const details = await getWorkingTreeStatus(pi, ctx, controller.signal);
+
+  assert.deepEqual(details, {
+    workingTree: { state: "dirty", staged: 2, unstaged: 5, untracked: 1 },
+    unstagedChanges: {
+      entries: [
+        { status: " M", path: "unstaged.ts" },
+        { status: "MM", path: "staged-and-unstaged.ts" },
+        { status: "??", path: "untracked file.ts" },
+        { status: " R", path: "renamed.ts", originalPath: "old-name.ts" },
+        { status: " C", path: "copied.ts", originalPath: "source.ts" },
+        { status: "UU", path: "conflicted.ts" },
+      ],
+      omitted: 0,
+    },
+  });
+  assert.deepEqual(
+    pi.calls.map((call) => call.args),
+    [["rev-parse", "--show-toplevel"], detailedStatusArgs],
+  );
+  assert.equal(pi.calls[1].options.cwd, "/repo");
+  assert.equal(pi.calls[1].options.signal, controller.signal);
+  assert.equal(pi.calls[1].options.timeout, 5_000);
+});
+
+test("parseWorkingTreeStatus reports clean state and skips ignored records", () => {
+  assert.deepEqual(parseWorkingTreeStatus(""), {
+    workingTree: { state: "clean", staged: 0, unstaged: 0, untracked: 0 },
+    unstagedChanges: { entries: [], omitted: 0 },
+  });
+  assert.deepEqual(parseWorkingTreeStatus("!! ignored.log\0"), {
+    workingTree: { state: "clean", staged: 0, unstaged: 0, untracked: 0 },
+    unstagedChanges: { entries: [], omitted: 0 },
+  });
+});
+
+test("parseWorkingTreeStatus bounds paths and reports omitted unstaged entries", () => {
+  const unsafePath = `dir/line\n\u001b[31m-ghp_pathsecret123-${"x".repeat(600)}`;
+  const output = Array.from({ length: 22 }, (_, index) => ` M ${index === 0 ? unsafePath : `file-${index}.ts`}\0`).join("");
+
+  const details = parseWorkingTreeStatus(output);
+
+  assert.deepEqual(details.workingTree, { state: "dirty", staged: 0, unstaged: 22, untracked: 0 });
+  assert.equal(details.unstagedChanges.entries.length, 20);
+  assert.equal(details.unstagedChanges.omitted, 2);
+  assert.ok(details.unstagedChanges.entries[0].path.length <= 512);
+  assert.match(details.unstagedChanges.entries[0].path, /\\u000a|\\u001b/u);
+  assert.doesNotMatch(details.unstagedChanges.entries[0].path, /[\u0000-\u001f\u007f-\u009f]/u);
+  assert.doesNotMatch(details.unstagedChanges.entries[0].path, /pathsecret/u);
+});
+
+test("parseWorkingTreeStatus rejects malformed rename records without exposing raw output", () => {
+  assert.throws(() => parseWorkingTreeStatus("R  renamed.ts\0"), /source path is missing/u);
+  assert.throws(() => parseWorkingTreeStatus("malformed\0"), /malformed git status record/u);
+});
+
+test("getRecentCommits uses one bounded argv-style git log call and sanitizes subjects", async () => {
+  const firstHash = "a".repeat(40);
+  const secondHash = "b".repeat(40);
+  const output =
+    recentLogRecord(firstHash, "aaaaaaa", "2026-07-04", "initial commit") +
+    recentLogRecord(secondHash, "bbbbbbb", "2026-07-05", "line\n\u001b[31m ghp_subjectsecret123");
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    [recentLogArgs.join("\0")]: { stdout: output },
+  });
+
+  const commits = await getRecentCommits(pi, ctx);
+
+  assert.deepEqual(commits, [
+    {
+      hash: firstHash,
+      shortHash: "aaaaaaa",
+      date: "2026-07-04",
+      subject: "initial commit",
+    },
+    {
+      hash: secondHash,
+      shortHash: "bbbbbbb",
+      date: "2026-07-05",
+      subject: "line\\u000a\\u001b[31m [REDACTED]",
+    },
+  ]);
+  assert.deepEqual(
+    pi.calls.map((call) => call.args),
+    [["rev-parse", "--show-toplevel"], recentLogArgs],
+  );
+  assert.equal(pi.calls.filter((call) => call.args[0] === "log").length, 1);
+  assert.equal(pi.calls[1].options.cwd, "/repo");
+  assert.equal(pi.calls[1].options.timeout, 5_000);
+});
+
+test("parseRecentCommits returns at most five bounded control-free subjects", () => {
+  const output = Array.from({ length: 6 }, (_, index) => {
+    const digit = String(index + 1);
+    return recentLogRecord(
+      digit.repeat(40),
+      digit.repeat(7),
+      `2026-07-${String(index + 1).padStart(2, "0")}`,
+      `${index === 0 ? "title\u2028github_pat_subjectsecret123-" : ""}${"x".repeat(600)}`,
+    );
+  }).join("");
+
+  const commits = parseRecentCommits(output);
+
+  assert.equal(commits.length, 5);
+  for (const commit of commits) {
+    assert.ok(commit.subject.length <= 512);
+    assert.doesNotMatch(commit.subject, /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u);
+  }
+  assert.match(commits[0].subject, /\\u2028/u);
+  assert.doesNotMatch(commits[0].subject, /subjectsecret/u);
+});
+
+test("getRecentCommits treats an unborn repository as a successful empty result", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    [recentLogArgs.join("\0")]: { code: 128, stderr: "fatal: your current branch has no commits yet\n" },
+    ["rev-parse\0--verify\0HEAD"]: { code: 128, stderr: "fatal: Needed a single revision\n" },
+  });
+
+  assert.deepEqual(await getRecentCommits(pi, ctx), []);
+  assert.deepEqual(
+    pi.calls.map((call) => call.args),
+    [["rev-parse", "--show-toplevel"], recentLogArgs, ["rev-parse", "--verify", "HEAD"]],
+  );
+});
+
+test("getRecentCommits preserves real git log failures when HEAD exists", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    [recentLogArgs.join("\0")]: { code: 128, stderr: "fatal: corrupt object ghp_logsecret123\n" },
+    ["rev-parse\0--verify\0HEAD"]: { stdout: "a".repeat(40) },
+  });
+
+  await assert.rejects(
+    () => getRecentCommits(pi, ctx),
+    (error) => error instanceof Error && /git log .* failed/u.test(error.message) && !/logsecret/u.test(error.message),
+  );
 });
 
 test("validateBranchName uses local checks and git check-ref-format", async () => {

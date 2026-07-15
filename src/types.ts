@@ -13,6 +13,47 @@ export interface AheadBehindCount {
   behind: number | null;
 }
 
+export interface WorkingTreeDetails {
+  state: "clean" | "dirty";
+  staged: number;
+  unstaged: number;
+  untracked: number;
+}
+
+export interface GitFileChange {
+  status: string;
+  path: string;
+  originalPath?: string;
+}
+
+export interface GitFileChangeSummary {
+  entries: GitFileChange[];
+  omitted: number;
+}
+
+export interface RecentCommit {
+  hash: string;
+  shortHash: string;
+  date: string;
+  subject: string;
+}
+
+export interface RelatedPullRequestDetails {
+  repository: GitHubRepository;
+  number: number;
+  url: string;
+  title: string;
+  state: string;
+  draft: boolean;
+  head: string;
+  base: string;
+}
+
+export type RelatedPullRequest =
+  | { status: "found"; pullRequest: RelatedPullRequestDetails }
+  | { status: "none" }
+  | { status: "unavailable"; reason: string };
+
 export interface BranchStatusDetails {
   repoRoot: string;
   currentBranch: string | null;
@@ -23,6 +64,13 @@ export interface BranchStatusDetails {
   behind: number | null;
   warnings?: string[];
   githubRepository?: GitHubRepository;
+}
+
+export interface GitContextDetails extends BranchStatusDetails {
+  workingTree: WorkingTreeDetails;
+  unstagedChanges: GitFileChangeSummary;
+  relatedPullRequest: RelatedPullRequest;
+  recentCommits: RecentCommit[];
 }
 
 export interface CreateBranchDetails {

@@ -10,7 +10,6 @@ import {
 import {
   changeExistingLocalBranch,
   createLocalBranch,
-  getBranchStatus,
   getGitRoot,
   getLocalBranchCommit,
   localBranchExists,
@@ -18,6 +17,7 @@ import {
   validateBranchName,
   withRepositoryMutationQueue,
 } from "../git.ts";
+import { collectGitContext, formatGitContext } from "../git-context.ts";
 import {
   createGitHubPullRequest,
   ensureGitHubBranchExists,
@@ -27,7 +27,7 @@ import {
   resolveGitHubToken,
   validatePullRequestBranchRef,
 } from "../github.ts";
-import type { BranchStatusDetails, ChangeBranchDetails, PullRequestDetails } from "../types.ts";
+import type { ChangeBranchDetails, GitContextDetails, PullRequestDetails } from "../types.ts";
 
 const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
 
@@ -62,17 +62,8 @@ export interface BranchMeToolOptions {
   fetchImpl?: typeof fetch;
 }
 
-function repositoryText(details: BranchStatusDetails): string {
-  return details.githubRepository ? repositoryLabel(details.githubRepository) : "not resolved";
-}
-
-export function formatBranchStatus(details: BranchStatusDetails): string {
-  const branch = details.detached ? "detached HEAD" : details.currentBranch ?? "unknown branch";
-  const tree = details.hasChanges ? "dirty" : "clean";
-  const upstream = details.upstream ? `upstream ${details.upstream}` : "no upstream";
-  const counts = details.ahead === null || details.behind === null ? "ahead/behind unavailable" : `ahead ${details.ahead}, behind ${details.behind}`;
-  const warning = details.warnings?.length ? `; warning: ${details.warnings.join("; ")}` : "";
-  return `BranchMe status: ${branch}; ${tree}; ${upstream}; ${counts}; GitHub ${repositoryText(details)}${warning}.`;
+export function formatBranchStatus(details: GitContextDetails): string {
+  return formatGitContext(details, "refresh");
 }
 
 export function formatChangeBranch(details: ChangeBranchDetails): string {
@@ -134,20 +125,25 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: BRANCH_STATUS_TOOL_NAME,
     label: "Branch Status",
-    description: "branch_status inspects the current git repository, branch, upstream, dirty state, ahead/behind counts, and GitHub repository if available. branch_status is read-only.",
-    promptSnippet: "branch_status: inspect current-repository git branch status without mutating files or git state",
+    description: "branch_status explicitly refreshes the current Git repository snapshot, including branch, working tree, unstaged changes, related pull request, and recent commits. branch_status is read-only and never mutates files, Git state, or GitHub state.",
+    promptSnippet: "branch_status: explicitly refresh current-repository branch, working tree, changes, related PR, and recent commits without mutation",
     promptGuidelines: [
-      "Use branch_status before change_branch, create_branch, push_branch, or pull_request when the user asks about the current branch state.",
-      "Use branch_status only for read-only inspection; branch_status never creates branches, pushes, commits, stages, or edits files.",
+      "Use the automatic Git context for start-of-run questions; call branch_status only for an explicit refresh or after Git state changes during the current run.",
+      "Use branch_status as a read-only refresh; branch_status never mutates files, Git state, or GitHub state.",
     ],
     parameters: EmptyParametersSchema,
     async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-      const details = await getBranchStatus(pi, ctx, signal);
+      const details = await collectGitContext(pi, ctx, {
+        signal,
+        env: options.env,
+        fetchImpl: options.fetchImpl,
+      });
 
       try {
-        details.githubRepository = await resolveGitHubRepository(pi, ctx, signal, options.env);
-      } catch {
-        // Repository resolution is optional for branch_status; mutation tools fail closed.
+        details.githubRepository ??= await resolveGitHubRepository(pi, ctx, signal, options.env);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        // Repository resolution is optional compatibility metadata; context collection is authoritative.
       }
 
       return {

@@ -5,12 +5,26 @@ import { redactSecrets } from "./redaction.ts";
 import {
   GITHUB_API_BASE_URL,
   GITHUB_API_VERSION,
+  GITHUB_RELATED_PR_TIMEOUT_MS,
   GITHUB_RESPONSE_BODY_LIMIT_BYTES,
   GITHUB_USER_AGENT,
+  GIT_CONTEXT_VALUE_LIMIT_CHARS,
   MAX_SUMMARY_OUTPUT_CHARS,
 } from "./constants.ts";
-import { getGitRoot, getOriginUrl, validateBranchNameInput, type GitCommandContext } from "./git.ts";
-import type { GitHubRepository, PullRequestDetails, PullRequestInput } from "./types.ts";
+import {
+  getCurrentBranch,
+  getGitRoot,
+  getOriginUrl,
+  validateBranchNameInput,
+  type GitCommandContext,
+} from "./git.ts";
+import type {
+  GitHubRepository,
+  PullRequestDetails,
+  PullRequestInput,
+  RelatedPullRequest,
+  RelatedPullRequestDetails,
+} from "./types.ts";
 
 type TokenEnvironmentKey = "GITHUB_TOKEN" | "GH_TOKEN";
 
@@ -31,6 +45,11 @@ export interface TokenResolutionOptions {
 export interface PullRequestFetchOptions {
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+}
+
+export interface RelatedPullRequestLookupOptions extends PullRequestFetchOptions {
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
 }
 
 export interface GitHubBranchDetails {
@@ -484,6 +503,11 @@ function requireGitHubResponseObject(payload: unknown, responseContext: string):
   return payload;
 }
 
+function requireGitHubResponseArray(payload: unknown, responseContext: string): unknown[] {
+  if (!Array.isArray(payload)) throw new Error(`${responseContext} was not an array.`);
+  return payload;
+}
+
 async function readGitHubJsonObject(
   response: Response,
   signal: AbortSignal | undefined,
@@ -494,6 +518,18 @@ async function readGitHubJsonObject(
   const body = await readGitHubResponseBody(response, signal, readFailurePrefix, token);
   if (body.truncated) throw new Error(`${responseContext} exceeded the ${GITHUB_RESPONSE_BODY_LIMIT_BYTES} byte limit.`);
   return requireGitHubResponseObject(parseGitHubJson(body.text, responseContext, token), responseContext);
+}
+
+async function readGitHubJsonArray(
+  response: Response,
+  signal: AbortSignal | undefined,
+  token: string,
+  responseContext: string,
+  readFailurePrefix: string,
+): Promise<unknown[]> {
+  const body = await readGitHubResponseBody(response, signal, readFailurePrefix, token);
+  if (body.truncated) throw new Error(`${responseContext} exceeded the ${GITHUB_RESPONSE_BODY_LIMIT_BYTES} byte limit.`);
+  return requireGitHubResponseArray(parseGitHubJson(body.text, responseContext, token), responseContext);
 }
 
 function parseGitHubBranchDetails(payload: Record<string, unknown>, branchName: string): GitHubBranchDetails {
@@ -602,6 +638,255 @@ function pullRequestDetailsFromPayload(
     base,
     draft,
   };
+}
+
+function escapeRelatedPullRequestControlCharacter(character: string): string {
+  const codePoint = character.codePointAt(0);
+  return codePoint === undefined ? "" : `\\u${codePoint.toString(16).padStart(4, "0")}`;
+}
+
+function boundedRelatedPullRequestValue(value: string): string {
+  const safeValue = redactSecrets(value).replace(
+    /[\p{Cc}\p{Cf}\u2028\u2029]/gu,
+    escapeRelatedPullRequestControlCharacter,
+  );
+  if (safeValue.length <= GIT_CONTEXT_VALUE_LIMIT_CHARS) return safeValue;
+
+  let end = GIT_CONTEXT_VALUE_LIMIT_CHARS - 1;
+  const lastCodeUnit = safeValue.charCodeAt(end - 1);
+  const nextCodeUnit = safeValue.charCodeAt(end);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff && nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+    end -= 1;
+  }
+  return `${safeValue.slice(0, end)}…`;
+}
+
+function requireRelatedPullRequestString(value: unknown, field: string): string {
+  const text = stringField(value, field);
+  if (text.trim().length === 0) throw new Error(`GitHub response ${field} cannot be blank.`);
+  return text;
+}
+
+function requireRelatedPullRequestUrl(
+  value: unknown,
+  repository: GitHubRepository,
+  number: number,
+): string {
+  const rawUrl = requireRelatedPullRequestString(value, "html_url");
+  if (rawUrl.length > GIT_CONTEXT_VALUE_LIMIT_CHARS || /[\p{Cc}\p{Cf}\s]/u.test(rawUrl)) {
+    throw new Error("GitHub response html_url was invalid.");
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("GitHub response html_url was invalid.");
+  }
+
+  const expectedPath = `/${repository.owner}/${repository.repo}/pull/${number}`.toLowerCase();
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname.toLowerCase() !== "github.com" ||
+    parsed.port !== "" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    parsed.pathname.toLowerCase() !== expectedPath
+  ) {
+    throw new Error("GitHub response html_url did not match the resolved repository and pull request number.");
+  }
+
+  return rawUrl;
+}
+
+function requireRelatedPullRequestRepository(
+  value: unknown,
+  repository: GitHubRepository,
+): void {
+  const headRepository = requireGitHubResponseObject(value, "GitHub related pull request head.repo");
+  const fullName = requireRelatedPullRequestString(headRepository.full_name, "head.repo.full_name");
+  if (fullName.toLowerCase() !== repositoryLabel(repository).toLowerCase()) {
+    throw new Error("GitHub related pull request head repository did not match the resolved repository.");
+  }
+}
+
+function relatedPullRequestDetailsFromPayload(
+  repository: GitHubRepository,
+  currentBranch: string,
+  payload: unknown,
+): RelatedPullRequestDetails {
+  const response = requireGitHubResponseObject(payload, "GitHub related pull request response item");
+  const number = pullRequestNumberField(response.number);
+  const state = requireRelatedPullRequestString(response.state, "state");
+  if (state !== "open") throw new Error("GitHub related pull request response state was not open.");
+  if (typeof response.draft !== "boolean") throw new Error("GitHub response draft must be a boolean.");
+
+  const head = requireGitHubResponseObject(response.head, "GitHub related pull request head");
+  const headRef = requireRelatedPullRequestString(head.ref, "head.ref");
+  if (headRef !== currentBranch) {
+    throw new Error("GitHub related pull request head did not match the current branch.");
+  }
+  requireRelatedPullRequestRepository(head.repo, repository);
+
+  const base = requireGitHubResponseObject(response.base, "GitHub related pull request base");
+  const baseRef = requireRelatedPullRequestString(base.ref, "base.ref");
+  const title = requireRelatedPullRequestString(response.title, "title");
+
+  return {
+    repository: {
+      owner: boundedRelatedPullRequestValue(repository.owner),
+      repo: boundedRelatedPullRequestValue(repository.repo),
+    },
+    number,
+    url: requireRelatedPullRequestUrl(response.html_url, repository, number),
+    title: boundedRelatedPullRequestValue(title),
+    state,
+    draft: response.draft,
+    head: boundedRelatedPullRequestValue(headRef),
+    base: boundedRelatedPullRequestValue(baseRef),
+  };
+}
+
+function unavailableRelatedPullRequest(reason: string): RelatedPullRequest {
+  return { status: "unavailable", reason };
+}
+
+function abortedRelatedPullRequest(
+  callerSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal,
+): RelatedPullRequest | null {
+  if (callerSignal?.aborted) return unavailableRelatedPullRequest("Related pull request lookup was cancelled.");
+  if (timeoutSignal.aborted) return unavailableRelatedPullRequest("Related pull request lookup timed out.");
+  return null;
+}
+
+function validateRelatedPullRequestLookupBounds(repository: GitHubRepository, branch: string): void {
+  if (
+    repository.owner.length > GIT_CONTEXT_VALUE_LIMIT_CHARS ||
+    repository.repo.length > GIT_CONTEXT_VALUE_LIMIT_CHARS ||
+    branch.length > GIT_CONTEXT_VALUE_LIMIT_CHARS
+  ) {
+    throw new Error("GitHub related pull request lookup metadata exceeded its value limit.");
+  }
+}
+
+function relatedPullRequestLookupUrl(repository: GitHubRepository, currentBranch: string): string {
+  const query = new URLSearchParams({
+    state: "open",
+    head: `${repository.owner}:${currentBranch}`,
+    per_page: "1",
+  });
+  return `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/pulls?${query.toString()}`;
+}
+
+export async function lookupRelatedPullRequest(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  options: RelatedPullRequestLookupOptions = {},
+): Promise<RelatedPullRequest> {
+  const timeoutMs = options.timeoutMs ?? GITHUB_RELATED_PR_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    return unavailableRelatedPullRequest("Related pull request lookup timeout is invalid.");
+  }
+
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+  const initialAbort = abortedRelatedPullRequest(options.signal, timeoutSignal);
+  if (initialAbort) return initialAbort;
+
+  let repoRoot: string;
+  let currentBranch: string;
+  let repository: GitHubRepository;
+  try {
+    repoRoot = await getGitRoot(pi, ctx, signal);
+    const rootCtx = { cwd: repoRoot };
+    const branch = await getCurrentBranch(pi, rootCtx, signal);
+    if (branch.detached || !branch.currentBranch) {
+      return unavailableRelatedPullRequest("Related pull request lookup is unavailable for detached HEAD.");
+    }
+    currentBranch = branch.currentBranch;
+    validatePullRequestBranchRef(currentBranch, "headBranch");
+    repository = await resolveGitHubRepository(pi, rootCtx, signal, options.env ?? process.env);
+    validateRelatedPullRequestLookupBounds(repository, currentBranch);
+  } catch {
+    return (
+      abortedRelatedPullRequest(options.signal, timeoutSignal) ??
+      unavailableRelatedPullRequest("The current GitHub repository or branch could not be resolved.")
+    );
+  }
+
+  let token: string;
+  try {
+    token = (await resolveGitHubToken(options.env ?? process.env, { cwd: repoRoot, signal })).token;
+  } catch {
+    return (
+      abortedRelatedPullRequest(options.signal, timeoutSignal) ??
+      unavailableRelatedPullRequest("GitHub authentication is unavailable.")
+    );
+  }
+
+  let response: Response;
+  try {
+    const fetchImpl = requireFetchImplementation(options.fetchImpl ?? globalThis.fetch);
+    response = await fetchGitHubResponse(
+      fetchImpl,
+      relatedPullRequestLookupUrl(repository, currentBranch),
+      { method: "GET", headers: gitHubJsonHeaders(token), signal },
+      "GitHub related pull request request failed",
+      token,
+    );
+  } catch {
+    return (
+      abortedRelatedPullRequest(options.signal, timeoutSignal) ??
+      unavailableRelatedPullRequest("The GitHub related pull request request failed.")
+    );
+  }
+
+  if (!response.ok) {
+    try {
+      await readGitHubResponseBody(
+        response,
+        signal,
+        `GitHub related pull request request failed with HTTP ${response.status}: unable to read error response`,
+        token,
+      );
+    } catch {
+      return (
+        abortedRelatedPullRequest(options.signal, timeoutSignal) ??
+        unavailableRelatedPullRequest("The GitHub related pull request response could not be read.")
+      );
+    }
+    return unavailableRelatedPullRequest(`GitHub related pull request lookup returned HTTP ${response.status}.`);
+  }
+
+  let payload: unknown[];
+  try {
+    payload = await readGitHubJsonArray(
+      response,
+      signal,
+      token,
+      "GitHub related pull request response",
+      "GitHub related pull request response could not be read",
+    );
+  } catch {
+    return (
+      abortedRelatedPullRequest(options.signal, timeoutSignal) ??
+      unavailableRelatedPullRequest("The GitHub related pull request response was invalid.")
+    );
+  }
+
+  if (payload.length === 0) return { status: "none" };
+
+  try {
+    return {
+      status: "found",
+      pullRequest: relatedPullRequestDetailsFromPayload(repository, currentBranch, payload[0]),
+    };
+  } catch {
+    return unavailableRelatedPullRequest("The GitHub related pull request response was invalid.");
+  }
 }
 
 export async function ensureGitHubBranchExists(

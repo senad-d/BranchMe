@@ -10,6 +10,7 @@ import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
+  GIT_CONTEXT_SUMMARY_LIMIT_CHARS,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
 } from "../src/constants.ts";
@@ -61,10 +62,15 @@ function makePi(routes = {}) {
   const tools = [];
   const commands = [];
   const calls = [];
+  const events = [];
   return {
     tools,
     commands,
     calls,
+    events,
+    on(name, handler) {
+      events.push({ name, handler });
+    },
     registerTool(tool) {
       tools.push(tool);
     },
@@ -96,6 +102,19 @@ function toolByName(pi, name) {
 }
 
 const ctx = { cwd: "/repo", signal: undefined };
+const detailedStatusArgs = ["status", "--porcelain=v1", "-z", "--untracked-files=normal"];
+const recentLogArgs = [
+  "log",
+  "-n",
+  "5",
+  "--date=short",
+  "--format=%x00%H%x1f%h%x1f%ad%x1f%s",
+  "HEAD",
+];
+
+function recentLogRecord(hash, shortHash, date, subject) {
+  return `\0${hash}\u001f${shortHash}\u001f${date}\u001f${subject}\n`;
+}
 
 test("branchMeExtension registers exactly the BranchMe command and five prompt-ready tools", () => {
   const pi = makePi();
@@ -125,16 +144,22 @@ test("branchMeExtension registers exactly the BranchMe command and five prompt-r
     );
   }
 
+  assert.deepEqual(pi.events.map((event) => event.name), ["before_agent_start"]);
+  assert.equal(typeof pi.events[0].handler, "function");
   assert.equal(pi.commands.some((command) => /template/i.test(command.name)), false);
   assert.equal(pi.tools.some((tool) => /template|greet|hello/i.test(tool.name)), false);
 });
 
-test("branch_status has strict schema, prompt metadata, and read-only details", async () => {
+test("branch_status has strict schema, refresh guidance, and shared current Git context", async () => {
+  const hash = "1234567890abcdef1234567890abcdef12345678";
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
     ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
-    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main...origin/main\n" },
+    [detailedStatusArgs.join("\0")]: { stdout: " M src/context.ts\0?? notes.txt\0" },
+    [recentLogArgs.join("\0")]: {
+      stdout: recentLogRecord(hash, "1234567", "2026-07-04", "Add explicit refresh"),
+    },
     ["rev-list\0--left-right\0--count\0HEAD...@{u}"]: { stdout: "0\t0\n" },
     ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
   });
@@ -143,8 +168,10 @@ test("branch_status has strict schema, prompt metadata, and read-only details", 
 
   assert.deepEqual(tool.parameters.properties, {});
   assert.equal(tool.parameters.additionalProperties, false);
-  assert.match(tool.promptSnippet, /branch/i);
+  assert.match(tool.promptSnippet, /refresh/i);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(BRANCH_STATUS_TOOL_NAME)));
+  assert.match(tool.promptGuidelines.join(" "), /automatic Git context/i);
+  assert.doesNotMatch(tool.promptGuidelines.join(" "), /before change_branch|before create_branch|before push_branch|before pull_request/i);
 
   const output = await tool.execute("call-1", {}, undefined, undefined, ctx);
 
@@ -152,14 +179,108 @@ test("branch_status has strict schema, prompt metadata, and read-only details", 
   assert.equal(output.details.currentBranch, "main");
   assert.equal(output.details.detached, false);
   assert.equal(output.details.upstream, "origin/main");
-  assert.equal(output.details.hasChanges, false);
+  assert.equal(output.details.hasChanges, true);
   assert.equal(output.details.ahead, 0);
   assert.equal(output.details.behind, 0);
   assert.deepEqual(output.details.githubRepository, { owner: "senad-d", repo: "branchme" });
-  assert.match(output.content[0].text, /BranchMe status/);
+  assert.deepEqual(output.details.workingTree, { state: "dirty", staged: 0, unstaged: 1, untracked: 1 });
+  assert.deepEqual(output.details.unstagedChanges.entries, [
+    { status: " M", path: "src/context.ts" },
+    { status: "??", path: "notes.txt" },
+  ]);
+  assert.equal(output.details.relatedPullRequest.status, "unavailable");
+  assert.deepEqual(output.details.recentCommits, [
+    { hash, shortHash: "1234567", date: "2026-07-04", subject: "Add explicit refresh" },
+  ]);
+  assert.match(output.content[0].text, /^## Current Git Context/mu);
+  for (const field of ["Branch", "Working tree", "Unstaged changes", "Related PR", "Recent commits"]) {
+    assert.match(output.content[0].text, new RegExp(`- ${field}:`, "u"));
+  }
+  assert.match(output.content[0].text, /explicit current-state refresh/u);
 
   const mutatingCommands = pi.calls.filter((call) => ["switch", "push", "commit", "add"].includes(call.args[0]));
   assert.deepEqual(mutatingCommands, []);
+});
+
+test("branch_status recollects fresh state through bounded read-only Git and GitHub requests", async () => {
+  const firstHash = "1".repeat(40);
+  const secondHash = "2".repeat(40);
+  const requests = [];
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: [
+      { stdout: "main\n" },
+      { stdout: "main\n" },
+      { stdout: "feature/refresh\n" },
+      { stdout: "feature/refresh\n" },
+    ],
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: [
+      { code: 1 },
+      { code: 1 },
+    ],
+    [detailedStatusArgs.join("\0")]: [
+      { stdout: "" },
+      { stdout: " M src/refreshed.ts\0?? refreshed.txt\0" },
+    ],
+    [recentLogArgs.join("\0")]: [
+      { stdout: recentLogRecord(firstHash, "1111111", "2026-07-04", "Before refresh") },
+      { stdout: recentLogRecord(secondHash, "2222222", "2026-07-05", "After refresh") },
+    ],
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+  });
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    const refreshed = url.includes("feature%2Frefresh");
+    const branch = refreshed ? "feature/refresh" : "main";
+    return jsonResponse([
+      {
+        number: refreshed ? 2 : 1,
+        html_url: `https://github.com/senad-d/branchme/pull/${refreshed ? 2 : 1}`,
+        title: refreshed ? "Refreshed PR" : "Initial PR",
+        state: "open",
+        draft: false,
+        head: { ref: branch, repo: { full_name: "senad-d/branchme" } },
+        base: { ref: "main" },
+      },
+    ]);
+  };
+  registerBranchMeTools(pi, { env: { GITHUB_TOKEN: "ghp_refreshsecret123" }, fetchImpl });
+  const tool = toolByName(pi, BRANCH_STATUS_TOOL_NAME);
+
+  const first = await tool.execute("call-status-before", {}, undefined, undefined, ctx);
+  const second = await tool.execute("call-status-after", {}, undefined, undefined, ctx);
+
+  assert.equal(first.details.currentBranch, "main");
+  assert.deepEqual(first.details.workingTree, { state: "clean", staged: 0, unstaged: 0, untracked: 0 });
+  assert.equal(first.details.relatedPullRequest.pullRequest.number, 1);
+  assert.equal(first.details.recentCommits[0].subject, "Before refresh");
+  assert.equal(second.details.currentBranch, "feature/refresh");
+  assert.deepEqual(second.details.workingTree, { state: "dirty", staged: 0, unstaged: 1, untracked: 1 });
+  assert.equal(second.details.relatedPullRequest.pullRequest.number, 2);
+  assert.equal(second.details.recentCommits[0].subject, "After refresh");
+  assert.doesNotMatch(second.content[0].text, /Before refresh|Initial PR/u);
+  assert.ok(second.content[0].text.length <= GIT_CONTEXT_SUMMARY_LIMIT_CHARS);
+
+  assert.deepEqual(
+    requests.map(({ url, init }) => ({ url, method: init.method, body: init.body })),
+    [
+      {
+        url: "https://api.github.com/repos/senad-d/branchme/pulls?state=open&head=senad-d%3Amain&per_page=1",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "https://api.github.com/repos/senad-d/branchme/pulls?state=open&head=senad-d%3Afeature%2Frefresh&per_page=1",
+        method: "GET",
+        body: undefined,
+      },
+    ],
+  );
+  assert.ok(requests.every(({ init }) => init.headers.Authorization === "Bearer ghp_refreshsecret123"));
+  assert.deepEqual(
+    [...new Set(pi.calls.map((call) => call.args[0]))].sort(),
+    ["log", "remote", "rev-parse", "status", "symbolic-ref"],
+  );
 });
 
 test("branch_status reports partial status warnings when ahead/behind is unavailable", async () => {
@@ -167,7 +288,8 @@ test("branch_status reports partial status warnings when ahead/behind is unavail
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/stale\n" },
     ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/stale\n" },
-    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/stale...origin/feature/stale\n" },
+    [detailedStatusArgs.join("\0")]: { stdout: "" },
+    [recentLogArgs.join("\0")]: { stdout: "" },
     ["rev-list\0--left-right\0--count\0HEAD...@{u}"]: { code: 128, stderr: "fatal: upstream is gone\n" },
     ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
   });
@@ -184,7 +306,21 @@ test("branch_status reports partial status warnings when ahead/behind is unavail
   assert.match(output.content[0].text, /feature\/stale/);
   assert.match(output.content[0].text, /clean/);
   assert.match(output.content[0].text, /ahead\/behind unavailable/);
-  assert.match(output.content[0].text, /warning:/);
+  assert.doesNotMatch(output.content[0].text, /fatal: upstream is gone/u);
+});
+
+test("branch_status keeps explicit caller cancellation observable", async () => {
+  const pi = makePi();
+  registerBranchMeTools(pi, { env: {} });
+  const tool = toolByName(pi, BRANCH_STATUS_TOOL_NAME);
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () => tool.execute("call-status-abort", {}, controller.signal, undefined, ctx),
+    /cancelled/i,
+  );
+  assert.deepEqual(pi.calls, []);
 });
 
 test("create_branch schema accepts only branchName and constructs git switch", async () => {

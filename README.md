@@ -16,7 +16,7 @@
 
 ---
 
-BranchMe is a Pi extension for safe branch workflow automation. It adds an informational `/branchme` command and five agent-callable tools that inspect the current repository, switch to an existing local branch, create a branch from the current `HEAD`, push the current branch, and create a GitHub pull request.
+BranchMe is a Pi extension for safe branch workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and five agent-callable tools that explicitly refresh state, switch to an existing local branch, create a branch from the current `HEAD`, push the current branch, and create a GitHub pull request.
 
 <table align="center">
   <tr>
@@ -29,12 +29,13 @@ BranchMe is a Pi extension for safe branch workflow automation. It adds an infor
   </tr>
 </table>
 
+- **Context-aware:** every agent run starts with bounded branch, working-tree, related-PR, and recent-commit metadata; repository metadata is untrusted data, not instructions.
 - **Current-repository only:** Git and GitHub operations are scoped to the checkout where pi is running.
-- **Commit-safe:** BranchMe never stages files, creates commits, generates commit messages, rebases, merges, resets, or edits files directly.
+- **Commit-safe:** context collection is read-only, and BranchMe never stages files, creates commits, generates commit messages, rebases, merges, resets, or edits files directly.
 - **Strict tools:** tool schemas reject extra properties such as `force`, `stash`, `discard`, `owner`, `repo`, `path`, or `baseRef`.
 - **PR-ready:** create GitHub pull requests from existing local branches after verifying the `headBranch` matches GitHub and the base is visible, with explicit PR fields and `GITHUB_TOKEN` or `GH_TOKEN` from the process environment or a local `.env` fallback.
 
-> **Security:** pi packages run with your full system permissions. BranchMe can run local `git` commands, switch/create branches, push the current branch, and call the GitHub REST API to create pull requests. Read [`SECURITY.md`](SECURITY.md).
+> **Security:** pi packages run with your full system permissions. BranchMe runs local `git` commands, may make an automatic authenticated GitHub request to find a related open pull request, can switch/create branches and push the current branch, and can create GitHub pull requests. Read [`SECURITY.md`](SECURITY.md).
 
 ## Table of Contents
 
@@ -70,19 +71,20 @@ Inside pi:
 /branchme help
 ```
 
-Ask the agent to use BranchMe tools explicitly, for example:
+A normal prompt can use the automatic start-of-run snapshot without a tool call. Ask for an explicit refresh when needed, for example:
 
 ```text
-Use branch_status, then create a branch named feature/update-docs with create_branch.
+Refresh the repository state with branch_status, then create a branch named feature/update-docs with create_branch.
 ```
 
 A typical BranchMe flow is:
 
-1. Inspect state with `branch_status`.
-2. Switch with `change_branch` or create from current `HEAD` with `create_branch`.
-3. Make edits and commit outside BranchMe.
-4. Push the current branch with `push_branch`.
-5. After `push_branch` completes and GitHub can see the branches, create a pull request with `pull_request`.
+1. Use the automatic snapshot to understand state at the start of the agent run.
+2. Use `branch_status` when you explicitly need fresh state, especially after a Git mutation in the same run.
+3. Switch with `change_branch` or create from current `HEAD` with `create_branch`.
+4. Make edits and commit outside BranchMe.
+5. Push the current branch with `push_branch`.
+6. After `push_branch` completes and GitHub can see the branches, create a pull request with `pull_request`.
 
 BranchMe is tool-based. The slash command is informational only and never changes branches, pushes, commits, stages, edits files, or opens pull requests.
 
@@ -97,6 +99,8 @@ BranchMe is tool-based. The slash command is informational only and never change
 | One run | `pi -e npm:@senad-d/branchme` | Try without changing settings. |
 | Git | `pi install git:github.com/senad-d/branchme@<tag>` | Pin a tag or commit. |
 | Local checkout | `pi --no-extensions -e .` | Develop or test this repository in isolation. |
+
+Once loaded, BranchMe collects automatic Git context before each agent run. This happens for ordinary prompts; there is no `/branchme context` command and no additional tool to enable it.
 
 Source checkout:
 
@@ -135,7 +139,7 @@ git remote set-url origin git@github.com:OWNER/REPO.git
 export GITHUB_REPOSITORY=OWNER/REPO
 ```
 
-For `pull_request`, set a token in the process environment before starting pi:
+For automatic related-PR lookup and `pull_request`, set a token in the process environment before starting pi:
 
 ```bash
 export GITHUB_TOKEN=github_pat_...
@@ -160,15 +164,15 @@ Run `pull_request` only after `push_branch` has completed; `pull_request` prefli
 
 ## Configuration
 
-BranchMe has no project config file. It reads process environment variables for GitHub pull request creation and optional repository boundary checks, with a local `.env` token fallback when no process token is set. Token lookup checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`; if neither is set, BranchMe reads `.env` from the verified git root and checks `GITHUB_TOKEN`, then `GH_TOKEN`.
+BranchMe has no project config file. It reads process environment variables for automatic related-PR lookup, GitHub pull request creation, and optional repository boundary checks, with a local `.env` token fallback when no process token is set. Token lookup checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`; if neither is set, BranchMe reads `.env` from the verified git root and checks `GITHUB_TOKEN`, then `GH_TOKEN`.
 
 | Variable | Meaning |
 | --- | --- |
-| `GITHUB_TOKEN` | Preferred token for `pull_request`; process environment first, then local `.env` fallback. |
-| `GH_TOKEN` | Fallback token for `pull_request`; process environment first, then local `.env` fallback. |
+| `GITHUB_TOKEN` | Preferred token for automatic related-PR lookup and `pull_request`; process environment first, then local `.env` fallback. |
+| `GH_TOKEN` | Fallback token for automatic related-PR lookup and `pull_request`; process environment first, then local `.env` fallback. |
 | `GITHUB_REPOSITORY=owner/repo` | Optional CI fallback and boundary check for the current GitHub repository; process environment only. |
 
-BranchMe reads only `GITHUB_TOKEN` and `GH_TOKEN` from a small regular `.env` file; it rejects directories, symlinks, special files, and oversized files. BranchMe does not import other `.env` keys, read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from errors, tool content, and tool details.
+BranchMe reads only `GITHUB_TOKEN` and `GH_TOKEN` from a small regular `.env` file; it rejects directories, symlinks, special files, and oversized files. BranchMe does not import other `.env` keys, read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from automatic context, errors, tool content, and tool details.
 
 If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
@@ -191,7 +195,7 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 
 | Tool | Schema | Behavior |
 | --- | --- | --- |
-| `branch_status` | `{}` | Read-only git status: repo root, current branch or detached state, upstream, dirty state, ahead/behind counts, and GitHub repository when resolvable. |
+| `branch_status` | `{}` | Explicitly refreshes the same bounded context used at agent start: repo root in structured details, branch/detached state, upstream and ahead/behind counts, working-tree counts and unstaged/untracked paths, related open PR, and recent commits. It is read-only. |
 | `change_branch` | `{ "branchName": string }` | Validates `branchName`, requires `refs/heads/<branchName>` to exist locally, rejects dirty worktrees, and runs `git switch <branchName>`. |
 | `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
 | `push_branch` | `{}` | Pushes the current branch to its configured upstream remote with an explicit `HEAD:<upstream-branch-ref>` refspec, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
@@ -202,6 +206,24 @@ All schemas reject additional properties. `change_branch` never accepts `baseRef
 ---
 
 ## Workflow and Boundaries
+
+### Automatic context and freshness
+
+Before each agent run, BranchMe appends an **Automatic Git Context** snapshot to the existing system prompt. The snapshot contains these fields in order:
+
+- current branch or detached `HEAD`, plus upstream and ahead/behind counts when available;
+- working-tree state and staged, unstaged, and untracked counts;
+- up to 20 unstaged or untracked change entries with Git status, path, and original path for renames/copies;
+- related open PR status and, when found, its number, title, repository, head/base branches, URL, state, and draft flag;
+- up to 5 recent commits with short hash, date, and subject.
+
+Collection defaults are a 5-second timeout per local Git command, a 4-second related-PR lookup timeout, at most 512 characters per metadata value, and at most 4,000 characters for the rendered snapshot. GitHub response bodies are limited to 64 KiB. The formatter can further shorten values or omit entries to stay within the total limit.
+
+The snapshot is fresh at agent start but is not live. A branch switch, commit, file change, push, or other mutation later in the same run can make it stale. `branch_status` performs an explicit current-state refresh through the same shared collector and remains read-only; it does not mutate files, Git state, or GitHub state.
+
+Related-PR metadata does not come from Git alone. When repository, branch, and credentials resolve, automatic collection and explicit `branch_status` may make an authenticated `GET /repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}&per_page=1` request. Without a token there is no unauthenticated fallback or GitHub request; the PR field is reported as unavailable while local Git context remains usable.
+
+Repository paths, commit subjects, branch names, and PR titles are treated as untrusted metadata. BranchMe redacts token values, escapes control characters, quotes and bounds values before prompt insertion, and never captures diffs or file contents. Staged files contribute only to the staged count; the path list is limited to unstaged and untracked entries.
 
 Use BranchMe from pi prompts or automation that drives pi with explicit tool calls:
 
@@ -214,6 +236,7 @@ After push_branch completes, create a draft pull request from feature/docs-refre
 
 BranchMe operates only on the repository where pi is running:
 
+- Automatic collection and `branch_status` run bounded, read-only Git commands from the verified git root.
 - Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from the verified git root.
 - `change_branch` switches only to existing local branches and has no `force`, `stash`, `discard`, remote, or path input.
 - `create_branch` creates from the current `HEAD` only and has no `baseRef` input.
@@ -269,6 +292,7 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | Branch does not exist locally | Create a local branch first; `change_branch` does not checkout remote branches. |
 | Dirty worktree before branch switch | Commit, stash, or discard changes outside BranchMe before using `change_branch`. |
 | Push fails | Confirm the current branch is correct and your normal Git remote credentials can push. |
+| Related PR is unavailable | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi if related-PR context is wanted. Without a token, BranchMe keeps local context and intentionally makes no unauthenticated GitHub request. |
 | PR auth fails | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi, or copy `.env.example` to `.env` and fill in one token. |
 | PR branch does not exist locally | Create or fetch/check out the local `headBranch` and `baseBranch` branches first; BranchMe does not use remote-only or cross-repository PR refs. |
 | PR branch is not visible or is stale on GitHub | Run `push_branch`, wait for it to complete, then retry `pull_request`; do not batch `push_branch` and `pull_request` in the same assistant tool call. |
@@ -288,7 +312,7 @@ npm run check:pack
 printf '/branchme help\n/quit\n' | pi --no-extensions -e .
 ```
 
-Validation covers TypeScript typechecking, formatting checks, unit tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all five BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
+Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, unit tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all five BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
 
 Refresh TUI captures intentionally with:
 

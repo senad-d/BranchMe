@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   createGitHubPullRequest,
   ensureGitHubBranchExists,
+  lookupRelatedPullRequest,
   parseGitHubRepository,
   redactSecrets,
   resolveGitHubRepository,
@@ -199,6 +200,245 @@ test("validatePullRequestBranchRef accepts local branch names and rejects cross-
     "@",
   ]) {
     assert.throws(() => validatePullRequestBranchRef(value, "headBranch"), /headBranch/u);
+  }
+});
+
+function relatedPullRequestRoutes(overrides = {}) {
+  return {
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+    ...overrides,
+  };
+}
+
+function relatedPullRequestPayload(overrides = {}) {
+  return {
+    number: 42,
+    html_url: "https://github.com/senad-d/branchme/pull/42",
+    title: "Add current branch support",
+    state: "open",
+    draft: false,
+    head: {
+      ref: "feature/current",
+      repo: { full_name: "senad-d/branchme" },
+    },
+    base: { ref: "main" },
+    ...overrides,
+  };
+}
+
+function abortingFetch(_url, init) {
+  return new Promise((_resolve, reject) => {
+    const rejectForAbort = () => reject(new DOMException("request aborted ghp_secret123", "AbortError"));
+    if (init.signal.aborted) {
+      rejectForAbort();
+      return;
+    }
+    init.signal.addEventListener("abort", rejectForAbort, { once: true });
+  });
+}
+
+test("lookupRelatedPullRequest requests one open PR for the current repository branch", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return new Response(
+      JSON.stringify([
+        relatedPullRequestPayload({
+          title: `line\n\u001b[31m github_pat_titlesecret123 ${"x".repeat(600)}`,
+        }),
+      ]),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  const pi = makePi(relatedPullRequestRoutes());
+
+  const result = await lookupRelatedPullRequest(pi, ctx, {
+    env: { GITHUB_TOKEN: "ghp_secret123" },
+    fetchImpl,
+  });
+
+  assert.equal(result.status, "found");
+  assert.deepEqual(
+    { ...result.pullRequest, title: undefined },
+    {
+      repository: { owner: "senad-d", repo: "branchme" },
+      number: 42,
+      url: "https://github.com/senad-d/branchme/pull/42",
+      title: undefined,
+      state: "open",
+      draft: false,
+      head: "feature/current",
+      base: "main",
+    },
+  );
+  assert.ok(result.pullRequest.title.length <= 512);
+  assert.match(result.pullRequest.title, /\\u000a\\u001b/u);
+  assert.doesNotMatch(result.pullRequest.title, /titlesecret|[\u0000-\u001f\u007f-\u009f]/u);
+  assert.equal(
+    requests[0].url,
+    "https://api.github.com/repos/senad-d/branchme/pulls?state=open&head=senad-d%3Afeature%2Fcurrent&per_page=1",
+  );
+  assert.equal(requests[0].init.method, "GET");
+  assert.equal(requests[0].init.body, undefined);
+  assert.equal(requests[0].init.headers.Accept, "application/vnd.github+json");
+  assert.equal(requests[0].init.headers.Authorization, "Bearer ghp_secret123");
+  assert.equal(requests[0].init.headers["X-GitHub-Api-Version"], "2022-11-28");
+  assert.equal(requests[0].init.signal instanceof AbortSignal, true);
+  assert.deepEqual(
+    pi.calls.map((call) => call.args),
+    [
+      ["rev-parse", "--show-toplevel"],
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      ["rev-parse", "--show-toplevel"],
+      ["remote", "get-url", "origin"],
+    ],
+  );
+});
+
+test("lookupRelatedPullRequest returns none only for a successful empty array", async () => {
+  const pi = makePi(relatedPullRequestRoutes());
+  const result = await lookupRelatedPullRequest(pi, ctx, {
+    env: { GH_TOKEN: "ghp_secret123" },
+    fetchImpl: async () => new Response("[]", { status: 200 }),
+  });
+
+  assert.deepEqual(result, { status: "none" });
+});
+
+test("lookupRelatedPullRequest skips unauthenticated, detached, and non-GitHub requests", async () => {
+  const cases = [
+    ["missing token", relatedPullRequestRoutes(), {}, /authentication/i],
+    [
+      "detached HEAD",
+      relatedPullRequestRoutes({
+        ["symbolic-ref\0--quiet\0--short\0HEAD"]: { code: 1 },
+        ["rev-parse\0--verify\0HEAD"]: { stdout: "a".repeat(40) },
+      }),
+      { GITHUB_TOKEN: "ghp_secret123" },
+      /detached/i,
+    ],
+    [
+      "non-GitHub origin",
+      relatedPullRequestRoutes({
+        ["remote\0get-url\0origin"]: { stdout: "https://example.com/senad-d/branchme.git\n" },
+      }),
+      { GITHUB_TOKEN: "ghp_secret123" },
+      /could not be resolved/i,
+    ],
+  ];
+
+  for (const [name, routes, env, reasonPattern] of cases) {
+    let fetchCalls = 0;
+    const result = await lookupRelatedPullRequest(makePi(routes), ctx, {
+      env,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        throw new Error("unauthenticated request should not occur");
+      },
+    });
+
+    assert.equal(result.status, "unavailable", name);
+    assert.match(result.reason, reasonPattern, name);
+    assert.equal(fetchCalls, 0, name);
+  }
+});
+
+test("lookupRelatedPullRequest uses the verified git-root .env token fallback", async () => {
+  const repoRoot = await mkdtemp(join(tmpdir(), "branchme-related-pr-"));
+  try {
+    await writeFile(join(repoRoot, ".env"), "GH_TOKEN=ghp_rootsecret123\n", "utf8");
+    const calls = [];
+    const pi = {
+      async exec(command, args, options) {
+        calls.push({ command, args, options });
+        if (args[0] === "rev-parse") return result({ stdout: `${repoRoot}\n` });
+        if (args[0] === "symbolic-ref") return result({ stdout: "feature/current\n" });
+        if (args[0] === "remote") return result({ stdout: "https://github.com/senad-d/branchme.git\n" });
+        throw new Error(`Unexpected git command: ${args.join(" ")}`);
+      },
+    };
+    let authorization = "";
+
+    const related = await lookupRelatedPullRequest(pi, { cwd: join(repoRoot, "subdir") }, {
+      env: {},
+      fetchImpl: async (_url, init) => {
+        authorization = init.headers.Authorization;
+        return new Response("[]", { status: 200 });
+      },
+    });
+
+    assert.deepEqual(related, { status: "none" });
+    assert.equal(authorization, "Bearer ghp_rootsecret123");
+    assert.equal(calls.every((call) => call.command === "git"), true);
+    assert.equal(calls.slice(1).every((call) => call.options.cwd === repoRoot), true);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("lookupRelatedPullRequest converts timeout and caller abort into safe unavailable results", async () => {
+  const timedOut = await lookupRelatedPullRequest(makePi(relatedPullRequestRoutes()), ctx, {
+    env: { GITHUB_TOKEN: "ghp_secret123" },
+    fetchImpl: abortingFetch,
+    timeoutMs: 10,
+  });
+  assert.equal(timedOut.status, "unavailable");
+  assert.match(timedOut.reason, /timed out/i);
+  assert.doesNotMatch(timedOut.reason, /secret123/i);
+
+  const controller = new AbortController();
+  controller.abort();
+  const pi = makePi({});
+  const cancelled = await lookupRelatedPullRequest(pi, ctx, {
+    env: { GITHUB_TOKEN: "ghp_secret123" },
+    fetchImpl: abortingFetch,
+    signal: controller.signal,
+  });
+  assert.deepEqual(cancelled, {
+    status: "unavailable",
+    reason: "Related pull request lookup was cancelled.",
+  });
+  assert.equal(pi.calls.length, 0);
+});
+
+test("lookupRelatedPullRequest safely rejects HTTP, malformed, oversized, and mismatched responses", async () => {
+  const oversized = JSON.stringify([relatedPullRequestPayload({ title: "x".repeat(70 * 1024) })]);
+  const cases = [
+    ["HTTP failure", async () => new Response("bad token ghp_secret123", { status: 500 }), /HTTP 500/i],
+    ["malformed JSON", async () => new Response("[not-json", { status: 200 }), /invalid/i],
+    ["non-array JSON", async () => new Response("{}", { status: 200 }), /invalid/i],
+    ["oversized response", async () => new Response(oversized, { status: 200 }), /invalid/i],
+    [
+      "wrong head repository",
+      async () =>
+        new Response(
+          JSON.stringify([
+            relatedPullRequestPayload({
+              head: { ref: "feature/current", repo: { full_name: "other/repo" } },
+            }),
+          ]),
+          { status: 200 },
+        ),
+      /invalid/i,
+    ],
+    [
+      "missing fields",
+      async () => new Response(JSON.stringify([{ number: 42 }]), { status: 200 }),
+      /invalid/i,
+    ],
+  ];
+
+  for (const [name, fetchImpl, reasonPattern] of cases) {
+    const related = await lookupRelatedPullRequest(makePi(relatedPullRequestRoutes()), ctx, {
+      env: { GITHUB_TOKEN: "ghp_secret123" },
+      fetchImpl,
+    });
+    assert.equal(related.status, "unavailable", name);
+    assert.match(related.reason, reasonPattern, name);
+    assert.doesNotMatch(related.reason, /secret123|bad token|not-json/i, name);
+    assert.ok(related.reason.length < 200, name);
   }
 });
 

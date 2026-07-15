@@ -4,7 +4,14 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { changeExistingLocalBranch, createLocalBranch, getBranchStatus, pushCurrentBranch } from "../src/git.ts";
+import {
+  changeExistingLocalBranch,
+  createLocalBranch,
+  getBranchStatus,
+  getRecentCommits,
+  getWorkingTreeStatus,
+  pushCurrentBranch,
+} from "../src/git.ts";
 
 function gitEnv() {
   const env = {
@@ -94,6 +101,8 @@ test("real git getBranchStatus reports a clean local repository", async () => {
   await withTempGitRepo(async (repoRoot) => {
     const pi = makeRealGitPi(repoRoot);
     const details = await getBranchStatus(pi, { cwd: repoRoot });
+    const workingTree = await getWorkingTreeStatus(pi, { cwd: repoRoot });
+    const recentCommits = await getRecentCommits(pi, { cwd: repoRoot });
 
     assert.equal(details.repoRoot, repoRoot);
     assert.equal(details.currentBranch, "main");
@@ -102,8 +111,64 @@ test("real git getBranchStatus reports a clean local repository", async () => {
     assert.equal(details.hasChanges, false);
     assert.equal(details.ahead, null);
     assert.equal(details.behind, null);
+    assert.deepEqual(workingTree, {
+      workingTree: { state: "clean", staged: 0, unstaged: 0, untracked: 0 },
+      unstagedChanges: { entries: [], omitted: 0 },
+    });
+    assert.equal(recentCommits.length, 1);
+    assert.equal(recentCommits[0].subject, "initial commit");
+    assert.equal(recentCommits[0].hash.startsWith(recentCommits[0].shortHash), true);
     assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add"].includes(call.args[0])), false);
   });
+});
+
+test("real git working-tree collection distinguishes staged, unstaged, and untracked paths", async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    await writeFile(join(repoRoot, "staged.txt"), "staged\n", "utf8");
+    await runGit(repoRoot, ["add", "staged.txt"]);
+    await writeFile(join(repoRoot, "README.md"), "unstaged\n", "utf8");
+    await writeFile(join(repoRoot, "untracked.txt"), "untracked\n", "utf8");
+
+    const pi = makeRealGitPi(repoRoot);
+    const details = await getWorkingTreeStatus(pi, { cwd: repoRoot });
+
+    assert.deepEqual(details.workingTree, { state: "dirty", staged: 1, unstaged: 1, untracked: 1 });
+    assert.deepEqual(
+      details.unstagedChanges.entries.map((entry) => ({ status: entry.status, path: entry.path })),
+      [
+        { status: " M", path: "README.md" },
+        { status: "??", path: "untracked.txt" },
+      ],
+    );
+    assert.equal(details.unstagedChanges.omitted, 0);
+    assert.deepEqual(
+      pi.calls.map((call) => call.args),
+      [
+        ["rev-parse", "--show-toplevel"],
+        ["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+      ],
+    );
+    assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add"].includes(call.args[0])), false);
+  });
+});
+
+test("real git getRecentCommits returns an empty list for an unborn repository", async () => {
+  const rawRoot = await mkdtemp(join(tmpdir(), "branchme-unborn-git-"));
+  const repoRoot = await realpath(rawRoot);
+  try {
+    await runGit(repoRoot, ["init", "--initial-branch=main"]);
+    const pi = makeRealGitPi(repoRoot);
+
+    assert.deepEqual(await getRecentCommits(pi, { cwd: repoRoot }), []);
+    assert.deepEqual(await getWorkingTreeStatus(pi, { cwd: repoRoot }), {
+      workingTree: { state: "clean", staged: 0, unstaged: 0, untracked: 0 },
+      unstagedChanges: { entries: [], omitted: 0 },
+    });
+    assert.equal(pi.calls.filter((call) => call.args[0] === "log").length, 1);
+    assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add"].includes(call.args[0])), false);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test("real git createLocalBranch creates and checks out a branch from HEAD", async () => {
@@ -130,13 +195,16 @@ test("real git changeExistingLocalBranch rejects a dirty worktree before switchi
   });
 });
 
-test("real git branch-required operations fail clearly on detached HEAD", async () => {
+test("real git recent commits remain available on detached HEAD while branch-required operations fail", async () => {
   await withTempGitRepo(async (repoRoot) => {
     await runGit(repoRoot, ["switch", "--detach", "HEAD"]);
 
     const pi = makeRealGitPi(repoRoot);
+    const recentCommits = await getRecentCommits(pi, { cwd: repoRoot });
     await assert.rejects(() => pushCurrentBranch(pi, { cwd: repoRoot }), /detached/i);
 
+    assert.equal(recentCommits.length, 1);
+    assert.equal(recentCommits[0].subject, "initial commit");
     assert.equal(pi.calls.some((call) => call.args[0] === "push"), false);
   });
 });
