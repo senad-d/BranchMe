@@ -642,7 +642,7 @@ function pullRequestDetailsFromPayload(
 
 function escapeRelatedPullRequestControlCharacter(character: string): string {
   const codePoint = character.codePointAt(0);
-  return codePoint === undefined ? "" : `\\u${codePoint.toString(16).padStart(4, "0")}`;
+  return codePoint === undefined ? "" : String.raw`\u${codePoint.toString(16).padStart(4, "0")}`;
 }
 
 function boundedRelatedPullRequestValue(value: string): string {
@@ -653,11 +653,8 @@ function boundedRelatedPullRequestValue(value: string): string {
   if (safeValue.length <= GIT_CONTEXT_VALUE_LIMIT_CHARS) return safeValue;
 
   let end = GIT_CONTEXT_VALUE_LIMIT_CHARS - 1;
-  const lastCodeUnit = safeValue.charCodeAt(end - 1);
-  const nextCodeUnit = safeValue.charCodeAt(end);
-  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff && nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
-    end -= 1;
-  }
+  const lastCodePoint = safeValue.codePointAt(end - 1);
+  if (lastCodePoint !== undefined && lastCodePoint > 0xffff) end -= 1;
   return `${safeValue.slice(0, end)}…`;
 }
 

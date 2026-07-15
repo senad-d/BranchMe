@@ -113,7 +113,7 @@ test("collectGitContext preserves local context when optional counts and PR look
   ]);
   assert.equal(details.ahead, null);
   assert.equal(details.behind, null);
-  assert.deepEqual(details.warnings, ["ahead/behind unavailable"]);
+  assert.deepEqual(details.warnings, ["ahead/behind unavailable (Error)"]);
   assert.equal(details.relatedPullRequest.status, "unavailable");
   assert.deepEqual(details.recentCommits, [
     { hash, shortHash: "1234567", date: "2026-07-04", subject: "Add context" },

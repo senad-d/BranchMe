@@ -299,17 +299,14 @@ function truncateGitContextValue(value: string): string {
   if (value.length <= GIT_CONTEXT_VALUE_LIMIT_CHARS) return value;
 
   let end = GIT_CONTEXT_VALUE_LIMIT_CHARS - 1;
-  const lastCodeUnit = value.charCodeAt(end - 1);
-  const nextCodeUnit = value.charCodeAt(end);
-  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff && nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
-    end -= 1;
-  }
+  const lastCodePoint = value.codePointAt(end - 1);
+  if (lastCodePoint !== undefined && lastCodePoint > 0xffff) end -= 1;
   return `${value.slice(0, end)}…`;
 }
 
 function escapeGitContextControlCharacter(character: string): string {
   const codePoint = character.codePointAt(0);
-  return codePoint === undefined ? "" : `\\u${codePoint.toString(16).padStart(4, "0")}`;
+  return codePoint === undefined ? "" : String.raw`\u${codePoint.toString(16).padStart(4, "0")}`;
 }
 
 function safeGitContextValue(value: string): string {
@@ -319,7 +316,7 @@ function safeGitContextValue(value: string): string {
 }
 
 function isRenameOrCopyStatus(status: string): boolean {
-  return status[0] === "R" || status[0] === "C" || status[1] === "R" || status[1] === "C";
+  return status.startsWith("R") || status.startsWith("C") || status.endsWith("R") || status.endsWith("C");
 }
 
 function parsePorcelainRecord(record: string): { status: string; path: string } {
@@ -347,6 +344,55 @@ function appendUnstagedChange(
   return omitted + 1;
 }
 
+interface ParsedPorcelainChange {
+  status: string;
+  path: string;
+  originalPath?: string;
+  nextIndex: number;
+}
+
+interface WorkingTreeChangeCounts {
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  includeInUnstagedChanges: boolean;
+}
+
+function parsePorcelainChange(records: string[], index: number): ParsedPorcelainChange {
+  const parsed = parsePorcelainRecord(records[index]);
+  if (!isRenameOrCopyStatus(parsed.status)) return { ...parsed, nextIndex: index };
+
+  const originalPath = records[index + 1];
+  if (originalPath === undefined || originalPath.length === 0) {
+    throw new TypeError("Unable to parse working-tree state: rename or copy source path is missing.");
+  }
+  return { ...parsed, originalPath, nextIndex: index + 1 };
+}
+
+function workingTreeChangeCounts(status: string): WorkingTreeChangeCounts {
+  const isUntracked = status === "??";
+  const isUnmerged = UNMERGED_GIT_STATUSES.has(status);
+  const hasStagedChange = !isUntracked && !isUnmerged && !status.startsWith(" ");
+  const hasUnstagedChange = !isUntracked && (isUnmerged || !status.endsWith(" "));
+
+  return {
+    staged: Number(hasStagedChange),
+    unstaged: Number(hasUnstagedChange),
+    untracked: Number(isUntracked),
+    includeInUnstagedChanges: isUntracked || hasUnstagedChange,
+  };
+}
+
+function gitFileChange(parsed: ParsedPorcelainChange): GitFileChange {
+  return {
+    status: parsed.status,
+    path: safeGitContextValue(parsed.path),
+    ...(parsed.originalPath === undefined
+      ? {}
+      : { originalPath: safeGitContextValue(parsed.originalPath) }),
+  };
+}
+
 export function parseWorkingTreeStatus(output: string): WorkingTreeStatus {
   const records = output.split(NUL_SEPARATOR);
   const entries: GitFileChange[] = [];
@@ -357,40 +403,20 @@ export function parseWorkingTreeStatus(output: string): WorkingTreeStatus {
   let dirty = false;
 
   for (let index = 0; index < records.length; index += 1) {
-    const record = records[index];
-    if (record.length === 0) continue;
+    if (records[index].length === 0) continue;
 
-    const parsed = parsePorcelainRecord(record);
-    const { status } = parsed;
-    let originalPath: string | undefined;
-    if (isRenameOrCopyStatus(status)) {
-      index += 1;
-      originalPath = records[index];
-      if (originalPath === undefined || originalPath.length === 0) {
-        throw new TypeError("Unable to parse working-tree state: rename or copy source path is missing.");
-      }
-    }
-
-    if (status === "!!") continue;
+    const parsed = parsePorcelainChange(records, index);
+    index = parsed.nextIndex;
+    if (parsed.status === "!!") continue;
     dirty = true;
 
-    const isUntracked = status === "??";
-    const isUnmerged = UNMERGED_GIT_STATUSES.has(status);
-    const hasStagedChange = !isUntracked && !isUnmerged && status[0] !== " ";
-    const hasUnstagedChange = !isUntracked && (isUnmerged || status[1] !== " ");
+    const counts = workingTreeChangeCounts(parsed.status);
+    staged += counts.staged;
+    unstaged += counts.unstaged;
+    untracked += counts.untracked;
+    if (!counts.includeInUnstagedChanges) continue;
 
-    if (hasStagedChange) staged += 1;
-    if (hasUnstagedChange) unstaged += 1;
-    if (isUntracked) untracked += 1;
-
-    if (isUntracked || hasUnstagedChange) {
-      const change: GitFileChange = {
-        status,
-        path: safeGitContextValue(parsed.path),
-        ...(originalPath === undefined ? {} : { originalPath: safeGitContextValue(originalPath) }),
-      };
-      omitted = appendUnstagedChange(entries, change, omitted);
-    }
+    omitted = appendUnstagedChange(entries, gitFileChange(parsed), omitted);
   }
 
   return {

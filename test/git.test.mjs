@@ -203,6 +203,13 @@ test("parseWorkingTreeStatus bounds paths and reports omitted unstaged entries",
   assert.doesNotMatch(details.unstagedChanges.entries[0].path, /pathsecret/u);
 });
 
+test("parseWorkingTreeStatus truncates paths without splitting Unicode code points", () => {
+  const path = `${"x".repeat(510)}🦄tail`;
+  const details = parseWorkingTreeStatus(` M ${path}\0`);
+
+  assert.equal(details.unstagedChanges.entries[0].path, `${"x".repeat(510)}…`);
+});
+
 test("parseWorkingTreeStatus rejects malformed rename records without exposing raw output", () => {
   assert.throws(() => parseWorkingTreeStatus("R  renamed.ts\0"), /source path is missing/u);
   assert.throws(() => parseWorkingTreeStatus("malformed\0"), /malformed git status record/u);

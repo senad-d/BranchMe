@@ -60,8 +60,8 @@ function throwIfCollectionAborted(signal: AbortSignal | undefined): void {
 function escapeMetadataControlCharacter(character: string): string {
   const codePoint = character.codePointAt(0);
   if (codePoint === undefined) return "";
-  if (codePoint <= 0xffff) return `\\u${codePoint.toString(16).padStart(4, "0")}`;
-  return `\\u{${codePoint.toString(16)}}`;
+  if (codePoint <= 0xffff) return String.raw`\u${codePoint.toString(16).padStart(4, "0")}`;
+  return String.raw`\u{${codePoint.toString(16)}}`;
 }
 
 function truncateMetadata(value: string, limit: number): string {
@@ -69,11 +69,8 @@ function truncateMetadata(value: string, limit: number): string {
   if (limit <= VALUE_TRUNCATION_MARKER.length) return VALUE_TRUNCATION_MARKER.slice(0, limit);
 
   let end = limit - VALUE_TRUNCATION_MARKER.length;
-  const lastCodeUnit = value.charCodeAt(end - 1);
-  const nextCodeUnit = value.charCodeAt(end);
-  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff && nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
-    end -= 1;
-  }
+  const lastCodePoint = value.codePointAt(end - 1);
+  if (lastCodePoint !== undefined && lastCodePoint > 0xffff) end -= 1;
   return `${value.slice(0, end)}${VALUE_TRUNCATION_MARKER}`;
 }
 
@@ -81,6 +78,11 @@ function safeMetadata(value: string, limit = GIT_CONTEXT_VALUE_LIMIT_CHARS): str
   const redacted = redactSecrets(value);
   const escaped = redacted.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, escapeMetadataControlCharacter);
   return truncateMetadata(escaped, limit);
+}
+
+function safeFailureType(error: unknown): string {
+  const type = error instanceof Error ? error.name : typeof error;
+  return safeMetadata(type || "unknown", 64);
 }
 
 function quoteMetadata(value: string, limit: number): string {
@@ -119,7 +121,7 @@ async function collectRelatedPullRequest(
     return relatedPullRequest;
   } catch (error) {
     throwIfCollectionAborted(options.signal);
-    return unavailablePullRequest("Related pull request lookup failed.");
+    return unavailablePullRequest(`Related pull request lookup failed (${safeFailureType(error)}).`);
   }
 }
 
@@ -146,7 +148,7 @@ export async function collectGitContext(
       behind = counts.behind;
     } catch (error) {
       throwIfCollectionAborted(options.signal);
-      warnings.push("ahead/behind unavailable");
+      warnings.push(`ahead/behind unavailable (${safeFailureType(error)})`);
     }
   }
 
