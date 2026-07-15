@@ -781,18 +781,13 @@ function relatedPullRequestLookupUrl(repository: GitHubRepository, currentBranch
   return `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/pulls?${query.toString()}`;
 }
 
-export async function lookupRelatedPullRequest(
+async function lookupRelatedPullRequestWithSignal(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
-  options: RelatedPullRequestLookupOptions = {},
+  options: RelatedPullRequestLookupOptions,
+  signal: AbortSignal,
+  timeoutSignal: AbortSignal,
 ): Promise<RelatedPullRequest> {
-  const timeoutMs = options.timeoutMs ?? GITHUB_RELATED_PR_TIMEOUT_MS;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-    return unavailableRelatedPullRequest("Related pull request lookup timeout is invalid.");
-  }
-
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
   const initialAbort = abortedRelatedPullRequest(options.signal, timeoutSignal);
   if (initialAbort) return initialAbort;
 
@@ -886,6 +881,32 @@ export async function lookupRelatedPullRequest(
     };
   } catch {
     return unavailableRelatedPullRequest("The GitHub related pull request response was invalid.");
+  }
+}
+
+export async function lookupRelatedPullRequest(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  options: RelatedPullRequestLookupOptions = {},
+): Promise<RelatedPullRequest> {
+  const timeoutMs = options.timeoutMs ?? GITHUB_RELATED_PR_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    return unavailableRelatedPullRequest("Related pull request lookup timeout is invalid.");
+  }
+  if (options.signal?.aborted) {
+    return unavailableRelatedPullRequest("Related pull request lookup was cancelled.");
+  }
+
+  // AbortSignal.timeout() uses an unref'ed timer, which can let Node exit while fetch is still pending.
+  const timeoutController = new AbortController();
+  const timeoutHandle = setTimeout(timeoutController.abort.bind(timeoutController), timeoutMs);
+  const timeoutSignal = timeoutController.signal;
+  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+
+  try {
+    return await lookupRelatedPullRequestWithSignal(pi, ctx, options, signal, timeoutSignal);
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 }
 
