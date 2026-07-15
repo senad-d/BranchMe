@@ -401,12 +401,17 @@ export function parseWorkingTreeStatus(output: string): WorkingTreeStatus {
   let untracked = 0;
   let omitted = 0;
   let dirty = false;
+  let skipNextRecord = false;
 
-  for (let index = 0; index < records.length; index += 1) {
-    if (records[index].length === 0) continue;
+  for (const [index, record] of records.entries()) {
+    if (skipNextRecord) {
+      skipNextRecord = false;
+      continue;
+    }
+    if (record.length === 0) continue;
 
     const parsed = parsePorcelainChange(records, index);
-    index = parsed.nextIndex;
+    skipNextRecord = parsed.nextIndex > index;
     if (parsed.status === "!!") continue;
     dirty = true;
 
