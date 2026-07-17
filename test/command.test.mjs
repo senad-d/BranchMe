@@ -144,7 +144,9 @@ test("/branchme help returns concise workflow and requirements through UI modes"
   assert.match(ctx.notifications[0].message, /branch_status/);
   assert.match(ctx.notifications[0].message, /change_branch/);
   assert.match(ctx.notifications[0].message, /create_branch/);
+  assert.match(ctx.notifications[0].message, /fetch_branch/);
   assert.match(ctx.notifications[0].message, /pull_branch/);
+  assert.match(ctx.notifications[0].message, /rebase_branch/);
   assert.match(ctx.notifications[0].message, /push_branch/);
   assert.match(ctx.notifications[0].message, /pull_request/);
   assert.doesNotMatch(ctx.notifications[0].message, /\| Tool \|/);
@@ -422,7 +424,7 @@ test("BranchMe panel renderer clips every line to terminal width", () => {
   for (const width of [12, 24, 50, 80, 112]) {
     const lines = renderBranchMePanelLines(data, width);
     assert.ok(lines.length > 0);
-    assert.ok(lines.length <= 14, `panel exceeded maximum height at width ${width}: ${lines.length} lines`);
+    assert.ok(lines.length <= 16, `panel exceeded maximum height at width ${width}: ${lines.length} lines`);
     assert.ok(lines.every((line) => visibleWidth(line) <= width), `line exceeded width ${width}: ${lines.join("\n")}`);
   }
 });
@@ -487,10 +489,12 @@ test("BranchMe wide panel shows only the selected right-side section", () => {
   assert.match(visibleText, /WORKFLOW/);
   assert.match(visibleText, /▶  Workflow/);
   assert.match(visibleText, /branch_status\s+-> inspect/);
+  assert.match(visibleText, /fetch_branch\s+-> upstream remote/);
+  assert.match(visibleText, /rebase_branch\s+-> onto upstream/);
   assert.doesNotMatch(visibleText, /1 branch_status/);
   assert.doesNotMatch(visibleText, /STATUS/);
   assert.doesNotMatch(visibleText, /SAFETY/);
-  assert.equal(visibleText.split("\n").length <= 14, true);
+  assert.equal(visibleText.split("\n").length <= 16, true);
 });
 
 test("BranchMe panel renderer does not leak ANSI escape bodies into visible text", () => {

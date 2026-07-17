@@ -7,11 +7,13 @@ import test from "node:test";
 import {
   changeExistingLocalBranch,
   createLocalBranch,
+  fetchCurrentBranch,
   getBranchStatus,
   getRecentCommits,
   getWorkingTreeStatus,
   pullCurrentBranch,
   pushCurrentBranch,
+  rebaseCurrentBranch,
 } from "../src/git.ts";
 
 function gitEnv() {
@@ -230,6 +232,74 @@ test("real git pullCurrentBranch fast-forwards main and refuses divergent histor
       assert.equal((await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim(), localCommitBeforePull);
       assert.deepEqual(divergentPi.calls.filter((call) => call.args[0] === "pull").map((call) => call.args), [
         ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"],
+      ]);
+    } finally {
+      await rm(remoteRoot, { recursive: true, force: true });
+      await rm(updaterRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("real git fetchCurrentBranch refreshes upstream state and rebaseCurrentBranch replays local commits", async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    const rawRemoteRoot = await mkdtemp(join(tmpdir(), "branchme-fetch-rebase-remote-"));
+    const remoteRoot = await realpath(rawRemoteRoot);
+    const rawUpdaterRoot = await mkdtemp(join(tmpdir(), "branchme-fetch-rebase-updater-"));
+    const updaterRoot = await realpath(rawUpdaterRoot);
+    const updaterCheckout = join(updaterRoot, "checkout");
+
+    try {
+      await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
+      await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      await runGit(repoRoot, ["push", "--set-upstream", "origin", "main"]);
+      await runGit(repoRoot, ["switch", "-c", "feature/rebase"]);
+      await runGit(repoRoot, ["push", "--set-upstream", "origin", "feature/rebase"]);
+
+      await writeFile(join(repoRoot, "local-only.txt"), "local\n", "utf8");
+      await runGit(repoRoot, ["add", "local-only.txt"]);
+      await runGit(repoRoot, ["commit", "-m", "local feature commit"]);
+      const localCommitBeforeFetch = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+
+      await runGit(updaterRoot, ["clone", remoteRoot, updaterCheckout]);
+      await runGit(updaterCheckout, ["config", "user.email", "branchme-test@example.invalid"]);
+      await runGit(updaterCheckout, ["config", "user.name", "BranchMe Test"]);
+      await runGit(updaterCheckout, ["switch", "feature/rebase"]);
+      await writeFile(join(updaterCheckout, "remote-only.txt"), "remote\n", "utf8");
+      await runGit(updaterCheckout, ["add", "remote-only.txt"]);
+      await runGit(updaterCheckout, ["commit", "-m", "remote feature commit"]);
+      await runGit(updaterCheckout, ["push", "origin", "feature/rebase"]);
+      const remoteCommit = (await runGit(updaterCheckout, ["rev-parse", "HEAD"])).stdout.trim();
+
+      const fetchPi = makeRealGitPi(repoRoot);
+      const fetchDetails = await fetchCurrentBranch(fetchPi, { cwd: repoRoot });
+
+      assert.equal(fetchDetails.currentBranch, "feature/rebase");
+      assert.equal(fetchDetails.upstream, "origin/feature/rebase");
+      assert.equal(fetchDetails.remote, "origin");
+      assert.equal((await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim(), localCommitBeforeFetch);
+      assert.equal((await runGit(repoRoot, ["rev-parse", "origin/feature/rebase"])).stdout.trim(), remoteCommit);
+      assert.deepEqual(fetchPi.calls.filter((call) => call.args[0] === "fetch").map((call) => call.args), [
+        [
+          "fetch",
+          "--no-tags",
+          "--no-recurse-submodules",
+          "origin",
+          "refs/heads/feature/rebase:refs/remotes/origin/feature/rebase",
+        ],
+      ]);
+
+      const rebasePi = makeRealGitPi(repoRoot);
+      const rebaseDetails = await rebaseCurrentBranch(rebasePi, { cwd: repoRoot });
+      const rebasedCommit = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+
+      assert.equal(rebaseDetails.currentBranch, "feature/rebase");
+      assert.equal(rebaseDetails.upstream, "origin/feature/rebase");
+      assert.notEqual(rebasedCommit, localCommitBeforeFetch);
+      await runGit(repoRoot, ["merge-base", "--is-ancestor", remoteCommit, rebasedCommit]);
+      assert.equal(await readFile(join(repoRoot, "local-only.txt"), "utf8"), "local\n");
+      assert.equal(await readFile(join(repoRoot, "remote-only.txt"), "utf8"), "remote\n");
+      assert.deepEqual(rebasePi.calls.filter((call) => call.args[0] === "rebase").map((call) => call.args), [
+        ["rebase", "--no-autostash", "--no-update-refs", "origin/feature/rebase"],
       ]);
     } finally {
       await rm(remoteRoot, { recursive: true, force: true });

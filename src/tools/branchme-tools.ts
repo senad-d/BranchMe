@@ -4,18 +4,22 @@ import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
+  FETCH_BRANCH_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
+  REBASE_BRANCH_TOOL_NAME,
 } from "../constants.ts";
 import {
   changeExistingLocalBranch,
   createLocalBranch,
+  fetchCurrentBranch,
   getGitRoot,
   getLocalBranchCommit,
   localBranchExists,
   pullCurrentBranch,
   pushCurrentBranch,
+  rebaseCurrentBranch,
   validateBranchName,
   withRepositoryMutationQueue,
 } from "../git.ts";
@@ -200,6 +204,26 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   });
 
   pi.registerTool({
+    name: FETCH_BRANCH_TOOL_NAME,
+    label: "Fetch Branch",
+    description: "fetch_branch fetches the current branch's configured upstream branch into its remote-tracking ref with an explicit git fetch --no-tags --no-recurse-submodules refspec. fetch_branch does not change local branches or working-tree files and never prunes, rebases, merges, stashes, stages, commits, or pushes.",
+    promptSnippet: "fetch_branch: fetch the current branch's configured upstream into its remote-tracking ref without changing local branches or files",
+    promptGuidelines: [
+      "Use fetch_branch only when the user explicitly wants to fetch the configured upstream branch for the current branch.",
+      "Use fetch_branch only on a current branch with an upstream; fetch_branch has no branchName, remote, tags, prune, force, or refspec parameters.",
+      "Call fetch_branch and wait for it to complete before rebase_branch when the user wants the latest upstream state; do not batch fetch_branch with rebase_branch.",
+    ],
+    parameters: EmptyParametersSchema,
+    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+      const details = await fetchCurrentBranch(pi, ctx, signal);
+      return {
+        content: [{ type: "text", text: `Fetched configured upstream remote ${details.remote} for current branch ${details.currentBranch}.` }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
     name: PULL_BRANCH_TOOL_NAME,
     label: "Pull Branch",
     description: "pull_branch updates the current branch from its configured upstream with git pull --ff-only --no-rebase --no-autostash. pull_branch requires a clean working tree and never rebases, creates merge commits, force-updates, stashes, stages, or commits.",
@@ -214,6 +238,27 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const details = await pullCurrentBranch(pi, ctx, signal);
       return {
         content: [{ type: "text", text: `Pulled current branch ${details.currentBranch} with fast-forward-only semantics.` }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: REBASE_BRANCH_TOOL_NAME,
+    label: "Rebase Branch",
+    description: "rebase_branch rebases the clean current branch onto its configured upstream with git rebase --no-autostash --no-update-refs. rebase_branch rewrites local commits, never pushes or force-pushes, and automatically attempts git rebase --abort if the rebase fails.",
+    promptSnippet: "rebase_branch: rebase the clean current branch onto its configured upstream with automatic abort on failure",
+    promptGuidelines: [
+      "Use rebase_branch only when the user explicitly requests rebasing and accepts that rebase_branch rewrites local commit history.",
+      "Use rebase_branch only on a clean current branch with an upstream; rebase_branch has no branchName, base, remote, force, autostash, continue, or abort parameters.",
+      "Call fetch_branch and wait for it to complete before rebase_branch when the latest upstream state is required; do not batch rebase_branch with fetch_branch, change_branch, pull_branch, create_branch, push_branch, or pull_request.",
+      "If rebase_branch fails or conflicts, rebase_branch automatically attempts git rebase --abort and never leaves conflict resolution to another parallel tool call.",
+    ],
+    parameters: EmptyParametersSchema,
+    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+      const details = await rebaseCurrentBranch(pi, ctx, signal);
+      return {
+        content: [{ type: "text", text: `Rebased current branch ${details.currentBranch} onto ${details.upstream}.` }],
         details,
       };
     },

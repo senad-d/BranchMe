@@ -17,16 +17,18 @@ Implemented git mutations are limited to:
 
 - `change_branch`: `git switch <branchName>` after branch-name validation, local `refs/heads/<branchName>` verification, and clean-worktree preflight.
 - `create_branch`: `git switch -c <branchName>` from current `HEAD` after branch-name validation and existing-branch checks.
+- `fetch_branch`: `git fetch --no-tags --no-recurse-submodules <upstreamRemote> <upstreamBranchRef>:<remoteTrackingRef>` after validating the current branch's configured upstream target. The explicit destination is limited to that upstream's remote-tracking ref, so local branches and working-tree files are not changed.
 - `pull_branch`: `git pull --ff-only --no-rebase --no-autostash <upstreamRemote> <upstreamBranchRef>` for the clean current branch after validating its configured upstream target.
+- `rebase_branch`: `git rebase --no-autostash --no-update-refs <upstream>` for the clean current branch after validating its configured upstream target. It rewrites local commits and automatically attempts `git rebase --abort` without the cancelled caller signal if the rebase fails or is killed.
 - `push_branch`: `git push <upstreamRemote> HEAD:<upstreamBranchRef>` for the current branch when an upstream exists, or `git push --set-upstream origin <currentBranch>` when no upstream exists.
 
-Before each agent run, BranchMe also runs bounded, read-only Git commands to collect branch/upstream/ahead-behind state, working-tree counts, up to 20 unstaged or untracked path entries, and up to 5 recent commits. The same collector runs when `branch_status` explicitly refreshes context. Collection does not run `switch`, `push`, `add`, `commit`, or any other mutation, and it never reads diffs or file contents.
+Before each agent run, BranchMe also runs bounded, read-only Git commands to collect branch/upstream/ahead-behind state, working-tree counts, up to 20 unstaged or untracked path entries, and up to 5 recent commits. The same collector runs when `branch_status` explicitly refreshes context. Collection does not run `fetch`, `switch`, `pull`, `rebase`, `push`, `add`, `commit`, or any other mutation, and it never reads diffs or file contents.
 
-Branch switching and fast-forward pulls can update working-tree files as normal Git behavior. Mutating branch operations for the same repository are serialized to avoid same-turn branch races. `pull_request` also uses the same repository queue around PR preflight and creation so it can wait behind an already-started same-repository mutation. BranchMe rejects dirty worktrees before `change_branch` and `pull_branch`. It does not force checkout, stash, stage files, create commits, reset, rebase, create merge commits, or edit files directly.
+Branch switching, fast-forward pulls, and successful rebases can update working-tree files as normal Git behavior; fetch updates one validated remote-tracking ref without changing local branches or the working tree. Mutating branch operations for the same repository are serialized to avoid same-turn branch races. `pull_request` also uses the same repository queue around PR preflight and creation so it can wait behind an already-started same-repository mutation. BranchMe rejects dirty worktrees before `change_branch`, `pull_branch`, and `rebase_branch`. It does not force checkout, stash, stage files, create user-authored commits, reset, force-push, create merge commits, or edit files directly. Rebase-driven commit rewriting occurs only through an explicit `rebase_branch` call.
 
 ## Network behavior
 
-`pull_branch` and `push_branch` contact the configured Git remote through the user's normal Git transport and credentials. They do not use or inject `GITHUB_TOKEN` or `GH_TOKEN`.
+`fetch_branch`, `pull_branch`, and `push_branch` contact the configured Git remote through the user's normal Git transport and credentials. They do not use or inject `GITHUB_TOKEN` or `GH_TOKEN`. `rebase_branch` uses the locally available upstream ref and makes no network request.
 
 BranchMe's GitHub helpers use these REST API requests:
 
@@ -48,14 +50,16 @@ BranchMe operates on the current repository only.
 - The GitHub repository is inferred from local `origin` and/or `GITHUB_REPOSITORY`.
 - Tool inputs never accept filesystem paths, `owner`, `repo`, or owner-prefixed `owner:branch` PR refs.
 - `change_branch` accepts only `branchName` and never creates branches, checks out remote branches, forces, stashes, or discards changes.
+- `fetch_branch` accepts no parameters, resolves the current branch's configured upstream remote and branch, constructs a source-to-remote-tracking refspec internally, disables tag fetching and submodule recursion, and does not prune or accept arbitrary refspecs.
 - `pull_branch` accepts no parameters, updates only the clean current branch from its configured upstream, and uses fast-forward-only semantics.
+- `rebase_branch` accepts no parameters, rebases only the clean current branch onto its configured upstream, disables autostash and multi-ref updates, never pushes, and attempts to abort on failure.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, PR creation and related-PR lookup fail closed.
 - PR branch inputs are validated as existing local branch-name refs; missing local branches and cross-repository `head` values are rejected before token lookup or any GitHub request.
 - PR branch inputs must also be visible on GitHub before the PR is created, and `headBranch` must match the local branch commit; unpublished or stale `headBranch` values fail with guidance to run `push_branch`, wait for it to complete, and retry `pull_request`.
 
 ## Credentials
 
-Git pull and push authentication is handled by the user's configured Git credential and transport setup. BranchMe never passes GitHub API tokens to Git commands.
+Git fetch, pull, and push authentication is handled by the user's configured Git credential and transport setup. BranchMe never passes GitHub API tokens to Git commands.
 
 `pull_request` and related-PR lookup check `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`. If neither process token is set, BranchMe reads a local `.env` file from the verified git root and checks:
 

@@ -3,9 +3,11 @@ import {
   GIT_CONTEXT_CHANGE_LIMIT,
   GIT_CONTEXT_RECENT_COMMIT_LIMIT,
   GIT_CONTEXT_VALUE_LIMIT_CHARS,
+  GIT_FETCH_TIMEOUT_MS,
   GIT_MUTATION_TIMEOUT_MS,
   GIT_PULL_TIMEOUT_MS,
   GIT_PUSH_TIMEOUT_MS,
+  GIT_REBASE_TIMEOUT_MS,
   GIT_STATUS_TIMEOUT_MS,
   MAX_SUMMARY_OUTPUT_CHARS,
 } from "./constants.ts";
@@ -16,11 +18,13 @@ import type {
   ChangeBranchDetails,
   CreateBranchDetails,
   CurrentBranchInfo,
+  FetchBranchDetails,
   GitExecResult,
   GitFileChange,
   GitFileChangeSummary,
   PullBranchDetails,
   PushBranchDetails,
+  RebaseBranchDetails,
   RecentCommit,
   WorkingTreeDetails,
 } from "./types.ts";
@@ -199,7 +203,7 @@ interface PushTarget {
   args: string[];
 }
 
-type UpstreamOperation = "pull" | "push";
+type UpstreamOperation = "fetch" | "pull" | "push" | "rebase";
 
 function validateRemoteName(remote: string, operation: UpstreamOperation): void {
   if (!remote) throw new Error(`Unable to ${operation} current branch: upstream remote is missing.`);
@@ -239,6 +243,17 @@ async function getBranchConfigValue(
 
   const value = trimOutput(result.stdout);
   return value || null;
+}
+
+function remoteTrackingRef(upstream: string, remote: string): string {
+  const prefix = `${remote}/`;
+  if (!upstream.startsWith(prefix)) {
+    throw new Error("Unable to fetch current branch: configured upstream does not match its remote.");
+  }
+
+  const trackingBranch = upstream.slice(prefix.length);
+  validateBranchNameInput(trackingBranch, "Upstream branch name");
+  return `refs/remotes/${upstream}`;
 }
 
 async function resolveConfiguredUpstreamTarget(
@@ -700,6 +715,46 @@ export async function changeExistingLocalBranch(
   });
 }
 
+export async function fetchCurrentBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<FetchBranchDetails> {
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  const rootCtx = { cwd: repoRoot };
+
+  return withRepositoryMutationQueue(repoRoot, async () => {
+    const currentBranch = await requireCurrentBranch(pi, rootCtx, signal);
+    const target = await resolveConfiguredUpstreamTarget(pi, rootCtx, currentBranch, "fetch", signal);
+    if (!target) {
+      throw new Error(`Unable to fetch current branch '${safeDetail(currentBranch)}': no upstream is configured.`);
+    }
+
+    const trackingRef = remoteTrackingRef(target.upstream, target.remote);
+    const refspec = `${target.remoteRef}:${trackingRef}`;
+    const result = await runGit(
+      pi,
+      rootCtx,
+      ["fetch", "--no-tags", "--no-recurse-submodules", target.remote, refspec],
+      {
+        signal,
+        timeout: GIT_FETCH_TIMEOUT_MS,
+      },
+    );
+
+    return {
+      repoRoot,
+      currentBranch: safeDetail(currentBranch),
+      upstream: safeDetail(target.upstream),
+      remote: safeDetail(target.remote),
+      remoteRef: safeDetail(target.remoteRef),
+      remoteTrackingRef: safeDetail(trackingRef),
+      refspec: safeDetail(refspec),
+      output: safeOutput(result.stdout || result.stderr),
+    };
+  });
+}
+
 export async function pullCurrentBranch(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
@@ -723,6 +778,78 @@ export async function pullCurrentBranch(
       signal,
       timeout: GIT_PULL_TIMEOUT_MS,
     });
+
+    return {
+      repoRoot,
+      currentBranch: safeDetail(currentBranch),
+      upstream: safeDetail(target.upstream),
+      remote: safeDetail(target.remote),
+      remoteRef: safeDetail(target.remoteRef),
+      output: safeOutput(result.stdout || result.stderr),
+    };
+  });
+}
+
+async function abortFailedRebase(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  failureMessage: string,
+): Promise<never> {
+  const abortArgs = ["rebase", "--abort"];
+  let abortResult: GitExecResult;
+  try {
+    abortResult = await runGit(pi, ctx, abortArgs, {
+      timeout: GIT_MUTATION_TIMEOUT_MS,
+      allowFailure: true,
+    });
+  } catch (error) {
+    const reason = safeOutput(error instanceof Error ? error.message : String(error)) || "git rebase --abort failed";
+    throw new Error(`${failureMessage}. Automatic rebase cleanup failed: ${reason}. Inspect the repository before continuing.`);
+  }
+
+  if (abortResult.code === 0) {
+    throw new Error(`${failureMessage}. Rebase was aborted and the current branch was restored.`);
+  }
+
+  const reason = safeOutput(abortResult.stderr || abortResult.stdout) || `exit code ${abortResult.code}`;
+  throw new Error(`${failureMessage}. Automatic git rebase --abort did not complete: ${reason}. Inspect the repository before continuing.`);
+}
+
+export async function rebaseCurrentBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<RebaseBranchDetails> {
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  const rootCtx = { cwd: repoRoot };
+
+  return withRepositoryMutationQueue(repoRoot, async () => {
+    const currentBranch = await requireCurrentBranch(pi, rootCtx, signal);
+    if (await hasWorkingTreeChanges(pi, rootCtx, signal)) {
+      throw new Error("Working tree has uncommitted changes; clean it before rebasing the current branch.");
+    }
+
+    const target = await resolveConfiguredUpstreamTarget(pi, rootCtx, currentBranch, "rebase", signal);
+    if (!target) {
+      throw new Error(`Unable to rebase current branch '${safeDetail(currentBranch)}': no upstream is configured.`);
+    }
+
+    const args = ["rebase", "--no-autostash", "--no-update-refs", target.upstream];
+    let result: GitExecResult;
+    try {
+      result = await runGit(pi, rootCtx, args, {
+        signal,
+        timeout: GIT_REBASE_TIMEOUT_MS,
+        allowFailure: true,
+      });
+    } catch (error) {
+      const failureMessage = safeOutput(error instanceof Error ? error.message : String(error)) || "git rebase failed";
+      return abortFailedRebase(pi, rootCtx, failureMessage);
+    }
+
+    if (result.code !== 0) {
+      return abortFailedRebase(pi, rootCtx, formatGitFailure(args, result));
+    }
 
     return {
       repoRoot,

@@ -10,10 +10,12 @@ import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
+  FETCH_BRANCH_TOOL_NAME,
   GIT_CONTEXT_SUMMARY_LIMIT_CHARS,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
+  REBASE_BRANCH_TOOL_NAME,
 } from "../src/constants.ts";
 import { registerBranchMeTools } from "../src/tools/branchme-tools.ts";
 
@@ -117,7 +119,7 @@ function recentLogRecord(hash, shortHash, date, subject) {
   return `\0${hash}\u001f${shortHash}\u001f${date}\u001f${subject}\n`;
 }
 
-test("branchMeExtension registers exactly the BranchMe command and six prompt-ready tools", () => {
+test("branchMeExtension registers exactly the BranchMe command and eight prompt-ready tools", () => {
   const pi = makePi();
   branchMeExtension(pi);
 
@@ -125,7 +127,7 @@ test("branchMeExtension registers exactly the BranchMe command and six prompt-re
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(pi.tools.length, 6);
+  assert.equal(pi.tools.length, 8);
   assert.deepEqual(
     pi.tools.map((tool) => tool.name).sort(),
     [...BRANCHME_TOOL_NAMES].sort(),
@@ -420,6 +422,47 @@ test("change_branch rejects missing local branches", async () => {
   assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
 });
 
+test("fetch_branch has a strict empty schema and fetches the configured upstream remote", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+    ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+    ["fetch\0--no-tags\0--no-recurse-submodules\0origin\0refs/heads/main:refs/remotes/origin/main"]: { stderr: "Fetched origin\n" },
+  });
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, FETCH_BRANCH_TOOL_NAME);
+
+  assert.deepEqual(tool.parameters.properties, {});
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.ok(tool.description.includes(FETCH_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptSnippet.includes(FETCH_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(FETCH_BRANCH_TOOL_NAME)));
+
+  const output = await tool.execute("call-fetch", {}, undefined, undefined, ctx);
+
+  assert.deepEqual(output.details, {
+    repoRoot: "/repo",
+    currentBranch: "main",
+    upstream: "origin/main",
+    remote: "origin",
+    remoteRef: "refs/heads/main",
+    remoteTrackingRef: "refs/remotes/origin/main",
+    refspec: "refs/heads/main:refs/remotes/origin/main",
+    output: "Fetched origin",
+  });
+  assert.equal(output.content[0].text, "Fetched configured upstream remote origin for current branch main.");
+  assert.deepEqual(pi.calls.at(-1).args, [
+    "fetch",
+    "--no-tags",
+    "--no-recurse-submodules",
+    "origin",
+    "refs/heads/main:refs/remotes/origin/main",
+  ]);
+  assert.equal(pi.calls.some((call) => ["switch", "rebase", "merge", "push"].includes(call.args[0])), false);
+});
+
 test("pull_branch has a strict empty schema and fast-forwards the clean current branch", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
@@ -452,6 +495,59 @@ test("pull_branch has a strict empty schema and fast-forwards the clean current 
   assert.equal(output.content[0].text, "Pulled current branch main with fast-forward-only semantics.");
   assert.deepEqual(pi.calls.at(-1).args, ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"]);
   assert.equal(pi.calls.some((call) => ["rebase", "stash", "add", "commit", "push"].includes(call.args[0])), false);
+});
+
+test("rebase_branch has a strict empty schema and rebases the clean current branch onto upstream", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/current...origin/feature/current [ahead 1, behind 1]\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+    ["rebase\0--no-autostash\0--no-update-refs\0origin/feature/current"]: { stderr: "Successfully rebased\n" },
+  });
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, REBASE_BRANCH_TOOL_NAME);
+
+  assert.deepEqual(tool.parameters.properties, {});
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.ok(tool.description.includes(REBASE_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptSnippet.includes(REBASE_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(REBASE_BRANCH_TOOL_NAME)));
+  assert.match(tool.promptGuidelines.join(" "), /explicitly requests rebasing|rewrites local commit history/i);
+
+  const output = await tool.execute("call-rebase", {}, undefined, undefined, ctx);
+
+  assert.deepEqual(output.details, {
+    repoRoot: "/repo",
+    currentBranch: "feature/current",
+    upstream: "origin/feature/current",
+    remote: "origin",
+    remoteRef: "refs/heads/feature/current",
+    output: "Successfully rebased",
+  });
+  assert.equal(output.content[0].text, "Rebased current branch feature/current onto origin/feature/current.");
+  assert.deepEqual(pi.calls.at(-1).args, ["rebase", "--no-autostash", "--no-update-refs", "origin/feature/current"]);
+  assert.equal(pi.calls.some((call) => ["stash", "merge", "push"].includes(call.args[0])), false);
+});
+
+test("rebase_branch aborts failed rebases before returning an error", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/current...origin/feature/current [ahead 1, behind 1]\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+    ["rebase\0--no-autostash\0--no-update-refs\0origin/feature/current"]: { code: 1, stderr: "CONFLICT (content): merge conflict\n" },
+    ["rebase\0--abort"]: { stdout: "" },
+  });
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, REBASE_BRANCH_TOOL_NAME);
+
+  await assert.rejects(() => tool.execute("call-rebase-conflict", {}, undefined, undefined, ctx), /aborted.*restored/is);
+  assert.deepEqual(pi.calls.at(-1).args, ["rebase", "--abort"]);
 });
 
 test("push_branch pushes current branch with and without upstream", async () => {
@@ -523,6 +619,18 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
       },
     },
     {
+      name: FETCH_BRANCH_TOOL_NAME,
+      params: {},
+      routes: {
+        ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+        ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+        ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+        ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+        ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+        ["fetch\0--no-tags\0--no-recurse-submodules\0origin\0refs/heads/main:refs/remotes/origin/main"]: { stdout: "Already up to date.\n" },
+      },
+    },
+    {
       name: PULL_BRANCH_TOOL_NAME,
       params: {},
       routes: {
@@ -533,6 +641,19 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
         ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
         ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
         ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: { stdout: "Already up to date.\n" },
+      },
+    },
+    {
+      name: REBASE_BRANCH_TOOL_NAME,
+      params: {},
+      routes: {
+        ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+        ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/signal-rebase\n" },
+        ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/signal-rebase...origin/feature/signal-rebase\n" },
+        ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/signal-rebase\n" },
+        ["config\0--get\0branch.feature/signal-rebase.remote"]: { stdout: "origin\n" },
+        ["config\0--get\0branch.feature/signal-rebase.merge"]: { stdout: "refs/heads/feature/signal-rebase\n" },
+        ["rebase\0--no-autostash\0--no-update-refs\0origin/feature/signal-rebase"]: { stdout: "Current branch is up to date.\n" },
       },
     },
     {
@@ -594,7 +715,7 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
   );
 });
 
-test("public BranchMe tools fail on killed status, switch, pull, and push operations", async () => {
+test("public BranchMe tools fail on killed status, switch, fetch, pull, rebase, and push operations", async () => {
   const statusPi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["check-ref-format\0--branch\0feature/timeout"]: { stdout: "feature/timeout\n" },
@@ -626,6 +747,19 @@ test("public BranchMe tools fail on killed status, switch, pull, and push operat
     /git switch -c feature\/timeout failed \(killed\).*timed out/i,
   );
 
+  const fetchPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+    ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+    ["fetch\0--no-tags\0--no-recurse-submodules\0origin\0refs/heads/main:refs/remotes/origin/main"]: { code: 0, killed: true, stderr: "operation timed out\n" },
+  });
+  registerBranchMeTools(fetchPi);
+  const fetchTool = toolByName(fetchPi, FETCH_BRANCH_TOOL_NAME);
+
+  await assert.rejects(() => fetchTool.execute("call-fetch-timeout", {}, undefined, undefined, ctx), /git fetch .*failed \(killed\).*timed out/i);
+
   const pullPi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
@@ -639,6 +773,24 @@ test("public BranchMe tools fail on killed status, switch, pull, and push operat
   const pullTool = toolByName(pullPi, PULL_BRANCH_TOOL_NAME);
 
   await assert.rejects(() => pullTool.execute("call-pull-timeout", {}, undefined, undefined, ctx), /git pull .*failed \(killed\).*timed out/i);
+
+  const rebasePi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/timeout\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/timeout...origin/feature/timeout\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/timeout\n" },
+    ["config\0--get\0branch.feature/timeout.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/timeout.merge"]: { stdout: "refs/heads/feature/timeout\n" },
+    ["rebase\0--no-autostash\0--no-update-refs\0origin/feature/timeout"]: { code: 0, killed: true, stderr: "operation timed out\n" },
+    ["rebase\0--abort"]: { stdout: "" },
+  });
+  registerBranchMeTools(rebasePi);
+  const rebaseTool = toolByName(rebasePi, REBASE_BRANCH_TOOL_NAME);
+
+  await assert.rejects(
+    () => rebaseTool.execute("call-rebase-timeout", {}, undefined, undefined, ctx),
+    /git rebase .*failed \(killed\).*timed out.*aborted.*restored/is,
+  );
 
   const pushPi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },

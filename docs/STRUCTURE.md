@@ -1,6 +1,6 @@
 # BranchMe Structure Guide
 
-BranchMe is a TypeScript Pi extension package for current-repository git branch update, push, and GitHub pull request workflows.
+BranchMe is a TypeScript Pi extension package for current-repository git branch fetch/update/rebase, push, and GitHub pull request workflows.
 
 ## Source layout
 
@@ -13,7 +13,7 @@ src/
 ├── commands/
 │   └── branchme-command.ts       # /branchme status/help command; informational only
 ├── tools/
-│   └── branchme-tools.ts         # branch_status/change_branch/pull_branch/create_branch/push_branch/pull_request registration
+│   └── branchme-tools.ts         # registration for eight branch/GitHub workflow tools
 ├── git.ts                        # argv-style git helpers and per-repo workflow queue
 ├── github.ts                     # GitHub repo resolution, env/.env tokens, branch preflight, REST calls, redaction
 └── ui/
@@ -22,11 +22,11 @@ src/
 
 ## Module boundaries
 
-1. `src/extension.ts` stays small and registers the command, six tools, and one `before_agent_start` context hook.
+1. `src/extension.ts` stays small and registers the command, eight tools, and one `before_agent_start` context hook.
 2. `src/git-context.ts` owns the shared read-only collector, escaped/bounded formatter, automatic system-prompt append, and the current-state output used by `branch_status`.
 3. `src/commands/branchme-command.ts` parses `/branchme`, `/branchme help`, `--help`, and `-h`; it never performs git or GitHub mutations and avoids raw stdout in JSON mode.
 4. `src/tools/branchme-tools.ts` owns TypeBox schemas, prompt metadata, tool content, and safe structured details. `branch_status` delegates to the shared context collector for an explicit refresh.
-5. `src/git.ts` owns current-repository git behavior: root detection, branch/upstream/ahead-behind inspection, working-tree parsing, recent-commit collection, branch validation, branch creation, existing-local-branch switching, clean-worktree preflight, fast-forward-only current-branch pull, current-branch push/publish, and the per-repository workflow queue.
+5. `src/git.ts` owns current-repository git behavior: root detection, branch/upstream/ahead-behind inspection, working-tree parsing, recent-commit collection, branch validation, branch creation, existing-local-branch switching, configured-upstream fetch, clean-worktree preflight, fast-forward-only current-branch pull, current-branch rebase with automatic abort on failure, current-branch push/publish, and the per-repository workflow queue.
 6. `src/github.ts` owns GitHub `owner/repo` parsing, repository boundary checks, `GITHUB_TOKEN`/`GH_TOKEN` process-env and hardened git-root `.env` fallback resolution, authenticated related-open-PR lookup, PR branch-name syntax validation, GitHub branch visibility/commit preflight, PR REST calls, bounded response validation, and redacted errors.
 7. `src/redaction.ts` owns shared credential redaction for Git, GitHub, and prompt-bound metadata.
 8. `src/types.ts` keeps serializable details shared by helpers, context, and tools.
@@ -36,7 +36,7 @@ src/
 
 - No long-lived processes, watchers, timers, sockets, or background jobs start in the extension factory.
 - A single `before_agent_start` handler synchronously collects a fresh snapshot for each agent run and appends it to the existing system prompt; failures degrade to bounded unavailable context rather than blocking startup.
-- Slash commands are informational; tools perform branch update, push, and PR actions. There is no context command or seventh tool.
+- Slash commands are informational; tools perform branch fetch/update/rebase, push, and PR actions. There is no context command.
 - Every tool uses a strict TypeBox object schema with `additionalProperties: false`.
 - Every tool defines a description, `promptSnippet`, and tool-specific `promptGuidelines` that explicitly name the tool.
 - Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from the verified git root and same-repository mutation/PR windows are serialized per repository.
@@ -51,12 +51,14 @@ src/
 - Related-PR lookup may issue an authenticated `GET /pulls` before every agent run and on explicit refresh. It has a 4-second timeout and 64 KiB response limit, and makes no unauthenticated fallback request.
 - The start-of-run snapshot may be stale after a mutation in that same run; `branch_status` is the explicit read-only refresh.
 - `change_branch` mutates local HEAD and working-tree files only through `git switch <branchName>` for existing local branches after a clean-worktree preflight.
+- `fetch_branch` requires a configured upstream and runs `git fetch --no-tags --no-recurse-submodules <remote> <remote-ref>:<remote-tracking-ref>`; its explicit refspec updates only that tracking ref without changing local branches or working-tree files.
 - `pull_branch` requires a clean worktree and configured upstream, then updates only the current branch with an explicit `git pull --ff-only --no-rebase --no-autostash <remote> <remote-ref>` command; divergence fails without a rebase or merge commit.
+- `rebase_branch` requires a clean worktree and configured upstream, then rebases only the current branch with `git rebase --no-autostash --no-update-refs <upstream>`; it rewrites local commits and automatically attempts `git rebase --abort` on failure.
 - `create_branch` mutates local branch/HEAD only with `git switch -c`.
 - `push_branch` mutates remote refs only for the current branch and uses an explicit upstream remote/refspec instead of bare `git push` when an upstream exists.
 - `pull_request` requires `headBranch` and `baseBranch` to exist locally, requires `headBranch` to match the GitHub-visible branch commit, queues behind already-started same-repository git mutation windows, makes GitHub REST API calls for the resolved current repository only, and rejects missing, owner-prefixed, or unsafe branch refs before token lookup or the request.
 - `pull_request` reads `GITHUB_TOKEN` or `GH_TOKEN` from process environment first; only when neither process token is set does it read those token keys from a small regular `.env` file in the verified git root as a fallback.
-- BranchMe does not force checkout, stash, stage, commit, rebase, create merge commits, directly edit files, read non-token `.env` keys, follow unsafe `.env` file types, depend on GitHub CLI, or collect telemetry.
+- BranchMe does not force checkout, stash, stage, create user-authored commits, reset, force-push, create merge commits, directly edit files, read non-token `.env` keys, follow unsafe `.env` file types, depend on GitHub CLI, or collect telemetry. Rebase-driven commit rewriting occurs only through explicit `rebase_branch` calls.
 
 ## Documentation
 

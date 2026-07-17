@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   changeExistingLocalBranch,
   createLocalBranch,
+  fetchCurrentBranch,
   formatGitFailure,
   getBranchStatus,
   getGitRoot,
@@ -12,6 +13,7 @@ import {
   parseWorkingTreeStatus,
   pullCurrentBranch,
   pushCurrentBranch,
+  rebaseCurrentBranch,
   validateBranchName,
   validateBranchNameInput,
 } from "../src/git.ts";
@@ -497,6 +499,63 @@ test("formatGitFailure redacts credential-bearing command labels and git output"
   assert.match(message, /\[REDACTED\]/u);
 });
 
+test("fetchCurrentBranch fetches the current branch's configured upstream remote", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+    ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+    ["fetch\0--no-tags\0--no-recurse-submodules\0origin\0refs/heads/main:refs/remotes/origin/main"]: { stderr: "From github.com:senad-d/branchme\n" },
+  });
+
+  const details = await fetchCurrentBranch(pi, ctx);
+
+  assert.deepEqual(details, {
+    repoRoot: "/repo",
+    currentBranch: "main",
+    upstream: "origin/main",
+    remote: "origin",
+    remoteRef: "refs/heads/main",
+    remoteTrackingRef: "refs/remotes/origin/main",
+    refspec: "refs/heads/main:refs/remotes/origin/main",
+    output: "From github.com:senad-d/branchme",
+  });
+  assert.deepEqual(pi.calls.at(-1).args, [
+    "fetch",
+    "--no-tags",
+    "--no-recurse-submodules",
+    "origin",
+    "refs/heads/main:refs/remotes/origin/main",
+  ]);
+  assert.equal(pi.calls.at(-1).options.timeout, 120_000);
+  assert.equal(pi.calls.some((call) => ["switch", "rebase", "merge", "push"].includes(call.args[0])), false);
+});
+
+test("fetchCurrentBranch rejects branches without configured upstreams", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { code: 1, stderr: "no upstream\n" },
+  });
+
+  await assert.rejects(() => fetchCurrentBranch(pi, ctx), /no upstream is configured/i);
+  assert.equal(pi.calls.some((call) => call.args[0] === "fetch"), false);
+});
+
+test("fetchCurrentBranch rejects upstream refs that do not match the configured remote", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "other/main\n" },
+    ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+  });
+
+  await assert.rejects(() => fetchCurrentBranch(pi, ctx), /upstream does not match its remote/i);
+  assert.equal(pi.calls.some((call) => call.args[0] === "fetch"), false);
+});
+
 test("pullCurrentBranch fast-forwards the clean current branch from its configured upstream", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
@@ -563,6 +622,75 @@ test("pullCurrentBranch redacts credential-bearing git output in returned detail
 
   assert.doesNotMatch(details.output, /pullsecret|user:ghp_/u);
   assert.match(details.output, /\[REDACTED\]/u);
+});
+
+test("rebaseCurrentBranch rebases the clean current branch onto its configured upstream", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/current...origin/feature/current [ahead 2, behind 1]\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+    ["rebase\0--no-autostash\0--no-update-refs\0origin/feature/current"]: { stderr: "Successfully rebased and updated refs/heads/feature/current.\n" },
+  });
+
+  const details = await rebaseCurrentBranch(pi, ctx);
+
+  assert.deepEqual(details, {
+    repoRoot: "/repo",
+    currentBranch: "feature/current",
+    upstream: "origin/feature/current",
+    remote: "origin",
+    remoteRef: "refs/heads/feature/current",
+    output: "Successfully rebased and updated refs/heads/feature/current.",
+  });
+  assert.deepEqual(pi.calls.at(-1).args, ["rebase", "--no-autostash", "--no-update-refs", "origin/feature/current"]);
+  assert.equal(pi.calls.at(-1).options.timeout, 120_000);
+  assert.equal(pi.calls.at(-1).args.includes("--no-autostash"), true);
+  assert.equal(pi.calls.at(-1).args.includes("--no-update-refs"), true);
+  assert.equal(pi.calls.some((call) => ["stash", "merge", "push"].includes(call.args[0])), false);
+});
+
+test("rebaseCurrentBranch rejects dirty worktrees and branches without upstreams", async () => {
+  const dirtyPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/current\n M README.md\n" },
+  });
+
+  await assert.rejects(() => rebaseCurrentBranch(dirtyPi, ctx), /clean it before rebasing/i);
+  assert.equal(dirtyPi.calls.some((call) => call.args[0] === "rebase"), false);
+
+  const noUpstreamPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/current\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { code: 1, stderr: "no upstream\n" },
+  });
+
+  await assert.rejects(() => rebaseCurrentBranch(noUpstreamPi, ctx), /no upstream is configured/i);
+  assert.equal(noUpstreamPi.calls.some((call) => call.args[0] === "rebase"), false);
+});
+
+test("rebaseCurrentBranch aborts and restores the branch after a failed rebase", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/current...origin/feature/current [ahead 1, behind 1]\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/feature/current\n" },
+    ["config\0--get\0branch.feature/current.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
+    ["rebase\0--no-autostash\0--no-update-refs\0origin/feature/current"]: { code: 1, stderr: "CONFLICT (content): merge conflict\n" },
+    ["rebase\0--abort"]: { stdout: "" },
+  });
+
+  await assert.rejects(() => rebaseCurrentBranch(pi, ctx), /merge conflict.*aborted.*restored/is);
+  assert.deepEqual(pi.calls.slice(-2).map((call) => call.args), [
+    ["rebase", "--no-autostash", "--no-update-refs", "origin/feature/current"],
+    ["rebase", "--abort"],
+  ]);
+  assert.equal(pi.calls.at(-1).options.signal, undefined);
 });
 
 test("pushCurrentBranch redacts credential-bearing git output in returned details", async () => {

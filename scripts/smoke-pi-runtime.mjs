@@ -18,7 +18,9 @@ const expectedBranchMeTools = [
   { name: "branch_status", properties: [], required: [] },
   { name: "change_branch", properties: ["branchName"], required: ["branchName"] },
   { name: "create_branch", properties: ["branchName"], required: ["branchName"] },
+  { name: "fetch_branch", properties: [], required: [] },
   { name: "pull_branch", properties: [], required: [] },
+  { name: "rebase_branch", properties: [], required: [] },
   { name: "push_branch", properties: [], required: [] },
   { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title"], required: ["headBranch", "baseBranch", "title", "body", "draft"] },
 ];
@@ -322,7 +324,7 @@ try {
   }
 
   console.log(
-    "Pi runtime smoke passed: loaded BranchMe with pi --no-extensions -e <package>, verified all six BranchMe tools through pi.getAllTools(), and observed non-mutating command output.",
+    "Pi runtime smoke passed: loaded BranchMe with pi --no-extensions -e <package>, verified all eight BranchMe tools through pi.getAllTools(), and observed non-mutating command output.",
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

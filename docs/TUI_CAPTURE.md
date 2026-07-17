@@ -23,19 +23,22 @@ Commands only show info; BranchMe tools perform actions.
 ## Workflow
 
 1. `branch_status` — inspect repo and branch state.
-2. `change_branch` — switch to the clean local base branch.
-3. `pull_branch` — fast-forward the current branch from its configured upstream.
-4. `create_branch` — create a new branch from the updated `HEAD`.
-5. Commit outside BranchMe.
-6. `push_branch` — push the current branch.
-7. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.
+2. `change_branch` — switch to a clean existing local branch.
+3. `fetch_branch` — fetch its configured upstream remote without changing local files.
+4. `pull_branch` — fast-forward from upstream, or `rebase_branch` — rebase local commits onto upstream.
+5. `create_branch` — create a new branch from the updated `HEAD`.
+6. Commit outside BranchMe.
+7. `push_branch` — push the current branch.
+8. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.
 
 ## Requirements
 
 - Run inside a Git repo with `git` available.
 - For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN` (environment or `.env`).
-- `pull_branch` requires a clean working tree and configured upstream.
-- BranchMe never stages, commits, rebases, or creates merge commits.
+- `fetch_branch`, `pull_branch`, and `rebase_branch` require a configured upstream.
+- `pull_branch` and `rebase_branch` require a clean working tree.
+- `rebase_branch` rewrites local commits only when explicitly requested and auto-aborts on failure.
+- BranchMe never stages, creates user-authored commits, force-pushes, or creates merge commits.
 ```
 
 ## Panel: Tiny mode: clean branch with token
@@ -65,6 +68,8 @@ Width: 40
 │                                      │
 │                                      │
 │                                      │
+│                                      │
+│                                      │
 ├──────────────────────────────────────┤
 │ 1/2 • status • current repository on…│
 ╰──────────────────────────────────────╯
@@ -85,6 +90,8 @@ Width: 80
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
+│                     │                                                        │
+│                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
 │ 1/2 • status • current repository only • tools perform actions               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -101,12 +108,14 @@ Width: 80
 │   Status            │ WORKFLOW                                               │
 │▶  Workflow          │  branch_status  -> inspect                             │
 │                     │  change_branch  -> existing local                      │
+│                     │  fetch_branch   -> upstream remote                     │
 │                     │  pull_branch    -> fast-forward                        │
+│                     │  rebase_branch  -> onto upstream                       │
 │                     │  create_branch  -> from HEAD                           │
 │                     │  push_branch    -> current branch                      │
 │                     │  pull_request   -> after push                          │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 2/2 • workflow • inspect → change → pull → create → push → PR                │
+│ 2/2 • workflow • inspect → change → fetch/pull/rebase → create → push → PR   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -122,6 +131,8 @@ Width: 112
 │   Workflow           │  Current branch:    main                                              │
 │                      │  GitHub repository: senad-d/BranchMe                                  │
 │                      │  GitHub token:      not set                                           │
+│                      │                                                                       │
+│                      │                                                                       │
 │                      │                                                                       │
 │                      │                                                                       │
 │                      │                                                                       │
@@ -146,6 +157,8 @@ Width: 50
 │                                                │
 │                                                │
 │                                                │
+│                                                │
+│                                                │
 ├────────────────────────────────────────────────┤
 │ 1/2 • warning • Unable to resolve a GitHub rep…│
 ╰────────────────────────────────────────────────╯
@@ -163,6 +176,8 @@ Width: 80
 │   Workflow          │  Current branch:    main                               │
 │                     │  GitHub repository: warning: Repository boundary misma…│
 │                     │  GitHub token:      present                            │
+│                     │                                                        │
+│                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
@@ -186,6 +201,8 @@ Width: 72
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
+│                   │                                                  │
+│                   │                                                  │
 ├───────────────────┴──────────────────────────────────────────────────┤
 │ 1/2 • warning • Unable to read .env file for GitHub token fallback: …│
 ╰──────────────────────────────────────────────────────────────────────╯
@@ -203,6 +220,8 @@ Width: 72
 │   Workflow        │  Current branch:    feature/super-long-branch-na…│
 │                   │  GitHub repository: very-long-owner-name/very-lo…│
 │                   │  GitHub token:      present                      │
+│                   │                                                  │
+│                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │

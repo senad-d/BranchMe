@@ -51,6 +51,9 @@ Use `StringEnum` from `@earendil-works/pi-ai` for string enum schemas if enum fi
 - `branch_status`: read current repo/branch status.
 - `change_branch`: switch to an existing local branch after clean-worktree preflight.
 - `create_branch`: create and checkout a branch from current `HEAD`.
+- `fetch_branch`: fetch the current branch's configured upstream into its remote-tracking ref.
+- `pull_branch`: fast-forward the clean current branch from its configured upstream.
+- `rebase_branch`: explicitly rebase the clean current branch onto its configured upstream.
 - `push_branch`: push/publish the current branch.
 - `pull_request`: create a GitHub pull request in the current repository.
 
@@ -61,6 +64,9 @@ Good guideline examples:
 - `Use branch_status before create_branch when the user asks for the current branch state.`
 - `Use change_branch only when the user explicitly wants to switch to an existing local branch.`
 - `Use create_branch only when the user explicitly wants a new branch from current HEAD.`
+- `Use fetch_branch only when the user explicitly wants to fetch the current branch upstream.`
+- `Use pull_branch only when the user explicitly wants a fast-forward-only update.`
+- `Use rebase_branch only when the user explicitly accepts local history rewriting.`
 - `Use push_branch only after commits already exist; push_branch never commits or stages files.`
 - `Use pull_request only when the user provides explicit head branch, base branch, title, body, and draft values.`
 
@@ -89,8 +95,11 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
 - Validate branch names with `git check-ref-format --branch`.
 - Fail on detached HEAD for `push_branch`.
 - `create_branch` must create from current `HEAD` only.
+- `fetch_branch` must construct its source-to-remote-tracking refspec internally and must not accept arbitrary remotes or refspecs.
+- `pull_branch` must remain fast-forward-only and must not rebase or create merge commits.
+- `rebase_branch` must require explicit user intent, a clean current branch, and a configured upstream; disable autostash and multi-ref updates, and attempt to abort on failure.
 - `push_branch` must push the current branch only and use an explicit upstream remote/refspec instead of bare `git push`.
-- Do not implement commit, staging, stash, reset, merge, rebase, or file-editing behavior.
+- Do not implement commit, staging, stash, reset, merge, arbitrary-target rebase, or file-editing behavior.
 
 ## GitHub Guidelines
 

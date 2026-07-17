@@ -29,8 +29,8 @@ export type BranchMePanelSection = "status" | "workflow";
 const NARROW_MIN_WIDTH = 24;
 const WIDE_MIN_WIDTH = 72;
 const MAX_PANEL_WIDTH = 96;
-const MAX_PANEL_HEIGHT = 14;
-const BODY_HEIGHT = 7;
+const MAX_PANEL_HEIGHT = 16;
+const BODY_HEIGHT = 9;
 const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow"];
 const ANSI_RESET = "\u001b[0m";
 
@@ -177,7 +177,7 @@ function sectionFooter(section: BranchMePanelSection, data: BranchMePanelData): 
     case "status":
       return "status • current repository only • tools perform actions";
     case "workflow":
-      return "workflow • inspect → change → pull → create → push → PR";
+      return "workflow • inspect → change → fetch/pull/rebase → create → push → PR";
   }
 }
 
@@ -197,7 +197,9 @@ function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): Pa
         heading("WORKFLOW"),
         workflowDetailRow("branch_status", "inspect"),
         workflowDetailRow("change_branch", "existing local"),
+        workflowDetailRow("fetch_branch", "upstream remote"),
         workflowDetailRow("pull_branch", "fast-forward"),
+        workflowDetailRow("rebase_branch", "onto upstream"),
         workflowDetailRow("create_branch", "from HEAD"),
         workflowDetailRow("push_branch", "current branch"),
         workflowDetailRow("pull_request", "after push"),

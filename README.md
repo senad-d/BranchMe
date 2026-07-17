@@ -11,12 +11,12 @@
 
 <p align="center">
   Current-repository branch and pull request tools for <a href="https://pi.dev">pi</a>.
-  <br />Inspect branch state, switch/create/update branches, push, and open GitHub PRs from pi prompts.
+  <br />Inspect branch state, fetch, switch/create/pull/rebase branches, push, and open GitHub PRs from pi prompts.
 </p>
 
 ---
 
-BranchMe is a Pi extension for safe branch workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and six agent-callable tools that explicitly refresh state, switch to an existing local branch, fast-forward the clean current branch from its upstream, create a branch from the current `HEAD`, push the current branch, and create a GitHub pull request.
+BranchMe is a Pi extension for safe branch workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and eight agent-callable tools that explicitly refresh state, switch to an existing local branch, fetch its configured upstream remote, fast-forward or rebase the clean current branch onto its upstream, create a branch from the current `HEAD`, push the current branch, and create a GitHub pull request.
 
 <table align="center">
   <tr>
@@ -30,12 +30,13 @@ BranchMe is a Pi extension for safe branch workflow automation. Before each agen
 </table>
 
 - **Context-aware:** every agent run starts with bounded branch, working-tree, related-PR, and recent-commit metadata; repository metadata is untrusted data, not instructions.
-- **Current-repository only:** Git and GitHub operations are scoped to the checkout where pi is running; `pull_branch` updates only the clean current branch from its configured upstream.
-- **Commit-safe:** context collection is read-only, and BranchMe never stages files, creates commits, generates commit messages, rebases, creates merge commits, resets, or edits files directly.
+- **Current-repository only:** Git and GitHub operations are scoped to the checkout where pi is running; fetch, pull, and rebase resolve the current branch's configured upstream.
+- **Explicit history rewrites:** `rebase_branch` runs only when explicitly requested, requires a clean current branch with an upstream, disables autostash and multi-ref updates, and automatically attempts to abort on failure.
+- **Commit-safe:** context collection is read-only, and BranchMe never stages files, creates user-authored commits, generates commit messages, force-pushes, creates merge commits, resets, or edits files directly.
 - **Strict tools:** tool schemas reject extra properties such as `force`, `stash`, `discard`, `owner`, `repo`, `path`, or `baseRef`.
 - **PR-ready:** create GitHub pull requests from existing local branches after verifying the `headBranch` matches GitHub and the base is visible, with explicit PR fields and `GITHUB_TOKEN` or `GH_TOKEN` from the process environment or a local `.env` fallback.
 
-> **Security:** pi packages run with your full system permissions. BranchMe runs local `git` commands, may make an automatic authenticated GitHub request to find a related open pull request, can switch/create branches and push the current branch, and can create GitHub pull requests. Read [`SECURITY.md`](SECURITY.md).
+> **Security:** pi packages run with your full system permissions. BranchMe runs local `git` commands, may make an automatic authenticated GitHub request to find a related open pull request, can fetch remotes, switch/create/pull/rebase branches, push the current branch, and create GitHub pull requests. Read [`SECURITY.md`](SECURITY.md).
 
 ## Table of Contents
 
@@ -88,7 +89,9 @@ A typical BranchMe flow is:
 7. Push the current branch with `push_branch`.
 8. After `push_branch` completes and GitHub can see the branches, create a pull request with `pull_request`.
 
-BranchMe is tool-based. The slash command is informational only and never changes or updates branches, pushes, commits, stages, edits files, or opens pull requests.
+To refresh the current branch's configured remote-tracking ref without changing the local branch or working tree, use `fetch_branch`. To reconcile the clean current branch by rewriting its local commits, run `fetch_branch`, wait for it to complete, and then run `rebase_branch`. Both tools require a configured upstream; `rebase_branch` automatically attempts `git rebase --abort` if rebasing fails.
+
+BranchMe is tool-based. The slash command is informational only and never changes or updates branches, fetches, rebases, pushes, commits, stages, edits files, or opens pull requests.
 
 ---
 
@@ -158,7 +161,7 @@ $EDITOR .env
 pi
 ```
 
-`pull_branch` and `push_branch` use your normal Git remote credentials. BranchMe does not inject `GITHUB_TOKEN` into `git pull` or `git push`.
+`fetch_branch`, `pull_branch`, and `push_branch` use your normal Git remote credentials. BranchMe does not inject `GITHUB_TOKEN` into `git fetch`, `git pull`, or `git push`. `rebase_branch` operates on the locally available configured upstream ref and makes no network request itself.
 When the current branch already has an upstream, BranchMe pushes an explicit `HEAD:<upstream-branch-ref>` refspec to the configured upstream remote instead of relying on a bare `git push`.
 Run `pull_request` only after `push_branch` has completed; `pull_request` preflights the GitHub `headBranch` and `baseBranch` before creating the PR and fails with retry guidance if a branch is not visible yet or the GitHub `headBranch` commit does not match the local branch.
 
@@ -199,12 +202,14 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | --- | --- | --- |
 | `branch_status` | `{}` | Explicitly refreshes the same bounded context used at agent start: repo root in structured details, branch/detached state, upstream and ahead/behind counts, working-tree counts and unstaged/untracked paths, related open PR, and recent commits. It is read-only. |
 | `change_branch` | `{ "branchName": string }` | Validates `branchName`, requires `refs/heads/<branchName>` to exist locally, rejects dirty worktrees, and runs `git switch <branchName>`. |
+| `fetch_branch` | `{}` | Requires a current branch with a configured upstream and runs `git fetch --no-tags --no-recurse-submodules <upstream-remote> <upstream-branch-ref>:<remote-tracking-ref>`; only that tracking ref is refreshed without changing local branches or working-tree files. |
 | `pull_branch` | `{}` | Requires a clean current branch with a configured upstream and runs `git pull --ff-only --no-rebase --no-autostash <upstream-remote> <upstream-branch-ref>`; divergence fails without rebasing or creating a merge commit. |
+| `rebase_branch` | `{}` | Requires a clean current branch with a configured upstream and runs `git rebase --no-autostash --no-update-refs <upstream>`; it rewrites local commits and automatically attempts `git rebase --abort` on failure. |
 | `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
 | `push_branch` | `{}` | Pushes the current branch to its configured upstream remote with an explicit `HEAD:<upstream-branch-ref>` refspec, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
 | `pull_request` | `{ "headBranch": string, "baseBranch": string, "title": string, "body": string, "draft": boolean }` | Preflights GitHub branch visibility and verifies the GitHub `headBranch` commit matches the local branch, then creates a pull request in the resolved current repository via `POST /repos/{owner}/{repo}/pulls`; branch refs must exist locally and cannot use `owner:branch`. |
 
-All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `pull_branch` has a strict empty schema and never accepts a branch, remote, force, or rebase option. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
+All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `fetch_branch`, `pull_branch`, and `rebase_branch` have strict empty schemas and never accept a branch, remote, refspec, force, autostash, or arbitrary rebase target. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
 
 ---
 
@@ -222,7 +227,7 @@ Before each agent run, BranchMe appends an **Automatic Git Context** snapshot to
 
 Collection defaults are a 5-second timeout per local Git command, a 4-second related-PR lookup timeout, at most 512 characters per metadata value, and at most 4,000 characters for the rendered snapshot. GitHub response bodies are limited to 64 KiB. The formatter can further shorten values or omit entries to stay within the total limit.
 
-The snapshot is fresh at agent start but is not live. A branch switch, pull, commit, file change, push, or other mutation later in the same run can make it stale. `branch_status` performs an explicit current-state refresh through the same shared collector and remains read-only; it does not mutate files, Git state, or GitHub state.
+The snapshot is fresh at agent start but is not live. A fetch, branch switch, pull, rebase, commit, file change, push, or other mutation later in the same run can make it stale. `branch_status` performs an explicit current-state refresh through the same shared collector and remains read-only; it does not mutate files, Git state, or GitHub state.
 
 Related-PR metadata does not come from Git alone. When repository, branch, and credentials resolve, automatic collection and explicit `branch_status` may make an authenticated `GET /repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}&per_page=1` request. Without a token there is no unauthenticated fallback or GitHub request; the PR field is reported as unavailable while local Git context remains usable.
 
@@ -233,6 +238,7 @@ Use BranchMe from pi prompts or automation that drives pi with explicit tool cal
 ```text
 Use branch_status.
 Switch to the base branch with change_branch, then use pull_branch after the switch completes.
+Fetch the current branch upstream with fetch_branch, wait for it to complete, then rebase with rebase_branch.
 Create branch feature/docs-refresh from the updated current HEAD with create_branch.
 Push the current branch with push_branch.
 After push_branch completes, create a draft pull request from feature/docs-refresh to main titled "Refresh docs" with this body: "...".
@@ -243,13 +249,15 @@ BranchMe operates only on the repository where pi is running:
 - Automatic collection and `branch_status` run bounded, read-only Git commands from the verified git root.
 - Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from the verified git root.
 - `change_branch` switches only to existing local branches and has no `force`, `stash`, `discard`, remote, or path input.
+- `fetch_branch` requires a configured upstream, uses an explicit source-to-remote-tracking refspec with tags and submodule recursion disabled, and does not change local branches or working-tree files.
 - `pull_branch` requires a clean worktree and configured upstream, updates only the current branch with `git pull --ff-only --no-rebase --no-autostash`, and has no branch, remote, force, or rebase input.
+- `rebase_branch` requires a clean worktree and configured upstream, rewrites only the current branch onto the locally available upstream with autostash and multi-ref updates disabled, and automatically attempts to abort on failure.
 - `create_branch` creates from the current `HEAD` only and has no `baseRef` input.
 - `push_branch` pushes only the current branch, uses no bare upstream `git push`, and has no `branchName` input.
 - `pull_request` creates PRs only for the resolved current GitHub repository, requires `headBranch` and `baseBranch` to exist locally, requires the GitHub `headBranch` commit to match the local branch, queues behind in-flight same-repository git mutation windows when possible, and rejects `owner:branch` head refs.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
-BranchMe intentionally does **not** stage files, create commits, force checkout, stash changes, discard changes, edit files directly, or generate commit messages.
+BranchMe intentionally does **not** stage files, create user-authored commits, force checkout, stash changes, discard changes, force-push, create merge commits, edit files directly, or generate commit messages. Rebase-driven commit rewriting occurs only through explicit `rebase_branch` calls.
 
 ---
 
@@ -292,12 +300,13 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | Problem | Try |
 | --- | --- |
 | Not a git repository | Start pi from inside a git checkout. |
-| Detached `HEAD` | Use `change_branch` to switch to an existing local branch, or checkout a branch before `pull_branch`, `create_branch`, or `push_branch`. |
+| Detached `HEAD` | Use `change_branch` to switch to an existing local branch, or checkout a branch before `fetch_branch`, `pull_branch`, `rebase_branch`, `create_branch`, or `push_branch`. |
 | Branch already exists | Choose a new local branch name for `create_branch`, or use `change_branch` to switch to it. |
 | Branch does not exist locally | Create a local branch first; `change_branch` does not checkout remote branches. |
-| Dirty worktree before branch switch or pull | Commit, stash, or discard changes outside BranchMe before using `change_branch` or `pull_branch`. |
-| Pull has no upstream | Configure the current branch upstream outside BranchMe, then retry `pull_branch`. |
-| Pull is not a fast-forward | Reconcile the divergent branch outside BranchMe; `pull_branch` never rebases, force-updates, or creates a merge commit. |
+| Dirty worktree before branch switch, pull, or rebase | Commit, stash, or discard changes outside BranchMe before using `change_branch`, `pull_branch`, or `rebase_branch`. |
+| Fetch, pull, or rebase has no upstream | Configure the current branch upstream outside BranchMe, then retry the tool. |
+| Pull is not a fast-forward | Run `fetch_branch`, wait for it to complete, then explicitly run `rebase_branch` if rewriting local commits is intended; otherwise reconcile outside BranchMe. |
+| Rebase fails or conflicts | `rebase_branch` automatically attempts `git rebase --abort`. Inspect repository state before continuing if automatic cleanup also fails. |
 | Push fails | Confirm the current branch is correct and your normal Git remote credentials can push. |
 | Related PR is unavailable | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi if related-PR context is wanted. Without a token, BranchMe keeps local context and intentionally makes no unauthenticated GitHub request. |
 | PR auth fails | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi, or copy `.env.example` to `.env` and fill in one token. |
@@ -319,7 +328,7 @@ npm run check:pack
 printf '/branchme help\n/quit\n' | pi --no-extensions -e .
 ```
 
-Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, unit tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all six BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
+Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, unit tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all eight BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
 
 Refresh TUI captures intentionally with:
 

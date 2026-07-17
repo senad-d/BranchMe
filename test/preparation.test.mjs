@@ -68,7 +68,9 @@ test("public documentation describes implemented behavior", async () => {
   assert.match(readme, /branch_status/);
   assert.match(readme, /change_branch/);
   assert.match(readme, /create_branch/);
+  assert.match(readme, /fetch_branch/);
   assert.match(readme, /pull_branch/);
+  assert.match(readme, /rebase_branch/);
   assert.match(readme, /push_branch/);
   assert.match(readme, /pull_request/);
   assert.match(readme, /GITHUB_TOKEN/);

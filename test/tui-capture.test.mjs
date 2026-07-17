@@ -140,7 +140,7 @@ function renderCapture() {
       renderedLines.every((line) => visibleWidth(line) <= panelCase.width),
       `${panelCase.title} exceeded width ${panelCase.width}`,
     );
-    assert.ok(renderedLines.length <= 14, `${panelCase.title} exceeded maximum height`);
+    assert.ok(renderedLines.length <= 16, `${panelCase.title} exceeded maximum height`);
 
     lines.push(
       "",

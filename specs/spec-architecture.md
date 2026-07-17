@@ -38,7 +38,7 @@ src/
 ├── commands/
 │   └── branchme-command.ts       # /branchme and /branchme help, informational only
 ├── tools/
-│   └── branchme-tools.ts         # registers branch_status/change_branch/create_branch/push_branch/pull_request
+│   └── branchme-tools.ts         # registers eight branch/GitHub workflow tools
 ├── git.ts                        # git command helpers and current-repo validation
 ├── github.ts                     # token resolution, repository resolution, PR REST call
 └── ui/
@@ -55,6 +55,9 @@ src/
 | Command | `/branchme help` | Show markdown workflow notes | Informational only |
 | Tool | `branch_status` | Inspect current repository, branch, upstream, and dirty/ahead/behind state | Read-only git commands |
 | Tool | `change_branch` | Switch to an existing local branch after clean-worktree preflight | Mutates local HEAD/working tree only through git switch |
+| Tool | `fetch_branch` | Fetch the current branch's configured upstream into its tracking ref | Mutates one remote-tracking ref; no working-tree change |
+| Tool | `pull_branch` | Fast-forward the clean current branch from its configured upstream | Mutates current branch/working tree without merge or rebase |
+| Tool | `rebase_branch` | Rebase the clean current branch onto its configured upstream | Explicitly rewrites current-branch commits; auto-aborts on failure |
 | Tool | `create_branch` | Create and checkout a new branch from current `HEAD` | Mutates git branch/HEAD only |
 | Tool | `push_branch` | Push current branch with explicit upstream target, publishing to `origin` if missing | Mutates remote refs only; never commits |
 | Tool | `pull_request` | Create a GitHub PR for the current repository | Network call to GitHub REST API |
@@ -81,6 +84,29 @@ src/
   - `ahead`
   - `behind`
   - `githubRepository` when resolved
+
+### `fetch_branch`
+
+- Parameters: strict empty object.
+- Requires a current branch with a configured remote upstream.
+- Runs an argv-style `git fetch --no-tags --no-recurse-submodules` with an internally constructed source-to-remote-tracking refspec.
+- Never accepts a branch, remote, refspec, tags, prune, or force parameter.
+- Does not change local branches or working-tree files.
+
+### `pull_branch`
+
+- Parameters: strict empty object.
+- Requires a clean current branch with a configured upstream.
+- Uses explicit fast-forward-only, no-rebase, no-autostash semantics.
+- Divergence fails without creating a merge commit or rewriting commits.
+
+### `rebase_branch`
+
+- Parameters: strict empty object.
+- Requires explicit user intent, a clean current branch, and a configured upstream.
+- Disables autostash and multi-ref updates while rebasing the current branch onto its upstream.
+- Rewrites local commits but never pushes or force-pushes.
+- Automatically attempts `git rebase --abort` when rebasing fails.
 
 ### `create_branch`
 

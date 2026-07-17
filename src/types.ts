@@ -87,7 +87,27 @@ export interface ChangeBranchDetails {
   hasChangesBeforeSwitch: false;
 }
 
+export interface FetchBranchDetails {
+  repoRoot: string;
+  currentBranch: string;
+  upstream: string;
+  remote: string;
+  remoteRef: string;
+  remoteTrackingRef: string;
+  refspec: string;
+  output: string;
+}
+
 export interface PullBranchDetails {
+  repoRoot: string;
+  currentBranch: string;
+  upstream: string;
+  remote: string;
+  remoteRef: string;
+  output: string;
+}
+
+export interface RebaseBranchDetails {
   repoRoot: string;
   currentBranch: string;
   upstream: string;
