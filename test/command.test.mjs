@@ -144,6 +144,7 @@ test("/branchme help returns concise workflow and requirements through UI modes"
   assert.match(ctx.notifications[0].message, /branch_status/);
   assert.match(ctx.notifications[0].message, /change_branch/);
   assert.match(ctx.notifications[0].message, /create_branch/);
+  assert.match(ctx.notifications[0].message, /pull_branch/);
   assert.match(ctx.notifications[0].message, /push_branch/);
   assert.match(ctx.notifications[0].message, /pull_request/);
   assert.doesNotMatch(ctx.notifications[0].message, /\| Tool \|/);

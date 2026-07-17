@@ -4,6 +4,7 @@ import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
+  PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
 } from "../constants.ts";
@@ -13,6 +14,7 @@ import {
   getGitRoot,
   getLocalBranchCommit,
   localBranchExists,
+  pullCurrentBranch,
   pushCurrentBranch,
   validateBranchName,
   withRepositoryMutationQueue,
@@ -192,6 +194,26 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const details = await changeExistingLocalBranch(pi, ctx, params.branchName, signal);
       return {
         content: [{ type: "text", text: formatChangeBranch(details) }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: PULL_BRANCH_TOOL_NAME,
+    label: "Pull Branch",
+    description: "pull_branch updates the current branch from its configured upstream with git pull --ff-only --no-rebase --no-autostash. pull_branch requires a clean working tree and never rebases, creates merge commits, force-updates, stashes, stages, or commits.",
+    promptSnippet: "pull_branch: fast-forward the clean current branch from its configured upstream without rebasing",
+    promptGuidelines: [
+      "Use pull_branch only when the user explicitly wants to update the current branch from its configured upstream.",
+      "Use pull_branch only on a clean working tree with an upstream; pull_branch has no branchName, remote, force, or rebase parameters.",
+      "Do not call pull_branch in the same tool batch as change_branch or create_branch; call pull_branch after change_branch completes, then call create_branch after pull_branch completes.",
+    ],
+    parameters: EmptyParametersSchema,
+    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+      const details = await pullCurrentBranch(pi, ctx, signal);
+      return {
+        content: [{ type: "text", text: `Pulled current branch ${details.currentBranch} with fast-forward-only semantics.` }],
         details,
       };
     },

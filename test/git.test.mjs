@@ -10,6 +10,7 @@ import {
   getWorkingTreeStatus,
   parseRecentCommits,
   parseWorkingTreeStatus,
+  pullCurrentBranch,
   pushCurrentBranch,
   validateBranchName,
   validateBranchNameInput,
@@ -494,6 +495,74 @@ test("formatGitFailure redacts credential-bearing command labels and git output"
 
   assert.doesNotMatch(message, /labelsecret|stderrsecret|bearersecret|keysecret|user:ghp_/u);
   assert.match(message, /\[REDACTED\]/u);
+});
+
+test("pullCurrentBranch fast-forwards the clean current branch from its configured upstream", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main...origin/main [behind 1]\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+    ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+    ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: { stdout: "Updating 1111111..2222222\nFast-forward\n" },
+  });
+
+  const details = await pullCurrentBranch(pi, ctx);
+
+  assert.deepEqual(details, {
+    repoRoot: "/repo",
+    currentBranch: "main",
+    upstream: "origin/main",
+    remote: "origin",
+    remoteRef: "refs/heads/main",
+    output: "Updating 1111111..2222222\nFast-forward",
+  });
+  assert.deepEqual(pi.calls.at(-1).args, ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"]);
+  assert.equal(pi.calls.at(-1).options.timeout, 120_000);
+  assert.equal(pi.calls.at(-1).args.includes("--no-rebase"), true);
+  assert.equal(pi.calls.at(-1).args.includes("--no-autostash"), true);
+  assert.equal(pi.calls.some((call) => call.args.includes("--rebase") || call.args.includes("--force")), false);
+});
+
+test("pullCurrentBranch rejects dirty worktrees and branches without upstreams", async () => {
+  const dirtyPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n M README.md\n" },
+  });
+
+  await assert.rejects(() => pullCurrentBranch(dirtyPi, ctx), /clean it before pulling/i);
+  assert.equal(dirtyPi.calls.some((call) => call.args[0] === "pull"), false);
+
+  const noUpstreamPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { code: 1, stderr: "no upstream\n" },
+  });
+
+  await assert.rejects(() => pullCurrentBranch(noUpstreamPi, ctx), /no upstream is configured/i);
+  assert.equal(noUpstreamPi.calls.some((call) => call.args[0] === "pull"), false);
+});
+
+test("pullCurrentBranch redacts credential-bearing git output in returned details", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main...origin/main\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+    ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+    ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: {
+      stdout: "pulled from https://user:ghp_pullsecret123@github.com/senad-d/branchme.git\n",
+    },
+  });
+
+  const details = await pullCurrentBranch(pi, ctx);
+
+  assert.doesNotMatch(details.output, /pullsecret|user:ghp_/u);
+  assert.match(details.output, /\[REDACTED\]/u);
 });
 
 test("pushCurrentBranch redacts credential-bearing git output in returned details", async () => {

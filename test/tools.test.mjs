@@ -11,6 +11,7 @@ import {
   CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
   GIT_CONTEXT_SUMMARY_LIMIT_CHARS,
+  PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
 } from "../src/constants.ts";
@@ -116,7 +117,7 @@ function recentLogRecord(hash, shortHash, date, subject) {
   return `\0${hash}\u001f${shortHash}\u001f${date}\u001f${subject}\n`;
 }
 
-test("branchMeExtension registers exactly the BranchMe command and five prompt-ready tools", () => {
+test("branchMeExtension registers exactly the BranchMe command and six prompt-ready tools", () => {
   const pi = makePi();
   branchMeExtension(pi);
 
@@ -124,7 +125,7 @@ test("branchMeExtension registers exactly the BranchMe command and five prompt-r
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(pi.tools.length, 5);
+  assert.equal(pi.tools.length, 6);
   assert.deepEqual(
     pi.tools.map((tool) => tool.name).sort(),
     [...BRANCHME_TOOL_NAMES].sort(),
@@ -419,6 +420,40 @@ test("change_branch rejects missing local branches", async () => {
   assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
 });
 
+test("pull_branch has a strict empty schema and fast-forwards the clean current branch", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main...origin/main [behind 1]\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+    ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+    ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: { stdout: "Fast-forward\n" },
+  });
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, PULL_BRANCH_TOOL_NAME);
+
+  assert.deepEqual(tool.parameters.properties, {});
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.ok(tool.description.includes(PULL_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptSnippet.includes(PULL_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(PULL_BRANCH_TOOL_NAME)));
+
+  const output = await tool.execute("call-pull", {}, undefined, undefined, ctx);
+
+  assert.deepEqual(output.details, {
+    repoRoot: "/repo",
+    currentBranch: "main",
+    upstream: "origin/main",
+    remote: "origin",
+    remoteRef: "refs/heads/main",
+    output: "Fast-forward",
+  });
+  assert.equal(output.content[0].text, "Pulled current branch main with fast-forward-only semantics.");
+  assert.deepEqual(pi.calls.at(-1).args, ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"]);
+  assert.equal(pi.calls.some((call) => ["rebase", "stash", "add", "commit", "push"].includes(call.args[0])), false);
+});
+
 test("push_branch pushes current branch with and without upstream", async () => {
   const upstreamPi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
@@ -488,6 +523,19 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
       },
     },
     {
+      name: PULL_BRANCH_TOOL_NAME,
+      params: {},
+      routes: {
+        ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+        ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+        ["status\0--porcelain=v1\0--branch"]: { stdout: "## main...origin/main\n" },
+        ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+        ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+        ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+        ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: { stdout: "Already up to date.\n" },
+      },
+    },
+    {
       name: PUSH_BRANCH_TOOL_NAME,
       params: {},
       routes: {
@@ -546,7 +594,7 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
   );
 });
 
-test("public BranchMe tools fail on killed status, switch, and push operations", async () => {
+test("public BranchMe tools fail on killed status, switch, pull, and push operations", async () => {
   const statusPi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["check-ref-format\0--branch\0feature/timeout"]: { stdout: "feature/timeout\n" },
@@ -577,6 +625,20 @@ test("public BranchMe tools fail on killed status, switch, and push operations",
     () => switchTool.execute("call-create-timeout", { branchName: "feature/timeout" }, undefined, undefined, ctx),
     /git switch -c feature\/timeout failed \(killed\).*timed out/i,
   );
+
+  const pullPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+    ["status\0--porcelain=v1\0--branch"]: { stdout: "## main...origin/main [behind 1]\n" },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { stdout: "origin/main\n" },
+    ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
+    ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
+    ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: { code: 0, killed: true, stderr: "operation timed out\n" },
+  });
+  registerBranchMeTools(pullPi);
+  const pullTool = toolByName(pullPi, PULL_BRANCH_TOOL_NAME);
+
+  await assert.rejects(() => pullTool.execute("call-pull-timeout", {}, undefined, undefined, ctx), /git pull .*failed \(killed\).*timed out/i);
 
   const pushPi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },

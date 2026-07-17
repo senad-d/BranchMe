@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
   getBranchStatus,
   getRecentCommits,
   getWorkingTreeStatus,
+  pullCurrentBranch,
   pushCurrentBranch,
 } from "../src/git.ts";
 
@@ -179,6 +180,61 @@ test("real git createLocalBranch creates and checks out a branch from HEAD", asy
     assert.deepEqual(details, { repoRoot, previousBranch: "main", newBranch: "feature/integration" });
     assert.equal(await currentBranch(repoRoot), "feature/integration");
     assert.deepEqual(pi.calls.filter((call) => call.args[0] === "switch").map((call) => call.args), [["switch", "-c", "feature/integration"]]);
+  });
+});
+
+test("real git pullCurrentBranch fast-forwards main and refuses divergent history", async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    const rawRemoteRoot = await mkdtemp(join(tmpdir(), "branchme-real-remote-"));
+    const remoteRoot = await realpath(rawRemoteRoot);
+    const rawUpdaterRoot = await mkdtemp(join(tmpdir(), "branchme-real-updater-"));
+    const updaterRoot = await realpath(rawUpdaterRoot);
+    const updaterCheckout = join(updaterRoot, "checkout");
+
+    try {
+      await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
+      await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      await runGit(repoRoot, ["push", "--set-upstream", "origin", "main"]);
+      await runGit(updaterRoot, ["clone", remoteRoot, updaterCheckout]);
+      await runGit(updaterCheckout, ["config", "user.email", "branchme-test@example.invalid"]);
+      await runGit(updaterCheckout, ["config", "user.name", "BranchMe Test"]);
+      await writeFile(join(updaterCheckout, "README.md"), "# Updated base branch\n", "utf8");
+      await runGit(updaterCheckout, ["add", "README.md"]);
+      await runGit(updaterCheckout, ["commit", "-m", "update base branch"]);
+      await runGit(updaterCheckout, ["push", "origin", "main"]);
+
+      const pi = makeRealGitPi(repoRoot);
+      const details = await pullCurrentBranch(pi, { cwd: repoRoot });
+
+      assert.equal(details.currentBranch, "main");
+      assert.equal(details.upstream, "origin/main");
+      assert.equal(details.remote, "origin");
+      assert.equal(details.remoteRef, "refs/heads/main");
+      assert.equal(await readFile(join(repoRoot, "README.md"), "utf8"), "# Updated base branch\n");
+      assert.deepEqual(pi.calls.filter((call) => call.args[0] === "pull").map((call) => call.args), [
+        ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"],
+      ]);
+
+      await writeFile(join(repoRoot, "local-only.txt"), "local\n", "utf8");
+      await runGit(repoRoot, ["add", "local-only.txt"]);
+      await runGit(repoRoot, ["commit", "-m", "local divergence"]);
+      await writeFile(join(updaterCheckout, "remote-only.txt"), "remote\n", "utf8");
+      await runGit(updaterCheckout, ["add", "remote-only.txt"]);
+      await runGit(updaterCheckout, ["commit", "-m", "remote divergence"]);
+      await runGit(updaterCheckout, ["push", "origin", "main"]);
+      const localCommitBeforePull = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+      const divergentPi = makeRealGitPi(repoRoot);
+
+      await assert.rejects(() => pullCurrentBranch(divergentPi, { cwd: repoRoot }), /fast-forward|divergent/i);
+
+      assert.equal((await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim(), localCommitBeforePull);
+      assert.deepEqual(divergentPi.calls.filter((call) => call.args[0] === "pull").map((call) => call.args), [
+        ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"],
+      ]);
+    } finally {
+      await rm(remoteRoot, { recursive: true, force: true });
+      await rm(updaterRoot, { recursive: true, force: true });
+    }
   });
 });
 

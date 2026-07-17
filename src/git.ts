@@ -4,6 +4,7 @@ import {
   GIT_CONTEXT_RECENT_COMMIT_LIMIT,
   GIT_CONTEXT_VALUE_LIMIT_CHARS,
   GIT_MUTATION_TIMEOUT_MS,
+  GIT_PULL_TIMEOUT_MS,
   GIT_PUSH_TIMEOUT_MS,
   GIT_STATUS_TIMEOUT_MS,
   MAX_SUMMARY_OUTPUT_CHARS,
@@ -18,6 +19,7 @@ import type {
   GitExecResult,
   GitFileChange,
   GitFileChangeSummary,
+  PullBranchDetails,
   PushBranchDetails,
   RecentCommit,
   WorkingTreeDetails,
@@ -182,6 +184,12 @@ export async function getUpstreamBranch(
   return upstream || null;
 }
 
+interface ConfiguredUpstreamTarget {
+  upstream: string;
+  remote: string;
+  remoteRef: string;
+}
+
 interface PushTarget {
   upstream: string | null;
   mode: "push" | "publish";
@@ -191,21 +199,23 @@ interface PushTarget {
   args: string[];
 }
 
-function validateRemoteName(remote: string): void {
-  if (!remote) throw new Error("Unable to push current branch: upstream remote is missing.");
-  if (remote === ".") throw new Error("Unable to push current branch: upstream is a local branch, not a remote.");
-  if (remote.startsWith("-")) throw new Error("Unable to push current branch: upstream remote cannot start with '-'.");
+type UpstreamOperation = "pull" | "push";
+
+function validateRemoteName(remote: string, operation: UpstreamOperation): void {
+  if (!remote) throw new Error(`Unable to ${operation} current branch: upstream remote is missing.`);
+  if (remote === ".") throw new Error(`Unable to ${operation} current branch: upstream is a local branch, not a remote.`);
+  if (remote.startsWith("-")) throw new Error(`Unable to ${operation} current branch: upstream remote cannot start with '-'.`);
   if (remote.includes(":") || remote.includes("@")) {
-    throw new Error("Unable to push current branch: upstream remote name cannot be a URL or user-prefixed target.");
+    throw new Error(`Unable to ${operation} current branch: upstream remote name cannot be a URL or user-prefixed target.`);
   }
   if (/[\u0000-\u001f\u007f]/u.test(remote) || /\s/u.test(remote)) {
-    throw new Error("Unable to push current branch: upstream remote contains whitespace or control characters.");
+    throw new Error(`Unable to ${operation} current branch: upstream remote contains whitespace or control characters.`);
   }
 }
 
-function normalizeRemoteHeadRef(mergeRef: string): string {
+function normalizeRemoteHeadRef(mergeRef: string, operation: UpstreamOperation): string {
   if (!mergeRef.startsWith("refs/heads/")) {
-    throw new Error("Unable to push current branch: upstream merge ref is not a branch ref.");
+    throw new Error(`Unable to ${operation} current branch: upstream merge ref is not a branch ref.`);
   }
 
   const branchName = mergeRef.slice("refs/heads/".length);
@@ -231,15 +241,39 @@ async function getBranchConfigValue(
   return value || null;
 }
 
+async function resolveConfiguredUpstreamTarget(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  currentBranch: string,
+  operation: UpstreamOperation,
+  signal?: AbortSignal,
+): Promise<ConfiguredUpstreamTarget | null> {
+  validateBranchNameInput(currentBranch);
+  const upstream = await getUpstreamBranch(pi, ctx, signal);
+  if (!upstream) return null;
+
+  const remote = await getBranchConfigValue(pi, ctx, currentBranch, "remote", signal);
+  const mergeRef = await getBranchConfigValue(pi, ctx, currentBranch, "merge", signal);
+  if (!remote || !mergeRef) {
+    throw new Error(`Unable to ${operation} current branch: upstream exists but branch remote/merge configuration is incomplete.`);
+  }
+
+  validateRemoteName(remote, operation);
+  return {
+    upstream,
+    remote,
+    remoteRef: normalizeRemoteHeadRef(mergeRef, operation),
+  };
+}
+
 async function resolvePushTarget(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   currentBranch: string,
   signal?: AbortSignal,
 ): Promise<PushTarget> {
-  validateBranchNameInput(currentBranch);
-  const upstream = await getUpstreamBranch(pi, ctx, signal);
-  if (!upstream) {
+  const upstreamTarget = await resolveConfiguredUpstreamTarget(pi, ctx, currentBranch, "push", signal);
+  if (!upstreamTarget) {
     const remoteRef = `refs/heads/${currentBranch}`;
     return {
       upstream: null,
@@ -251,22 +285,12 @@ async function resolvePushTarget(
     };
   }
 
-  const remote = await getBranchConfigValue(pi, ctx, currentBranch, "remote", signal);
-  const mergeRef = await getBranchConfigValue(pi, ctx, currentBranch, "merge", signal);
-  if (!remote || !mergeRef) {
-    throw new Error("Unable to push current branch: upstream exists but branch remote/merge configuration is incomplete.");
-  }
-
-  validateRemoteName(remote);
-  const remoteRef = normalizeRemoteHeadRef(mergeRef);
-  const refspec = `HEAD:${remoteRef}`;
+  const refspec = `HEAD:${upstreamTarget.remoteRef}`;
   return {
-    upstream,
+    ...upstreamTarget,
     mode: "push",
-    remote,
-    remoteRef,
     refspec,
-    args: ["push", remote, refspec],
+    args: ["push", upstreamTarget.remote, refspec],
   };
 }
 
@@ -672,6 +696,41 @@ export async function changeExistingLocalBranch(
       previousDetached: previous.detached,
       currentBranch: safeDetail(current.currentBranch),
       hasChangesBeforeSwitch: false,
+    };
+  });
+}
+
+export async function pullCurrentBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<PullBranchDetails> {
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  const rootCtx = { cwd: repoRoot };
+
+  return withRepositoryMutationQueue(repoRoot, async () => {
+    const currentBranch = await requireCurrentBranch(pi, rootCtx, signal);
+    if (await hasWorkingTreeChanges(pi, rootCtx, signal)) {
+      throw new Error("Working tree has uncommitted changes; clean it before pulling the current branch.");
+    }
+
+    const target = await resolveConfiguredUpstreamTarget(pi, rootCtx, currentBranch, "pull", signal);
+    if (!target) {
+      throw new Error(`Unable to pull current branch '${safeDetail(currentBranch)}': no upstream is configured.`);
+    }
+
+    const result = await runGit(pi, rootCtx, ["pull", "--ff-only", "--no-rebase", "--no-autostash", target.remote, target.remoteRef], {
+      signal,
+      timeout: GIT_PULL_TIMEOUT_MS,
+    });
+
+    return {
+      repoRoot,
+      currentBranch: safeDetail(currentBranch),
+      upstream: safeDetail(target.upstream),
+      remote: safeDetail(target.remote),
+      remoteRef: safeDetail(target.remoteRef),
+      output: safeOutput(result.stdout || result.stderr),
     };
   });
 }

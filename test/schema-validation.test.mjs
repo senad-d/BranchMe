@@ -6,6 +6,7 @@ import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
+  PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
 } from "../src/constants.ts";
@@ -73,6 +74,7 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
   assertValid(tools.get(BRANCH_STATUS_TOOL_NAME), {});
   assertValid(tools.get(CREATE_BRANCH_TOOL_NAME), { branchName: "feature/runtime-schema" });
   assertValid(tools.get(CHANGE_BRANCH_TOOL_NAME), { branchName: "feature/runtime-schema" });
+  assertValid(tools.get(PULL_BRANCH_TOOL_NAME), {});
   assertValid(tools.get(PUSH_BRANCH_TOOL_NAME), {});
   assertValid(tools.get(PULL_REQUEST_TOOL_NAME), {
     headBranch: "feature/runtime-schema",
@@ -88,7 +90,8 @@ test("runtime schema validation rejects extra arguments for no-parameter tools",
 
   assertInvalid(tools.get(BRANCH_STATUS_TOOL_NAME), { branchName: "main" });
   assertInvalid(tools.get(BRANCH_STATUS_TOOL_NAME), null);
-  for (const forbidden of ["branchName", "force", "remote", "owner", "repo", "path"]) {
+  for (const forbidden of ["branchName", "force", "remote", "owner", "repo", "path", "rebase"]) {
+    assertInvalid(tools.get(PULL_BRANCH_TOOL_NAME), { [forbidden]: "forbidden" });
     assertInvalid(tools.get(PUSH_BRANCH_TOOL_NAME), { [forbidden]: "forbidden" });
   }
 });

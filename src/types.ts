@@ -87,6 +87,15 @@ export interface ChangeBranchDetails {
   hasChangesBeforeSwitch: false;
 }
 
+export interface PullBranchDetails {
+  repoRoot: string;
+  currentBranch: string;
+  upstream: string;
+  remote: string;
+  remoteRef: string;
+  output: string;
+}
+
 export interface PushBranchDetails {
   repoRoot: string;
   currentBranch: string;

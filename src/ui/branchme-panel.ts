@@ -177,7 +177,7 @@ function sectionFooter(section: BranchMePanelSection, data: BranchMePanelData): 
     case "status":
       return "status • current repository only • tools perform actions";
     case "workflow":
-      return "workflow • inspect → change/create → push → PR";
+      return "workflow • inspect → change → pull → create → push → PR";
   }
 }
 
@@ -197,6 +197,7 @@ function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): Pa
         heading("WORKFLOW"),
         workflowDetailRow("branch_status", "inspect"),
         workflowDetailRow("change_branch", "existing local"),
+        workflowDetailRow("pull_branch", "fast-forward"),
         workflowDetailRow("create_branch", "from HEAD"),
         workflowDetailRow("push_branch", "current branch"),
         workflowDetailRow("pull_request", "after push"),

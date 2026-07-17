@@ -86,7 +86,7 @@ function verifierSource() {
 import { join } from "node:path";
 import { createAssistantMessageEventStream } from ${JSON.stringify(piAiModuleUrl)};
 
-const expectedTools = ["branch_status", "change_branch", "create_branch", "pull_request", "push_branch"];
+const expectedTools = ["branch_status", "change_branch", "create_branch", "pull_branch", "pull_request", "push_branch"];
 let fetchCalls = 0;
 let refreshMutationCreated = false;
 let toolCalls = 0;
