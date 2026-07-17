@@ -39,7 +39,8 @@ test("approved docs and specs exist", async () => {
     "specs/spec-guidelines.md",
     "specs/spec-tasks.md",
   ]) {
-    await access(new URL(`../${path}`, import.meta.url));
+    const contents = await readProjectFile(path);
+    assert.ok(contents.length > 0, `${path} should not be empty`);
   }
 });
 
