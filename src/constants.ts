@@ -9,6 +9,7 @@ export const PULL_BRANCH_TOOL_NAME = "pull_branch";
 export const REBASE_BRANCH_TOOL_NAME = "rebase_branch";
 export const PUSH_BRANCH_TOOL_NAME = "push_branch";
 export const PULL_REQUEST_TOOL_NAME = "pull_request";
+export const PULL_REQUEST_AUTOFILL_ENV_NAME = "BRANCHME_PR_AUTOFILL";
 
 export const BRANCHME_TOOL_NAMES = [
   BRANCH_STATUS_TOOL_NAME,
@@ -33,6 +34,8 @@ export const GIT_CONTEXT_RECENT_COMMIT_LIMIT = 5;
 export const GIT_CONTEXT_CHANGE_LIMIT = 20;
 export const GIT_CONTEXT_VALUE_LIMIT_CHARS = 512;
 export const GIT_CONTEXT_SUMMARY_LIMIT_CHARS = 4_000;
+export const PULL_REQUEST_AUTOFILL_COMMIT_LIMIT = 20;
+export const PULL_REQUEST_AUTOFILL_SUBJECT_LIMIT_CHARS = 256;
 
 export const GITHUB_API_BASE_URL = "https://api.github.com";
 export const GITHUB_API_VERSION = "2022-11-28";

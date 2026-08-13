@@ -1,6 +1,6 @@
 {
   "name": "@senad-d/branchme",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "description": "Minimal Pi extension for current-repository git branch, push, and pull request workflows.",
   "license": "MIT",

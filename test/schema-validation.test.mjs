@@ -64,12 +64,6 @@ function assertInvalid(tool, args) {
   assert.throws(() => validateLikePiRuntime(tool, args));
 }
 
-function withoutField(value, field) {
-  const clone = { ...value };
-  delete clone[field];
-  return clone;
-}
-
 test("BranchMe tool schemas accept valid runtime inputs without executing tools", () => {
   const tools = registeredTools();
 
@@ -126,7 +120,7 @@ test("runtime schema validation rejects invalid change_branch arguments and forb
   }
 });
 
-test("runtime schema validation rejects invalid pull_request arguments and forbidden repository fields", () => {
+test("runtime schema validation accepts omitted pull_request fields and rejects invalid or forbidden fields", () => {
   const tool = registeredTools().get(PULL_REQUEST_TOOL_NAME);
   const valid = {
     headBranch: "feature/runtime-schema",
@@ -136,10 +130,8 @@ test("runtime schema validation rejects invalid pull_request arguments and forbi
     draft: false,
   };
 
-  for (const required of ["headBranch", "baseBranch", "title", "body", "draft"]) {
-    assertInvalid(tool, withoutField(valid, required));
-  }
-
+  assertValid(tool, {});
+  assertValid(tool, { title: "Generated branches and body", draft: true });
   assertInvalid(tool, { ...valid, headBranch: "" });
   assertInvalid(tool, { ...valid, baseBranch: "" });
   assertInvalid(tool, { ...valid, title: "" });

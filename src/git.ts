@@ -10,6 +10,8 @@ import {
   GIT_REBASE_TIMEOUT_MS,
   GIT_STATUS_TIMEOUT_MS,
   MAX_SUMMARY_OUTPUT_CHARS,
+  PULL_REQUEST_AUTOFILL_COMMIT_LIMIT,
+  PULL_REQUEST_AUTOFILL_SUBJECT_LIMIT_CHARS,
 } from "./constants.ts";
 import { redactSecrets } from "./redaction.ts";
 import type {
@@ -37,6 +39,7 @@ export interface GitRunOptions {
   signal?: AbortSignal;
   timeout?: number;
   allowFailure?: boolean;
+  tokens?: readonly string[];
 }
 
 const repositoryMutationQueues = new Map<string, Promise<void>>();
@@ -114,11 +117,11 @@ export async function runGit(
   });
 
   if (result.killed) {
-    throw new Error(formatGitFailure(args, result));
+    throw new Error(formatGitFailure(args, result, options.tokens));
   }
 
   if (!options.allowFailure && result.code !== 0) {
-    throw new Error(formatGitFailure(args, result));
+    throw new Error(formatGitFailure(args, result, options.tokens));
   }
 
   return result;
@@ -566,6 +569,98 @@ export async function getRecentCommits(
   });
   if (verifyHead.code !== 0) return [];
   throw new Error(formatGitFailure(args, result));
+}
+
+function truncatePullRequestCommitSubject(value: string): string {
+  if (value.length <= PULL_REQUEST_AUTOFILL_SUBJECT_LIMIT_CHARS) return value;
+
+  let end = PULL_REQUEST_AUTOFILL_SUBJECT_LIMIT_CHARS - 1;
+  const lastCodePoint = value.codePointAt(end - 1);
+  if (lastCodePoint !== undefined && lastCodePoint > 0xffff) end -= 1;
+  return `${value.slice(0, end).trimEnd()}…`;
+}
+
+function safePullRequestCommitSubject(value: string, tokens: readonly string[]): string {
+  const normalized = redactSecrets(value, tokens)
+    .replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return truncatePullRequestCommitSubject(normalized);
+}
+
+async function getOriginDefaultBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const args = ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"];
+  const result = await runGit(pi, ctx, args, {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  if (result.code !== 0) return null;
+
+  const remoteBranch = trimOutput(result.stdout);
+  const prefix = "origin/";
+  if (!remoteBranch.startsWith(prefix)) return null;
+
+  const branch = remoteBranch.slice(prefix.length);
+  try {
+    validateBranchNameInput(branch, "Default base branch");
+  } catch {
+    return null;
+  }
+  return branch;
+}
+
+export async function inferPullRequestBaseBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  headBranch: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  validateBranchNameInput(headBranch, "headBranch");
+  const originDefault = await getOriginDefaultBranch(pi, ctx, signal);
+  if (originDefault) {
+    if (originDefault === headBranch) {
+      throw new Error("Unable to infer baseBranch because the current branch is the origin default branch.");
+    }
+    if (await localBranchExists(pi, ctx, originDefault, signal)) return originDefault;
+  }
+
+  for (const candidate of ["main", "master", "trunk", "develop"]) {
+    if (candidate !== headBranch && await localBranchExists(pi, ctx, candidate, signal)) return candidate;
+  }
+
+  throw new Error(
+    "Unable to infer baseBranch from origin/HEAD or a local main, master, trunk, or develop branch; provide baseBranch explicitly.",
+  );
+}
+
+export async function getPullRequestCommitSubjects(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  headBranch: string,
+  baseBranch: string,
+  signal?: AbortSignal,
+  tokens: readonly string[] = [],
+): Promise<string[]> {
+  validateBranchNameInput(headBranch, "headBranch");
+  validateBranchNameInput(baseBranch, "baseBranch");
+  const revisionRange = `refs/heads/${baseBranch}..refs/heads/${headBranch}`;
+  const args = [
+    "log",
+    `--max-count=${PULL_REQUEST_AUTOFILL_COMMIT_LIMIT}`,
+    "--format=%s",
+    revisionRange,
+    "--",
+  ];
+  const result = await runGit(pi, ctx, args, { signal, timeout: GIT_STATUS_TIMEOUT_MS, tokens });
+  return result.stdout
+    .split(/\r?\n/u)
+    .map((subject) => safePullRequestCommitSubject(subject, tokens))
+    .filter(Boolean);
 }
 
 export async function getAheadBehindCount(

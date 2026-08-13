@@ -26,7 +26,7 @@ Approved on 2026-06-30.
   - Push the current branch to its configured upstream, or publish it to `origin` when no upstream exists.
   - Create a PR in the current GitHub repo via REST API.
 - Non-goals:
-  - No commit, staging, diff, or message generation behavior.
+  - No commit, staging, or diff generation behavior. Optional PR title/body autofill may summarize bounded commit subjects.
   - No GitHub CLI dependency.
   - No cross-repository PR creation.
   - No labels, reviewers, projects, or issue linking in v1.
@@ -41,7 +41,7 @@ Approved on 2026-06-30.
 | Tool | `change_branch` | Switch to an existing local branch | Required `branchName`; rejects dirty worktrees |
 | Tool | `create_branch` | Create + checkout new branch from current `HEAD` | Required `branchName`; fail if exists/invalid |
 | Tool | `push_branch` | Push current branch with explicit upstream target; publish with upstream if needed | No commits/staging |
-| Tool | `pull_request` | Preflight branch visibility/commit state and create PR via GitHub REST API | Required `headBranch`, `baseBranch`, `title`, `body`, `draft`; repo inferred from current checkout |
+| Tool | `pull_request` | Preflight branch visibility/commit state and create PR via GitHub REST API | PR fields are explicit by default and may be omitted only with configured autofill; repo inferred from current checkout |
 | Event | `session_start/session_shutdown` | Optional status footer cleanup | No long-lived resources |
 | UI | TUI panel | Compact BranchMe workflow/config view | No persisted config assumed |
 | Resource | none | No skills/prompts/themes planned | Keep package minimal |
@@ -68,7 +68,7 @@ Approved on 2026-06-30.
 
 ## 6. Config, state, and persistence
 
-- Config source: no BranchMe config file; `/branchme` displays runtime status and workflow notes. GitHub tokens may come from process environment or a small regular `.env` fallback in the verified git root.
+- Config source: no separate BranchMe config file; `/branchme` displays runtime status and workflow notes. GitHub tokens and `BRANCHME_PR_AUTOFILL` may come from process environment or a small regular `.env` fallback in the verified git root.
 - Session state: none; tool results include useful `details`.
 - Files written: none by extension code, except normal git metadata changes from branch checkout/push.
 - Cleanup behavior: clear any footer/status key on `session_shutdown` if used.
@@ -111,4 +111,4 @@ Approved on 2026-06-30.
 - Decisions:
   - No commit functionality.
   - Tools perform all actions; slash commands are help/config only.
-  - PR tool requires all PR fields explicitly.
+  - PR tool requires all PR fields explicitly unless `BRANCHME_PR_AUTOFILL=true`; explicit values always take precedence.

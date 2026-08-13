@@ -22,7 +22,7 @@ const expectedBranchMeTools = [
   { name: "pull_branch", properties: [], required: [] },
   { name: "rebase_branch", properties: [], required: [] },
   { name: "push_branch", properties: [], required: [] },
-  { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title"], required: ["headBranch", "baseBranch", "title", "body", "draft"] },
+  { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title"], required: [] },
 ];
 
 function isTruthy(value) {

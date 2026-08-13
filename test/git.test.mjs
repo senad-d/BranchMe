@@ -7,10 +7,12 @@ import {
   formatGitFailure,
   getBranchStatus,
   getGitRoot,
+  getPullRequestCommitSubjects,
   getRecentCommits,
   getWorkingTreeStatus,
   parseRecentCommits,
   parseWorkingTreeStatus,
+  inferPullRequestBaseBranch,
   pullCurrentBranch,
   pushCurrentBranch,
   rebaseCurrentBranch,
@@ -301,6 +303,56 @@ test("getRecentCommits preserves real git log failures when HEAD exists", async 
     () => getRecentCommits(pi, ctx),
     (error) => error instanceof Error && /git log .* failed/u.test(error.message) && !/logsecret/u.test(error.message),
   );
+});
+
+test("inferPullRequestBaseBranch prefers a local origin HEAD and falls back to common local branches", async () => {
+  const originPi = makePi({
+    ["symbolic-ref\0--quiet\0--short\0refs/remotes/origin/HEAD"]: { stdout: "origin/trunk\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/trunk"]: { code: 0 },
+  });
+  assert.equal(await inferPullRequestBaseBranch(originPi, ctx, "feature/autofill"), "trunk");
+
+  const fallbackPi = makePi({
+    ["symbolic-ref\0--quiet\0--short\0refs/remotes/origin/HEAD"]: { stdout: "origin/stale-default\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/stale-default"]: { code: 1 },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+  });
+  assert.equal(await inferPullRequestBaseBranch(fallbackPi, ctx, "feature/autofill"), "main");
+
+  const defaultPi = makePi({
+    ["symbolic-ref\0--quiet\0--short\0refs/remotes/origin/HEAD"]: { stdout: "origin/main\n" },
+  });
+  await assert.rejects(
+    () => inferPullRequestBaseBranch(defaultPi, ctx, "main"),
+    /current branch is the origin default branch/i,
+  );
+});
+
+test("getPullRequestCommitSubjects returns bounded redacted single-line subjects", async () => {
+  const opaqueToken = "opaque-secret-value";
+  const longSubject = `${"a".repeat(254)}😀trailing`;
+  const pi = makePi({
+    ["log\0--max-count=20\0--format=%s\0refs/heads/main..refs/heads/feature/autofill\0--"]: {
+      stdout: `Add autofill\n${opaqueToken}\nline with control\u001b and separator\u2028value\n${longSubject}\n`,
+    },
+  });
+
+  const subjects = await getPullRequestCommitSubjects(
+    pi,
+    ctx,
+    "feature/autofill",
+    "main",
+    undefined,
+    [opaqueToken],
+  );
+  assert.deepEqual(subjects.slice(0, 3), [
+    "Add autofill",
+    "[REDACTED]",
+    "line with control and separator value",
+  ]);
+  assert.equal(subjects[3].length <= 256, true);
+  assert.equal(subjects[3].endsWith("…"), true);
+  assert.equal(subjects[3].isWellFormed(), true);
 });
 
 test("validateBranchName uses local checks and git check-ref-format", async () => {

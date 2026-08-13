@@ -45,6 +45,7 @@ function baseDetails(overrides = {}) {
     hasChanges: false,
     ahead: 0,
     behind: 0,
+    pullRequestAutofill: false,
     workingTree: { state: "clean", staged: 0, unstaged: 0, untracked: 0 },
     unstagedChanges: { entries: [], omitted: 0 },
     relatedPullRequest: { status: "none" },
@@ -97,7 +98,7 @@ test("collectGitContext preserves local context when optional counts and PR look
   let fetchCalls = 0;
 
   const details = await collectGitContext(pi, { cwd: "/repo" }, {
-    env: {},
+    env: { BRANCHME_PR_AUTOFILL: "invalid" },
     fetchImpl: async () => {
       fetchCalls += 1;
       throw new Error("must not fetch");
@@ -113,7 +114,11 @@ test("collectGitContext preserves local context when optional counts and PR look
   ]);
   assert.equal(details.ahead, null);
   assert.equal(details.behind, null);
-  assert.deepEqual(details.warnings, ["ahead/behind unavailable (Error)"]);
+  assert.equal(details.pullRequestAutofill, null);
+  assert.deepEqual(details.warnings, [
+    "ahead/behind unavailable (Error)",
+    "pull request autofill configuration unavailable (Error)",
+  ]);
   assert.equal(details.relatedPullRequest.status, "unavailable");
   assert.deepEqual(details.recentCommits, [
     { hash, shortHash: "1234567", date: "2026-07-04", subject: "Add context" },
@@ -134,12 +139,20 @@ test("formatGitContext is deterministic and uses the approved field order for cl
   assert.match(first, /- Working tree: clean; staged 0, unstaged 0, untracked 0/u);
   assert.match(first, /- Unstaged changes: none/u);
   assert.match(first, /- Related PR: none/u);
+  assert.match(first, /- Pull request field autofill: disabled \(BRANCHME_PR_AUTOFILL\)/u);
   assert.match(first, /- Recent commits:\n  - "1234567" \| "2026-07-04" \| "Initial commit"/u);
   assert.match(first, /Call branch_status only when a refresh is requested/u);
 
   const orderedLabels = ["- Branch:", "- Working tree:", "- Unstaged changes:", "- Related PR:", "- Recent commits:"];
   const positions = orderedLabels.map((label) => first.indexOf(label));
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+});
+
+test("formatGitContext reports enabled and unavailable pull request field autofill", () => {
+  const enabled = formatGitContext(baseDetails({ pullRequestAutofill: true }));
+  const unavailable = formatGitContext(baseDetails({ pullRequestAutofill: null }));
+  assert.match(enabled, /- Pull request field autofill: enabled \(BRANCHME_PR_AUTOFILL\)/u);
+  assert.match(unavailable, /- Pull request field autofill: unavailable \(BRANCHME_PR_AUTOFILL\)/u);
 });
 
 test("formatGitContext covers dirty changes and explicit omitted entries", () => {

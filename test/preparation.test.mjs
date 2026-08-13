@@ -26,6 +26,7 @@ test("environment token template is safe and packaged", async () => {
 
   assert.match(envExample, /^GITHUB_TOKEN=$/m);
   assert.match(envExample, /^GH_TOKEN=$/m);
+  assert.match(envExample, /^BRANCHME_PR_AUTOFILL=false$/m);
   assert.doesNotMatch(envExample, /^(?:GITHUB_TOKEN|GH_TOKEN)=.+$/m);
   assert.doesNotMatch(envExample, /ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|Authorization:\s*Bearer/iu);
   assert.ok(packageJson.files.includes(".env.example"));

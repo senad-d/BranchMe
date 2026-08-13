@@ -19,7 +19,7 @@ import {
   getWorkingTreeStatus,
   type GitCommandContext,
 } from "./git.ts";
-import { lookupRelatedPullRequest } from "./github.ts";
+import { lookupRelatedPullRequest, resolvePullRequestAutofill } from "./github.ts";
 import { redactSecrets } from "./redaction.ts";
 import type { GitContextDetails, GitFileChange, RecentCommit, RelatedPullRequest } from "./types.ts";
 
@@ -138,6 +138,7 @@ export async function collectGitContext(
   const recentCommits = await getRecentCommits(pi, rootCtx, options.signal);
   const upstream = current.detached ? null : await getUpstreamBranch(pi, rootCtx, options.signal);
   const warnings: string[] = [];
+  let pullRequestAutofill: boolean | null = null;
   let ahead: number | null = null;
   let behind: number | null = null;
 
@@ -150,6 +151,13 @@ export async function collectGitContext(
       throwIfCollectionAborted(options.signal);
       warnings.push(`ahead/behind unavailable (${safeFailureType(error)})`);
     }
+  }
+
+  try {
+    pullRequestAutofill = await resolvePullRequestAutofill(options.env, { cwd: repoRoot, signal: options.signal });
+  } catch (error) {
+    throwIfCollectionAborted(options.signal);
+    warnings.push(`pull request autofill configuration unavailable (${safeFailureType(error)})`);
   }
 
   const relatedPullRequest = await collectRelatedPullRequest(pi, rootCtx, options);
@@ -166,6 +174,7 @@ export async function collectGitContext(
     ...(relatedPullRequest.status === "found"
       ? { githubRepository: relatedPullRequest.pullRequest.repository }
       : {}),
+    pullRequestAutofill,
     workingTree: workingTreeStatus.workingTree,
     unstagedChanges: workingTreeStatus.unstagedChanges,
     relatedPullRequest,
@@ -223,6 +232,13 @@ function formatRelatedPullRequest(details: GitContextDetails, valueLimit: number
   return `- Related PR: #${safeNonNegativeInteger(pullRequest.number)} ${quoteMetadata(pullRequest.title, valueLimit)}; repository ${quoteMetadata(repository, valueLimit)}; ${quoteMetadata(pullRequest.head, valueLimit)} -> ${quoteMetadata(pullRequest.base, valueLimit)}; ${quoteMetadata(pullRequest.url, valueLimit)}; ${quoteMetadata(pullRequest.state, valueLimit)}${draft}`;
 }
 
+function formatPullRequestAutofill(details: GitContextDetails): string {
+  let state = "unavailable";
+  if (details.pullRequestAutofill === true) state = "enabled";
+  if (details.pullRequestAutofill === false) state = "disabled";
+  return `- Pull request field autofill: ${state} (BRANCHME_PR_AUTOFILL)`;
+}
+
 function appendRecentCommits(lines: string[], selection: FormatSelection): void {
   if (selection.commits.length === 0 && selection.omittedCommits === 0) {
     lines.push("- Recent commits: none");
@@ -257,7 +273,10 @@ function renderGitContext(
     formatWorkingTree(details),
   ];
   appendUnstagedChanges(lines, selection);
-  lines.push(formatRelatedPullRequest(details, selection.valueLimit));
+  lines.push(
+    formatRelatedPullRequest(details, selection.valueLimit),
+    formatPullRequestAutofill(details),
+  );
   appendRecentCommits(lines, selection);
   lines.push(
     "",
@@ -295,6 +314,7 @@ function boundedFallbackContext(mode: GitContextFormatMode): string {
     "- Working tree: unavailable",
     "- Unstaged changes: [entries omitted]",
     "- Related PR: unavailable",
+    "- Pull request field autofill: unavailable",
     "- Recent commits: [entries omitted]",
     "",
     "Call branch_status to request a current bounded snapshot.",

@@ -41,7 +41,7 @@ POST https://api.github.com/repos/{owner}/{repo}/pulls
 
 The first request is an automatic network boundary: it can run before each agent run and whenever `branch_status` explicitly refreshes context. It is a bounded, read-only lookup for one open pull request whose head is the current local branch (`per_page=1`), with a default 4-second timeout and a 64 KiB response-body limit. It is skipped when repository/branch resolution or authentication is unavailable, so BranchMe never makes an unauthenticated fallback request. Timeout, HTTP, network, malformed, and oversized-response failures become a safe unavailable state without exposing response bodies or raw network errors. Git alone is not used or claimed to provide PR metadata.
 
-The branch preflight requests have no body. BranchMe uses the `headBranch` preflight response to compare GitHub's branch commit with the local branch commit before creating the PR. The PR request body contains only the explicit PR fields supplied to the tool: title, head branch, base branch, body, and draft flag. All GitHub response reads are bounded.
+The branch preflight requests have no body. BranchMe uses the resolved `headBranch` preflight response to compare GitHub's branch commit with the local branch commit before creating the PR. The PR request body contains only the resolved title, head branch, base branch, body, and draft flag. By default every field must be supplied explicitly. When `BRANCHME_PR_AUTOFILL=true`, omitted fields may be derived from local branch names and bounded commit subjects before being sent to GitHub. Generated body bullets escape Markdown punctuation so commit subjects remain text rather than active mentions or formatting. All GitHub response reads are bounded.
 
 ## Repository boundary
 
@@ -54,7 +54,7 @@ BranchMe operates on the current repository only.
 - `pull_branch` accepts no parameters, updates only the clean current branch from its configured upstream, and uses fast-forward-only semantics.
 - `rebase_branch` accepts no parameters, rebases only the clean current branch onto its configured upstream, disables autostash and multi-ref updates, never pushes, and attempts to abort on failure.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, PR creation and related-PR lookup fail closed.
-- PR branch inputs are validated as existing local branch-name refs; missing local branches and cross-repository `head` values are rejected before token lookup or any GitHub request.
+- Resolved PR branches are validated as distinct, existing local branch-name refs; identical or missing local branches and cross-repository `head` values are rejected before any GitHub request.
 - PR branch inputs must also be visible on GitHub before the PR is created, and `headBranch` must match the local branch commit; unpublished or stale `headBranch` values fail with guidance to run `push_branch`, wait for it to complete, and retry `pull_request`.
 
 ## Credentials
@@ -66,7 +66,7 @@ Git fetch, pull, and push authentication is handled by the user's configured Git
 - `GITHUB_TOKEN` (preferred)
 - `GH_TOKEN` (fallback)
 
-Only these two token keys are read from `.env`; other `.env` keys are ignored. The fallback uses async file I/O, requires `.env` to be a small regular file, and rejects directories, symlinks, special files, and oversized files. BranchMe does not read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from thrown errors, automatic context, tool content, and tool details.
+BranchMe also reads the non-secret `BRANCHME_PR_AUTOFILL` setting from the process environment or verified-root `.env`; all other `.env` keys are ignored. The `.env` reader uses async file I/O, requires a small regular file, and rejects directories, symlinks, special files, and oversized files. BranchMe does not read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from thrown errors, automatic context, generated PR text, tool content, and tool details.
 
 ## System prompt boundary
 
@@ -76,7 +76,7 @@ The automatic snapshot can become stale after a Git or filesystem mutation durin
 
 ## Telemetry
 
-BranchMe does not collect telemetry. Related-PR lookup sends only the resolved repository owner/name and current branch in the authenticated GitHub API URL. PR creation sends only the explicit GitHub pull request fields described above; BranchMe does not send diff contents, filenames, commit subjects, or local file contents to GitHub during context collection.
+BranchMe does not collect telemetry. Related-PR lookup sends only the resolved repository owner/name and current branch in the authenticated GitHub API URL. PR creation sends only the resolved GitHub pull request fields described above. When autofill supplies title or body, those fields can contain bounded, redacted local commit subjects. BranchMe does not send diff contents, filenames, or local file contents to GitHub during context collection.
 
 ## Reporting vulnerabilities
 

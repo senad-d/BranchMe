@@ -10,6 +10,7 @@ import {
   GITHUB_USER_AGENT,
   GIT_CONTEXT_VALUE_LIMIT_CHARS,
   MAX_SUMMARY_OUTPUT_CHARS,
+  PULL_REQUEST_AUTOFILL_ENV_NAME,
 } from "./constants.ts";
 import {
   getCurrentBranch,
@@ -27,6 +28,9 @@ import type {
 } from "./types.ts";
 
 type TokenEnvironmentKey = "GITHUB_TOKEN" | "GH_TOKEN";
+type PullRequestAutofillEnvironmentKey = typeof PULL_REQUEST_AUTOFILL_ENV_NAME;
+type SupportedDotEnvKey = TokenEnvironmentKey | PullRequestAutofillEnvironmentKey;
+type DotEnvReadPurpose = "GitHub token fallback" | "pull request autofill configuration";
 
 export type TokenResolutionSource = TokenEnvironmentKey | `${TokenEnvironmentKey} (.env)`;
 
@@ -149,8 +153,8 @@ function resolveProcessToken(env: NodeJS.ProcessEnv): TokenResolution | null {
   return null;
 }
 
-function isTokenEnvironmentKey(value: string): value is TokenEnvironmentKey {
-  return value === "GITHUB_TOKEN" || value === "GH_TOKEN";
+function isSupportedDotEnvKey(value: string): value is SupportedDotEnvKey {
+  return value === "GITHUB_TOKEN" || value === "GH_TOKEN" || value === PULL_REQUEST_AUTOFILL_ENV_NAME;
 }
 
 function decodeDoubleQuotedDotEnvValue(value: string): string {
@@ -182,23 +186,46 @@ function stripDotEnvInlineComment(value: string): string {
   return value;
 }
 
+function closingDotEnvQuoteIndex(value: string, quote: "\"" | "'"): number {
+  let escaped = false;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value.charAt(index);
+    if (quote === "\"" && character === "\\" && !escaped) {
+      escaped = true;
+      continue;
+    }
+    if (character === quote && !escaped) return index;
+    escaped = false;
+  }
+  return -1;
+}
+
+function parseQuotedDotEnvValue(value: string): string | null {
+  const quote = value.charAt(0);
+  if (quote !== "\"" && quote !== "'") return null;
+
+  const closingIndex = closingDotEnvQuoteIndex(value, quote);
+  if (closingIndex === -1) return null;
+
+  const remainder = value.slice(closingIndex + 1).trim();
+  if (remainder && !remainder.startsWith("#")) return null;
+
+  const quotedValue = value.slice(1, closingIndex);
+  return quote === "\"" ? decodeDoubleQuotedDotEnvValue(quotedValue).trim() : quotedValue.trim();
+}
+
 function parseDotEnvValue(rawValue: string): string {
   const value = rawValue.trim();
   if (!value) return "";
 
-  if (value.startsWith("\"") && value.endsWith("\"")) {
-    return decodeDoubleQuotedDotEnvValue(value.slice(1, -1)).trim();
-  }
-
-  if (value.startsWith("'") && value.endsWith("'")) {
-    return value.slice(1, -1).trim();
-  }
+  const quotedValue = parseQuotedDotEnvValue(value);
+  if (quotedValue !== null) return quotedValue;
 
   return stripDotEnvInlineComment(value).trim();
 }
 
-function parseDotEnvTokens(contents: string): Partial<Record<TokenEnvironmentKey, string>> {
-  const tokens: Partial<Record<TokenEnvironmentKey, string>> = {};
+function parseDotEnvValues(contents: string): Partial<Record<SupportedDotEnvKey, string>> {
+  const values: Partial<Record<SupportedDotEnvKey, string>> = {};
 
   for (const line of contents.split(/\r?\n/u)) {
     const trimmed = line.trim();
@@ -209,12 +236,12 @@ function parseDotEnvTokens(contents: string): Partial<Record<TokenEnvironmentKey
     if (separatorIndex === -1) continue;
 
     const key = assignment.slice(0, separatorIndex).trim();
-    if (!isTokenEnvironmentKey(key)) continue;
+    if (!isSupportedDotEnvKey(key)) continue;
 
-    tokens[key] = parseDotEnvValue(assignment.slice(separatorIndex + 1).trimStart());
+    values[key] = parseDotEnvValue(assignment.slice(separatorIndex + 1).trimStart());
   }
 
-  return tokens;
+  return values;
 }
 
 const MAX_DOTENV_BYTES = 64 * 1024;
@@ -223,55 +250,77 @@ function isMissingFileError(error: unknown): boolean {
   return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new Error("GitHub token .env fallback was aborted.");
+function throwIfAborted(signal: AbortSignal | undefined, purpose: DotEnvReadPurpose): void {
+  if (signal?.aborted) throw new Error(`${purpose} .env read was aborted.`);
 }
 
 function errorMessage(error: unknown): string {
   return redactSecrets(error instanceof Error ? error.message : String(error));
 }
 
-async function readDotEnvTokens(
+async function readDotEnvValues(
   cwd: string | undefined,
   signal?: AbortSignal,
-): Promise<Partial<Record<TokenEnvironmentKey, string>>> {
+  purpose: DotEnvReadPurpose = "GitHub token fallback",
+): Promise<Partial<Record<SupportedDotEnvKey, string>>> {
   if (!cwd) return {};
 
   const envPath = join(cwd, ".env");
-  throwIfAborted(signal);
+  throwIfAborted(signal, purpose);
 
   let stats: Awaited<ReturnType<typeof lstat>>;
   try {
     stats = await lstat(envPath);
   } catch (error) {
     if (isMissingFileError(error)) return {};
-    throw new Error(`Unable to inspect .env file for GitHub token fallback: ${errorMessage(error)}`);
+    throw new Error(`Unable to inspect .env file for ${purpose}: ${errorMessage(error)}`);
   }
 
   if (!stats.isFile()) {
-    throw new Error("Unable to read .env file for GitHub token fallback: .env must be a small regular file.");
+    throw new Error(`Unable to read .env file for ${purpose}: .env must be a small regular file.`);
   }
   if (stats.size > MAX_DOTENV_BYTES) {
     throw new Error(
-      `Unable to read .env file for GitHub token fallback: .env is too large (${stats.size} bytes; limit ${MAX_DOTENV_BYTES} bytes).`,
+      `Unable to read .env file for ${purpose}: .env is too large (${stats.size} bytes; limit ${MAX_DOTENV_BYTES} bytes).`,
     );
   }
 
-  throwIfAborted(signal);
+  throwIfAborted(signal, purpose);
 
   let contents: string;
   try {
     contents = await readFile(envPath, { encoding: "utf8", signal });
   } catch (error) {
     if (isMissingFileError(error)) return {};
-    throw new Error(`Unable to read .env file for GitHub token fallback: ${errorMessage(error)}`);
+    throw new Error(`Unable to read .env file for ${purpose}: ${errorMessage(error)}`);
   }
 
   if (Buffer.byteLength(contents, "utf8") > MAX_DOTENV_BYTES) {
-    throw new Error(`Unable to read .env file for GitHub token fallback: .env exceeded the ${MAX_DOTENV_BYTES} byte limit.`);
+    throw new Error(`Unable to read .env file for ${purpose}: .env exceeded the ${MAX_DOTENV_BYTES} byte limit.`);
   }
 
-  return parseDotEnvTokens(contents);
+  return parseDotEnvValues(contents);
+}
+
+function parsePullRequestAutofillValue(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(
+    `${PULL_REQUEST_AUTOFILL_ENV_NAME} must be one of true, false, 1, 0, yes, no, on, or off.`,
+  );
+}
+
+export async function resolvePullRequestAutofill(
+  env: NodeJS.ProcessEnv = process.env,
+  options: TokenResolutionOptions = {},
+): Promise<boolean> {
+  const processValue = env[PULL_REQUEST_AUTOFILL_ENV_NAME];
+  if (processValue !== undefined) return parsePullRequestAutofillValue(processValue);
+
+  const dotEnvValues = await readDotEnvValues(options.cwd, options.signal, "pull request autofill configuration");
+  const dotEnvValue = dotEnvValues[PULL_REQUEST_AUTOFILL_ENV_NAME];
+  return dotEnvValue === undefined ? false : parsePullRequestAutofillValue(dotEnvValue);
 }
 
 export async function resolveGitHubToken(
@@ -281,7 +330,7 @@ export async function resolveGitHubToken(
   const processToken = resolveProcessToken(env);
   if (processToken) return processToken;
 
-  const dotEnvTokens = await readDotEnvTokens(options.cwd, options.signal);
+  const dotEnvTokens = await readDotEnvValues(options.cwd, options.signal);
   const githubToken = dotEnvTokens.GITHUB_TOKEN?.trim();
   if (githubToken) return { token: githubToken, source: "GITHUB_TOKEN (.env)" };
 

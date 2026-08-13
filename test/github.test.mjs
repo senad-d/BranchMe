@@ -11,6 +11,7 @@ import {
   redactSecrets,
   resolveGitHubRepository,
   resolveGitHubToken,
+  resolvePullRequestAutofill,
   validatePullRequestBranchRef,
 } from "../src/github.ts";
 
@@ -151,6 +152,29 @@ test("resolveGitHubToken rejects unsafe, oversized, and aborted .env fallback re
     const controller = new AbortController();
     controller.abort();
     await assert.rejects(() => resolveGitHubToken({}, { cwd, signal: controller.signal }), /aborted/i);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resolvePullRequestAutofill defaults off and supports process or local .env configuration", async () => {
+  assert.equal(await resolvePullRequestAutofill({}), false);
+  assert.equal(await resolvePullRequestAutofill({ BRANCHME_PR_AUTOFILL: "true" }), true);
+  assert.equal(await resolvePullRequestAutofill({ BRANCHME_PR_AUTOFILL: "0" }), false);
+  await assert.rejects(
+    () => resolvePullRequestAutofill({ BRANCHME_PR_AUTOFILL: "sometimes" }),
+    /BRANCHME_PR_AUTOFILL must be one of true, false/i,
+  );
+
+  const cwd = await mkdtemp(join(tmpdir(), "branchme-autofill-env-"));
+  try {
+    await writeFile(
+      join(cwd, ".env"),
+      "BRANCHME_PR_AUTOFILL=\"yes\" # enable omitted fields\nUNSUPPORTED_SETTING=true\n",
+      "utf8",
+    );
+    assert.equal(await resolvePullRequestAutofill({}, { cwd }), true);
+    assert.equal(await resolvePullRequestAutofill({ BRANCHME_PR_AUTOFILL: "off" }, { cwd }), false);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

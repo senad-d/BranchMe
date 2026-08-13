@@ -35,6 +35,7 @@ Commands only show info; BranchMe tools perform actions.
 
 - Run inside a Git repo with `git` available.
 - For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN` (environment or `.env`).
+- Optional: set `BRANCHME_PR_AUTOFILL=true` in the environment or `.env` to generate omitted PR fields.
 - `fetch_branch`, `pull_branch`, and `rebase_branch` require a configured upstream.
 - `pull_branch` and `rebase_branch` require a clean working tree.
 - `rebase_branch` rewrites local commits only when explicitly requested and auto-aborts on failure.

@@ -34,7 +34,7 @@ BranchMe is a Pi extension for safe branch workflow automation. Before each agen
 - **Explicit history rewrites:** `rebase_branch` runs only when explicitly requested, requires a clean current branch with an upstream, disables autostash and multi-ref updates, and automatically attempts to abort on failure.
 - **Commit-safe:** context collection is read-only, and BranchMe never stages files, creates user-authored commits, generates commit messages, force-pushes, creates merge commits, resets, or edits files directly.
 - **Strict tools:** tool schemas reject extra properties such as `force`, `stash`, `discard`, `owner`, `repo`, `path`, or `baseRef`.
-- **PR-ready:** create GitHub pull requests from existing local branches after verifying the `headBranch` matches GitHub and the base is visible, with explicit PR fields and `GITHUB_TOKEN` or `GH_TOKEN` from the process environment or a local `.env` fallback.
+- **PR-ready:** create GitHub pull requests from existing local branches after verifying the `headBranch` matches GitHub and the base is visible. PR fields can stay explicit, or configured autofill can derive omitted fields from the current branch, default branch, and commit subjects.
 
 > **Security:** pi packages run with your full system permissions. BranchMe runs local `git` commands, may make an automatic authenticated GitHub request to find a related open pull request, can fetch remotes, switch/create/pull/rebase branches, push the current branch, and create GitHub pull requests. Read [`SECURITY.md`](SECURITY.md).
 
@@ -153,11 +153,12 @@ export GH_TOKEN=ghp_...
 pi
 ```
 
-Or copy `.env.example` to `.env` in the repository root and fill in one token value:
+Or copy `.env.example` to `.env` in the repository root, fill in one token value, and optionally enable PR field autofill:
 
 ```bash
 cp .env.example .env
 $EDITOR .env
+# Set BRANCHME_PR_AUTOFILL=true in .env if desired.
 pi
 ```
 
@@ -169,15 +170,26 @@ Run `pull_request` only after `push_branch` has completed; `pull_request` prefli
 
 ## Configuration
 
-BranchMe has no project config file. It reads process environment variables for automatic related-PR lookup, GitHub pull request creation, and optional repository boundary checks, with a local `.env` token fallback when no process token is set. Token lookup checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`; if neither is set, BranchMe reads `.env` from the verified git root and checks `GITHUB_TOKEN`, then `GH_TOKEN`.
+BranchMe has no separate project config file. It reads process environment variables and supported keys from a local `.env` file in the verified git root. Token lookup checks `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`; if neither is set, BranchMe checks the matching `.env` keys. Pull request field autofill checks `BRANCHME_PR_AUTOFILL` in the process environment first, then `.env`, and defaults to disabled.
 
 | Variable | Meaning |
 | --- | --- |
 | `GITHUB_TOKEN` | Preferred token for automatic related-PR lookup and `pull_request`; process environment first, then local `.env` fallback. |
 | `GH_TOKEN` | Fallback token for automatic related-PR lookup and `pull_request`; process environment first, then local `.env` fallback. |
+| `BRANCHME_PR_AUTOFILL=true` | Allow `pull_request` to fill omitted PR fields. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`; disabled by default. |
 | `GITHUB_REPOSITORY=owner/repo` | Optional CI fallback and boundary check for the current GitHub repository; process environment only. |
 
-BranchMe reads only `GITHUB_TOKEN` and `GH_TOKEN` from a small regular `.env` file; it rejects directories, symlinks, special files, and oversized files. BranchMe does not import other `.env` keys, read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from automatic context, errors, tool content, and tool details.
+BranchMe reads only `GITHUB_TOKEN`, `GH_TOKEN`, and `BRANCHME_PR_AUTOFILL` from a small regular `.env` file; it rejects directories, symlinks, special files, and oversized files. BranchMe does not import other `.env` keys, read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from automatic context, errors, tool content, and tool details.
+
+With autofill enabled, omitted fields are resolved as follows:
+
+- `headBranch`: current local branch.
+- `baseBranch`: the branch named by `origin/HEAD` when it exists locally, falling back to an existing local `main`, `master`, `trunk`, or `develop` branch.
+- `title`: first commit subject in `baseBranch..headBranch`, falling back to a title derived from the head branch name.
+- `body`: a bounded Markdown summary of commit subjects in `baseBranch..headBranch`.
+- `draft`: `false`.
+
+Explicit tool arguments always take precedence. Autofill does not create a PR by itself: the user must still ask the agent to create one.
 
 If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
@@ -207,7 +219,7 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | `rebase_branch` | `{}` | Requires a clean current branch with a configured upstream and runs `git rebase --no-autostash --no-update-refs <upstream>`; it rewrites local commits and automatically attempts `git rebase --abort` on failure. |
 | `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
 | `push_branch` | `{}` | Pushes the current branch to its configured upstream remote with an explicit `HEAD:<upstream-branch-ref>` refspec, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
-| `pull_request` | `{ "headBranch": string, "baseBranch": string, "title": string, "body": string, "draft": boolean }` | Preflights GitHub branch visibility and verifies the GitHub `headBranch` commit matches the local branch, then creates a pull request in the resolved current repository via `POST /repos/{owner}/{repo}/pulls`; branch refs must exist locally and cannot use `owner:branch`. |
+| `pull_request` | `{ "headBranch"?: string, "baseBranch"?: string, "title"?: string, "body"?: string, "draft"?: boolean }` | Preflights GitHub branch visibility and verifies the GitHub `headBranch` commit matches the local branch, then creates a pull request in the resolved current repository. Omitted fields require `BRANCHME_PR_AUTOFILL=true`; branch refs must be distinct, exist locally, and cannot use `owner:branch`. |
 
 All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `fetch_branch`, `pull_branch`, and `rebase_branch` have strict empty schemas and never accept a branch, remote, refspec, force, autostash, or arbitrary rebase target. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
 
@@ -223,6 +235,7 @@ Before each agent run, BranchMe appends an **Automatic Git Context** snapshot to
 - working-tree state and staged, unstaged, and untracked counts;
 - up to 20 unstaged or untracked change entries with Git status, path, and original path for renames/copies;
 - related open PR status and, when found, its number, title, repository, head/base branches, URL, state, and draft flag;
+- whether pull request field autofill is enabled;
 - up to 5 recent commits with short hash, date, and subject.
 
 Collection defaults are a 5-second timeout per local Git command, a 4-second related-PR lookup timeout, at most 512 characters per metadata value, and at most 4,000 characters for the rendered snapshot. GitHub response bodies are limited to 64 KiB. The formatter can further shorten values or omit entries to stay within the total limit.
@@ -242,6 +255,7 @@ Fetch the current branch upstream with fetch_branch, wait for it to complete, th
 Create branch feature/docs-refresh from the updated current HEAD with create_branch.
 Push the current branch with push_branch.
 After push_branch completes, create a draft pull request from feature/docs-refresh to main titled "Refresh docs" with this body: "...".
+If pull request field autofill is enabled, after push_branch completes create a pull request and fill any details I did not provide.
 ```
 
 BranchMe operates only on the repository where pi is running:
@@ -254,7 +268,7 @@ BranchMe operates only on the repository where pi is running:
 - `rebase_branch` requires a clean worktree and configured upstream, rewrites only the current branch onto the locally available upstream with autostash and multi-ref updates disabled, and automatically attempts to abort on failure.
 - `create_branch` creates from the current `HEAD` only and has no `baseRef` input.
 - `push_branch` pushes only the current branch, uses no bare upstream `git push`, and has no `branchName` input.
-- `pull_request` creates PRs only for the resolved current GitHub repository, requires `headBranch` and `baseBranch` to exist locally, requires the GitHub `headBranch` commit to match the local branch, queues behind in-flight same-repository git mutation windows when possible, and rejects `owner:branch` head refs.
+- `pull_request` creates PRs only for the resolved current GitHub repository, requires resolved `headBranch` and `baseBranch` values to be distinct and exist locally, requires the GitHub `headBranch` commit to match the local branch, queues behind in-flight same-repository git mutation windows when possible, and rejects `owner:branch` head refs. Missing PR fields fail unless `BRANCHME_PR_AUTOFILL=true`.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
 BranchMe intentionally does **not** stage files, create user-authored commits, force checkout, stash changes, discard changes, force-push, create merge commits, edit files directly, or generate commit messages. Rebase-driven commit rewriting occurs only through explicit `rebase_branch` calls.
@@ -310,6 +324,8 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | Push fails | Confirm the current branch is correct and your normal Git remote credentials can push. |
 | Related PR is unavailable | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi if related-PR context is wanted. Without a token, BranchMe keeps local context and intentionally makes no unauthenticated GitHub request. |
 | PR auth fails | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi, or copy `.env.example` to `.env` and fill in one token. |
+| Missing PR fields | Provide all five fields, or set `BRANCHME_PR_AUTOFILL=true` in the process environment or repository `.env`. |
+| Autofill cannot infer the base | Ensure `origin/HEAD` names an existing local branch, keep a local `main`, `master`, `trunk`, or `develop` branch, or provide `baseBranch` explicitly. |
 | PR branch does not exist locally | Create or fetch/check out the local `headBranch` and `baseBranch` branches first; BranchMe does not use remote-only or cross-repository PR refs. |
 | PR branch is not visible or is stale on GitHub | Run `push_branch`, wait for it to complete, then retry `pull_request`; do not batch `push_branch` and `pull_request` in the same assistant tool call. |
 | Repository mismatch | Make `origin` and `GITHUB_REPOSITORY` refer to the same `owner/repo`. |

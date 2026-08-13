@@ -67,6 +67,7 @@ export interface BranchStatusDetails {
 }
 
 export interface GitContextDetails extends BranchStatusDetails {
+  pullRequestAutofill: boolean | null;
   workingTree: WorkingTreeDetails;
   unstagedChanges: GitFileChangeSummary;
   relatedPullRequest: RelatedPullRequest;
@@ -143,6 +144,14 @@ export interface PullRequestInput {
   title: string;
   body: string;
   draft: boolean;
+}
+
+export type PullRequestInputField = keyof PullRequestInput;
+
+export type PullRequestToolInput = Partial<PullRequestInput>;
+
+export interface PullRequestToolDetails extends PullRequestDetails {
+  autofilledFields?: PullRequestInputField[];
 }
 
 export interface GitExecResult {
