@@ -24,14 +24,14 @@ type PanelCell =
       preserveLeading?: boolean;
     };
 
-export type BranchMePanelSection = "status" | "workflow";
+export type BranchMePanelSection = "status" | "workflow" | "worktrees";
 
 const NARROW_MIN_WIDTH = 24;
 const WIDE_MIN_WIDTH = 72;
 const MAX_PANEL_WIDTH = 96;
 const MAX_PANEL_HEIGHT = 16;
 const BODY_HEIGHT = 9;
-const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow"];
+const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow", "worktrees"];
 const ANSI_RESET = "\u001b[0m";
 
 function truncateVisible(value: string, width: number, ellipsis = "…", pad = false): string {
@@ -144,7 +144,7 @@ function statusDetailRow(label: string, value: string): PanelCell {
 }
 
 function workflowDetailRow(tool: string, description: string): PanelCell {
-  return layoutCell(`  ${tool.padEnd(15, " ")}-> ${sanitize(description)}`);
+  return layoutCell(`  ${tool.padEnd(16, " ")}-> ${sanitize(description)}`);
 }
 
 function sectionTitle(section: BranchMePanelSection): string {
@@ -153,6 +153,8 @@ function sectionTitle(section: BranchMePanelSection): string {
       return "STATUS";
     case "workflow":
       return "WORKFLOW";
+    case "worktrees":
+      return "WORKTREES";
   }
 }
 
@@ -178,6 +180,8 @@ function sectionFooter(section: BranchMePanelSection, data: BranchMePanelData): 
       return "status • current repository only • tools perform actions";
     case "workflow":
       return "workflow • inspect → change → fetch/pull/rebase → create → push → PR";
+    case "worktrees":
+      return "worktrees • create → handoff cwd → next session • remove retains branch";
   }
 }
 
@@ -203,6 +207,13 @@ function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): Pa
         workflowDetailRow("create_branch", "from HEAD"),
         workflowDetailRow("push_branch", "current branch"),
         workflowDetailRow("pull_request", "after push"),
+      ];
+    case "worktrees":
+      return [
+        heading("WORKTREES"),
+        workflowDetailRow("list_worktrees", "inspect inventory"),
+        workflowDetailRow("create_worktree", "ready handoff.cwd"),
+        workflowDetailRow("remove_worktree", "clean linked; branch retained"),
       ];
   }
 }

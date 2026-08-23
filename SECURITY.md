@@ -21,10 +21,12 @@ Implemented git mutations are limited to:
 - `pull_branch`: `git pull --ff-only --no-rebase --no-autostash <upstreamRemote> <upstreamBranchRef>` for the clean current branch after validating its configured upstream target.
 - `rebase_branch`: `git rebase --no-autostash --no-update-refs <upstream>` for the clean current branch after validating its configured upstream target. It rewrites local commits and automatically attempts `git rebase --abort` without the cancelled caller signal if the rebase fails or is killed.
 - `push_branch`: `git push <upstreamRemote> HEAD:<upstreamBranchRef>` for the current branch when an upstream exists, or `git push --set-upstream origin <currentBranch>` when no upstream exists.
+- `create_worktree`: `git worktree add -b <branchName> <canonicalPath> HEAD` for a new local branch, or `git worktree add <canonicalPath> <existingLocalBranch>` for an existing unoccupied local branch, after destination and repository-boundary validation.
+- `remove_worktree`: `git worktree remove <verifiedCanonicalPath>` without force, only after fresh repository-membership, safety-state, path, tracked/untracked status, and ignored-entry checks. The local branch is retained and verified at the same commit.
 
 Before each agent run, BranchMe also runs bounded, read-only Git commands to collect branch/upstream/ahead-behind state, working-tree counts, up to 20 unstaged or untracked path entries, and up to 5 recent commits. The same collector runs when `branch_status` explicitly refreshes context. Collection does not run `fetch`, `switch`, `pull`, `rebase`, `push`, `add`, `commit`, or any other mutation, and it never reads diffs or file contents.
 
-Branch switching, fast-forward pulls, and successful rebases can update working-tree files as normal Git behavior; fetch updates one validated remote-tracking ref without changing local branches or the working tree. Mutating branch operations for the same repository are serialized to avoid same-turn branch races. `pull_request` also uses the same repository queue around PR preflight and creation so it can wait behind an already-started same-repository mutation. BranchMe rejects dirty worktrees before `change_branch`, `pull_branch`, and `rebase_branch`. It does not force checkout, stash, stage files, create user-authored commits, reset, force-push, create merge commits, or edit files directly. Rebase-driven commit rewriting occurs only through an explicit `rebase_branch` call.
+Branch switching, worktree creation/removal, fast-forward pulls, and successful rebases can update or remove filesystem content as normal Git behavior; fetch updates one validated remote-tracking ref without changing local branches or the working tree. Mutating operations for the same repository are serialized to avoid same-turn races. `pull_request` also uses the same repository queue around PR preflight and creation so it can wait behind an already-started same-repository mutation. BranchMe rejects dirty worktrees before `change_branch`, `pull_branch`, and `rebase_branch`, and rejects any staged, unstaged, untracked, unmerged, or ignored entry in a linked worktree before removal. It does not force checkout/removal, stash, stage files, create user-authored commits, reset, force-push, create merge commits, or edit files directly. Rebase-driven commit rewriting occurs only through an explicit `rebase_branch` call.
 
 ## Network behavior
 
@@ -48,7 +50,10 @@ The branch preflight requests have no body. BranchMe uses the resolved `headBran
 BranchMe operates on the current repository only.
 
 - The GitHub repository is inferred from local `origin` and/or `GITHUB_REPOSITORY`.
-- Tool inputs never accept filesystem paths, `owner`, `repo`, or owner-prefixed `owner:branch` PR refs.
+- Branch and PR tools never accept filesystem paths, `owner`, `repo`, or owner-prefixed `owner:branch` PR refs. Worktree mutations accept only an explicitly approved absolute `worktreePath`, with `branchName` and `branchMode` additionally required for creation.
+- `list_worktrees` is read-only and returns a bounded inventory collected from `git worktree list --porcelain -z`; automatic Git context remains focused on the active worktree.
+- `create_worktree` accepts exactly `worktreePath`, `branchName`, and `branchMode` (`new` or `existing`). New mode uses current `HEAD` only; existing mode requires an existing local branch not checked out elsewhere and does not infer remote branches.
+- `remove_worktree` accepts exactly `worktreePath`, requires an exact canonical match in a fresh current-repository inventory, removes no branch, and does not accept force.
 - `change_branch` accepts only `branchName` and never creates branches, checks out remote branches, forces, stashes, or discards changes.
 - `fetch_branch` accepts no parameters, resolves the current branch's configured upstream remote and branch, constructs a source-to-remote-tracking refspec internally, disables tag fetching and submodule recursion, and does not prune or accept arbitrary refspecs.
 - `pull_branch` accepts no parameters, updates only the clean current branch from its configured upstream, and uses fast-forward-only semantics.
@@ -56,6 +61,16 @@ BranchMe operates on the current repository only.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, PR creation and related-PR lookup fail closed.
 - Resolved PR branches are validated as distinct, existing local branch-name refs; identical or missing local branches and cross-repository `head` values are rejected before any GitHub request.
 - PR branch inputs must also be visible on GitHub before the PR is created, and `headBranch` must match the local branch commit; unpublished or stale `headBranch` values fail with guidance to run `push_branch`, wait for it to complete, and retry `pull_request`.
+
+## Worktree filesystem boundary
+
+Linked worktree management expands the mutation boundary beyond the active checkout. `create_worktree` may create a directory anywhere the user can write when the explicitly supplied destination passes all checks. BranchMe requires a non-blank absolute path without control characters, requires the immediate parent to exist as a directory, resolves that parent with `realpath`, and rejects any existing destination—including a symlink. It also rejects a destination inside any registered worktree or inside the current repository's common Git directory.
+
+`remove_worktree` never passes an unverified user path to Git. It canonicalizes the supplied absolute path, requires an exact match in a fresh inventory belonging to the current repository, and rejects the main worktree, the worktree containing the active Pi session, bare, detached, locked, prunable/missing, dirty, and ignored-entry-containing worktrees. A separate bounded porcelain scan detects ignored files and directories without exposing their paths or contents. After force-free removal, BranchMe verifies the worktree is no longer registered and that its local branch remains at the captured `HEAD`.
+
+Paths, branch names, lock/prune reasons, and Git output are untrusted metadata and are escaped, redacted, and bounded in returned content/details. Creation failures do not trigger automatic deletion of a possibly created directory or branch; the caller is told to inspect the repository and destination. No force, move, prune, repair, lock, unlock, detached, orphan, or remote-inference worktree operation is implemented.
+
+BranchMe does not copy ignored or untracked files, including repository-root `.env` files, into linked worktrees. If a caller creates ignored local files in a linked checkout, those files block removal until they are removed or preserved outside the checkout. Git documents support for multiple worktrees of a superproject containing submodules as incomplete; BranchMe does not add force-based submodule cleanup.
 
 ## Credentials
 
@@ -67,6 +82,8 @@ Git fetch, pull, and push authentication is handled by the user's configured Git
 - `GH_TOKEN` (fallback)
 
 BranchMe also reads the non-secret `BRANCHME_PR_AUTOFILL` setting from the process environment or verified-root `.env`; all other `.env` keys are ignored. The `.env` reader uses async file I/O, requires a small regular file, and rejects directories, symlinks, special files, and oversized files. BranchMe does not read shell profiles, GitHub CLI credentials, or local credential stores. Token values are redacted from thrown errors, automatic context, generated PR text, tool content, and tool details.
+
+A newly created linked worktree does not receive the source checkout's `.env` or other ignored/untracked files. Start the separate agent with required credentials in its process environment rather than copying secrets into the linked checkout.
 
 ## System prompt boundary
 
@@ -93,6 +110,7 @@ Do not open public issues for security-sensitive reports that include exploit de
 - Do not commit secrets, tokens, local `.env`, local `.pi/` state, or generated artifacts.
 - Keep tool schemas strict and reject unsupported fields.
 - Keep all git calls argv-style through `pi.exec("git", args)`.
-- Mock `pi.exec` and `fetch` in tests; do not touch real remotes.
+- Treat worktree paths as a filesystem security boundary; canonicalize them, verify current-repository membership before removal, and never add force cleanup.
+- Mock `pi.exec` and `fetch` in unit tests; use only temporary local repositories and directories for real-Git integration tests, and do not touch real remotes.
 - Keep package contents minimal with `npm run check:pack`.
 - Use isolated smoke tests with `pi --no-extensions -e .`.

@@ -1,8 +1,8 @@
 {
   "name": "@senad-d/branchme",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
-  "description": "Minimal Pi extension for current-repository git branch, push, and pull request workflows.",
+  "description": "Pi extension for verified current-repository Git branch, worktree, push, and pull request workflows.",
   "license": "MIT",
   "author": "Senad Dizdarević <112484166+senad-d@users.noreply.github.com>",
   "repository": {
@@ -21,6 +21,7 @@
     "branchme",
     "git",
     "git-branch",
+    "git-worktree",
     "git-workflow",
     "github",
     "github-pr",
@@ -52,10 +53,11 @@
     "test:coverage": "mkdir -p coverage && node --test --experimental-test-coverage --test-reporter=spec --test-reporter=lcov --test-reporter-destination=stdout --test-reporter-destination=coverage/lcov.info test/*.test.mjs",
     "smoke:pi": "node scripts/smoke-pi-runtime.mjs && node scripts/smoke-pi-git-context.mjs",
     "smoke:pi:packed": "node scripts/smoke-pi-installed-package.mjs",
-    "check": "node --check scripts/check-format.mjs && node --check scripts/check-package-contents.mjs && node --check scripts/publish-npm.mjs && node --check scripts/smoke-pi-git-context.mjs && node --check scripts/smoke-pi-installed-package.mjs && node --check scripts/smoke-pi-runtime.mjs",
+    "smoke:worktree-handoff": "node scripts/smoke-worktree-handoff.mjs",
+    "check": "node --check scripts/check-format.mjs && node --check scripts/check-package-contents.mjs && node --check scripts/publish-npm.mjs && node --check scripts/smoke-pi-git-context.mjs && node --check scripts/smoke-pi-installed-package.mjs && node --check scripts/smoke-pi-runtime.mjs && node --check scripts/smoke-worktree-handoff.mjs",
     "pack:dry-run": "npm pack --dry-run --json",
     "check:pack": "node scripts/check-package-contents.mjs",
-    "validate": "npm run typecheck && npm run format:check && npm run test && npm run smoke:pi && npm run check && npm run check:pack",
+    "validate": "npm run typecheck && npm run format:check && npm run test && npm run smoke:pi && npm run check && npm run check:pack && npm run smoke:worktree-handoff",
     "release:check": "npm run validate && npm run smoke:pi:packed"
   },
   "pi": {
@@ -65,11 +67,13 @@
     "image": "https://raw.githubusercontent.com/senad-d/BranchMe/main/img/demo.gif"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.1",
     "@earendil-works/pi-coding-agent": "^0.84.1",
     "@earendil-works/pi-tui": "^0.80.2",
     "@types/node": "^26.0.1",

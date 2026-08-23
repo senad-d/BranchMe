@@ -20,6 +20,114 @@ export interface WorkingTreeDetails {
   untracked: number;
 }
 
+export type CreateWorktreeMode = "new" | "existing";
+
+export type ListWorktreesToolInput = Record<string, never>;
+
+export interface CreateWorktreeToolInput {
+  worktreePath: string;
+  branchName: string;
+  branchMode: CreateWorktreeMode;
+}
+
+export interface RemoveWorktreeToolInput {
+  worktreePath: string;
+}
+
+export interface WorktreeEntry {
+  path: string;
+  head: string | null;
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  locked: boolean;
+  lockReason: string | null;
+  prunable: boolean;
+  pruneReason: string | null;
+  main: boolean;
+  current: boolean;
+}
+
+export interface VerifiedLinkedWorktreeEntry extends WorktreeEntry {
+  head: string;
+  branch: string;
+  detached: false;
+  bare: false;
+  locked: false;
+  lockReason: null;
+  prunable: false;
+  pruneReason: null;
+  main: false;
+  current: false;
+}
+
+export interface ListWorktreesDetails {
+  action: "list_worktrees";
+  repoRoot: string;
+  worktrees: WorktreeEntry[];
+  omitted: number;
+}
+
+export interface ReadyWorktreeHandoffDetails {
+  cwd: string;
+  branch: string;
+  head: string;
+  ready: true;
+  summary: string;
+}
+
+export interface RetainedBranchHandoffDetails {
+  cwd: null;
+  branch: string;
+  head: string;
+  ready: false;
+  summary: string;
+}
+
+export type WorktreeHandoffDetails = ReadyWorktreeHandoffDetails | RetainedBranchHandoffDetails;
+
+export interface CreateWorktreeDetails {
+  action: "create_worktree";
+  repoRoot: string;
+  request: CreateWorktreeToolInput;
+  verified: {
+    before: {
+      sourcePath: string;
+      sourceBranch: string | null;
+      sourceDetached: boolean;
+      sourceHead: string;
+      canonicalWorktreePath: string;
+      branchExisted: boolean;
+      destinationRegistered: false;
+    };
+    after: {
+      worktreePresent: true;
+      worktree: VerifiedLinkedWorktreeEntry;
+      workingTree: WorkingTreeDetails;
+    };
+  };
+  handoff: ReadyWorktreeHandoffDetails;
+}
+
+export interface RemoveWorktreeDetails {
+  action: "remove_worktree";
+  repoRoot: string;
+  request: RemoveWorktreeToolInput;
+  verified: {
+    before: {
+      worktree: VerifiedLinkedWorktreeEntry;
+      workingTree: WorkingTreeDetails;
+    };
+    after: {
+      worktreePresent: false;
+      branchRetained: true;
+      branch: string;
+      head: string;
+    };
+  };
+  handoff: RetainedBranchHandoffDetails;
+}
+
 export interface GitFileChange {
   status: string;
   path: string;

@@ -86,8 +86,29 @@ function verifierSource() {
 import { join } from "node:path";
 import { createAssistantMessageEventStream } from ${JSON.stringify(piAiModuleUrl)};
 
-const expectedTools = ["branch_status", "change_branch", "create_branch", "fetch_branch", "pull_branch", "pull_request", "push_branch", "rebase_branch"];
+const expectedTools = [
+  "branch_status",
+  "change_branch",
+  "create_branch",
+  "create_worktree",
+  "fetch_branch",
+  "list_worktrees",
+  "pull_branch",
+  "pull_request",
+  "push_branch",
+  "rebase_branch",
+  "remove_worktree",
+];
+const forbiddenSmokeTools = new Set([
+  "create_worktree",
+  "fetch_branch",
+  "pull_branch",
+  "pull_request",
+  "push_branch",
+  "remove_worktree",
+]);
 let fetchCalls = 0;
+let forbiddenToolCalls = 0;
 let refreshMutationCreated = false;
 let toolCalls = 0;
 
@@ -166,6 +187,7 @@ function streamSmokeModel(model, context) {
   const systemPrompt = context.systemPrompt ?? "";
   if (!verifyTools(context)) return fail(model, "unexpected BranchMe tool registration");
   if (fetchCalls !== 0) return fail(model, "a network request was attempted");
+  if (forbiddenToolCalls !== 0) return fail(model, "a worktree mutation or remote tool was invoked");
 
   if (scenario === "no-tool") {
     if (!systemPrompt.includes("## Automatic Git Context")) return fail(model, "automatic context heading missing");
@@ -208,8 +230,9 @@ export default function branchMeGitContextVerifier(pi) {
     await writeFile(join(ctx.cwd, "smoke-refresh.txt"), "created after automatic snapshot\\n", "utf8");
     refreshMutationCreated = true;
   });
-  pi.on("tool_execution_start", () => {
+  pi.on("tool_execution_start", (event) => {
     toolCalls += 1;
+    if (forbiddenSmokeTools.has(event.toolName)) forbiddenToolCalls += 1;
   });
   pi.registerProvider("branchme-smoke", {
     name: "BranchMe Smoke",

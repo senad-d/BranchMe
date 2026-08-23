@@ -53,6 +53,17 @@ const panelCases = [
     },
   },
   {
+    title: "Wide mode: Worktrees selected",
+    width: 80,
+    selectedSection: "worktrees",
+    data: {
+      currentBranch: "feature/current",
+      detached: false,
+      githubRepository: "senad-d/branchme",
+      tokenSource: "GITHUB_TOKEN",
+    },
+  },
+  {
     title: "Very wide terminal: panel width capped",
     width: 112,
     data: {

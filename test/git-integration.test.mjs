@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import test from "node:test";
 import {
   changeExistingLocalBranch,
   createLocalBranch,
   fetchCurrentBranch,
   getBranchStatus,
+  createWorktree,
   getRecentCommits,
   getWorkingTreeStatus,
+  listWorktrees,
   pullCurrentBranch,
+  removeWorktree,
   pushCurrentBranch,
   rebaseCurrentBranch,
 } from "../src/git.ts";
@@ -61,7 +64,19 @@ async function runGit(cwd, args) {
   return output;
 }
 
-function makeRealGitPi(repoRoot) {
+function pathIsInside(candidatePath, rootPath) {
+  return candidatePath === rootPath || candidatePath.startsWith(`${rootPath}${sep}`);
+}
+
+function makeRealGitPi(repoRoot, approvedWorktreePaths = []) {
+  const temporaryRoot = dirname(repoRoot);
+  assert.equal(
+    approvedWorktreePaths.every((worktreePath) => pathIsInside(worktreePath, temporaryRoot)),
+    true,
+    "approved worktrees must stay inside the temporary test root",
+  );
+
+  const allowedRoots = [repoRoot, ...approvedWorktreePaths];
   const calls = [];
   return {
     calls,
@@ -69,8 +84,8 @@ function makeRealGitPi(repoRoot) {
       assert.equal(command, "git");
       assert.ok(Array.isArray(args), "git args must be passed as an argv array");
       assert.ok(
-        options.cwd === repoRoot || options.cwd.startsWith(`${repoRoot}${sep}`),
-        `git cwd ${options.cwd} must stay inside temporary repo ${repoRoot}`,
+        allowedRoots.some((allowedRoot) => pathIsInside(options.cwd, allowedRoot)),
+        `git cwd ${options.cwd} must stay inside an approved temporary checkout`,
       );
       calls.push({ command, args: [...args], options });
       return execFileResult(command, args, options);
@@ -79,9 +94,11 @@ function makeRealGitPi(repoRoot) {
 }
 
 async function withTempGitRepo(fn) {
-  const rawRoot = await mkdtemp(join(tmpdir(), "branchme-real-git-"));
-  const repoRoot = await realpath(rawRoot);
+  const rawTemporaryRoot = await mkdtemp(join(tmpdir(), "branchme-real-git-"));
+  const temporaryRoot = await realpath(rawTemporaryRoot);
+  const repoRoot = join(temporaryRoot, "source");
   try {
+    await mkdir(repoRoot);
     await runGit(repoRoot, ["init", "--initial-branch=main"]);
     await runGit(repoRoot, ["config", "user.email", "branchme-test@example.invalid"]);
     await runGit(repoRoot, ["config", "user.name", "BranchMe Test"]);
@@ -90,9 +107,9 @@ async function withTempGitRepo(fn) {
     await runGit(repoRoot, ["add", "README.md"]);
     await runGit(repoRoot, ["commit", "-m", "initial commit"]);
 
-    return await fn(repoRoot);
+    return await fn(repoRoot, temporaryRoot);
   } finally {
-    await rm(repoRoot, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 
@@ -122,6 +139,205 @@ test("real git getBranchStatus reports a clean local repository", async () => {
     assert.equal(recentCommits[0].subject, "initial commit");
     assert.equal(recentCommits[0].hash.startsWith(recentCommits[0].shortHash), true);
     assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add"].includes(call.args[0])), false);
+  });
+});
+
+test("real git listWorktrees reports the main worktree", async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    const pi = makeRealGitPi(repoRoot);
+    const head = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    const details = await listWorktrees(pi, { cwd: repoRoot });
+
+    assert.equal(details.action, "list_worktrees");
+    assert.equal(details.repoRoot, repoRoot);
+    assert.equal(details.omitted, 0);
+    assert.deepEqual(details.worktrees, [
+      {
+        path: repoRoot,
+        head,
+        branch: "main",
+        detached: false,
+        bare: false,
+        locked: false,
+        lockReason: null,
+        prunable: false,
+        pruneReason: null,
+        main: true,
+        current: true,
+      },
+    ]);
+    assert.deepEqual(pi.calls.filter((call) => call.args[0] === "worktree").map((call) => call.args), [
+      ["worktree", "list", "--porcelain", "-z"],
+    ]);
+  });
+});
+
+test("real git worktree lifecycle preserves a dirty source and retained branch", async () => {
+  await withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    const worktreePath = join(temporaryRoot, "feature-new");
+    const pi = makeRealGitPi(repoRoot, [worktreePath]);
+    const sourceHead = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(join(repoRoot, "README.md"), "# Dirty source remains\n", "utf8");
+
+    const created = await createWorktree(
+      pi,
+      { cwd: repoRoot },
+      worktreePath,
+      "feature/integration-worktree",
+      "new",
+    );
+
+    assert.equal(created.action, "create_worktree");
+    assert.equal(created.verified.before.sourceHead, sourceHead);
+    assert.equal(created.verified.before.branchExisted, false);
+    assert.equal(created.verified.after.worktree.path, worktreePath);
+    assert.deepEqual(created.verified.after.workingTree, {
+      state: "clean",
+      staged: 0,
+      unstaged: 0,
+      untracked: 0,
+    });
+    assert.deepEqual(
+      {
+        cwd: created.handoff.cwd,
+        branch: created.handoff.branch,
+        head: created.handoff.head,
+        ready: created.handoff.ready,
+      },
+      {
+        cwd: worktreePath,
+        branch: "feature/integration-worktree",
+        head: sourceHead,
+        ready: true,
+      },
+    );
+    assert.equal(await currentBranch(repoRoot), "main");
+    assert.equal(await readFile(join(repoRoot, "README.md"), "utf8"), "# Dirty source remains\n");
+    assert.equal((await runGit(repoRoot, ["status", "--porcelain"])).stdout, " M README.md\n");
+    assert.equal(await currentBranch(worktreePath), "feature/integration-worktree");
+    assert.equal((await runGit(worktreePath, ["rev-parse", "HEAD"])).stdout.trim(), sourceHead);
+    assert.equal((await runGit(worktreePath, ["status", "--porcelain"])).stdout, "");
+
+    const listed = await listWorktrees(pi, { cwd: repoRoot });
+    assert.equal(listed.worktrees.length, 2);
+    assert.equal(listed.worktrees[0].main, true);
+    assert.equal(listed.worktrees[0].current, true);
+    assert.equal(listed.worktrees[1].path, worktreePath);
+    assert.equal(listed.worktrees[1].branch, "feature/integration-worktree");
+    assert.equal(listed.worktrees[1].main, false);
+    assert.equal(listed.worktrees[1].current, false);
+
+    await writeFile(join(worktreePath, "dirty.txt"), "dirty\n", "utf8");
+    await assert.rejects(
+      () => removeWorktree(pi, { cwd: repoRoot }, worktreePath),
+      /staged, unstaged, untracked, or unmerged changes/i,
+    );
+    assert.equal(await realpath(worktreePath), worktreePath);
+    assert.equal((await listWorktrees(pi, { cwd: repoRoot })).worktrees.length, 2);
+
+    await rm(join(worktreePath, "dirty.txt"));
+    const removed = await removeWorktree(pi, { cwd: repoRoot }, worktreePath);
+
+    assert.equal(removed.action, "remove_worktree");
+    assert.equal(removed.verified.before.worktree.path, worktreePath);
+    assert.equal(removed.verified.before.worktree.branch, "feature/integration-worktree");
+    assert.deepEqual(removed.verified.after, {
+      worktreePresent: false,
+      branchRetained: true,
+      branch: "feature/integration-worktree",
+      head: sourceHead,
+    });
+    assert.equal(removed.handoff.cwd, null);
+    assert.equal(removed.handoff.ready, false);
+    assert.equal(removed.handoff.branch, "feature/integration-worktree");
+    assert.equal(removed.handoff.head, sourceHead);
+    await assert.rejects(() => realpath(worktreePath), { code: "ENOENT" });
+    assert.equal((await listWorktrees(pi, { cwd: repoRoot })).worktrees.length, 1);
+    assert.equal(
+      (await runGit(repoRoot, ["rev-parse", "refs/heads/feature/integration-worktree"])).stdout.trim(),
+      sourceHead,
+    );
+    assert.equal(
+      pi.calls.some((call) => call.args[0] === "worktree" && call.args.includes("--force")),
+      false,
+    );
+  });
+});
+
+test("real git removeWorktree preserves a linked checkout containing an ignored local file", async () => {
+  await withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    const worktreePath = join(temporaryRoot, "feature-ignored-removal");
+    const ignoredPath = join(worktreePath, ".env");
+    const pi = makeRealGitPi(repoRoot, [worktreePath]);
+    await writeFile(join(repoRoot, ".gitignore"), ".env\n", "utf8");
+    await runGit(repoRoot, ["add", ".gitignore"]);
+    await runGit(repoRoot, ["commit", "-m", "ignore local environment file"]);
+
+    await createWorktree(
+      pi,
+      { cwd: repoRoot },
+      worktreePath,
+      "feature/ignored-removal",
+      "new",
+    );
+    await writeFile(ignoredPath, "local-only test data\n", "utf8");
+
+    await assert.rejects(
+      () => removeWorktree(pi, { cwd: repoRoot }, worktreePath),
+      /contains ignored files or directories/i,
+    );
+
+    assert.equal(await realpath(worktreePath), worktreePath);
+    assert.equal(await readFile(ignoredPath, "utf8"), "local-only test data\n");
+    assert.equal((await listWorktrees(pi, { cwd: repoRoot })).worktrees.length, 2);
+    assert.equal(
+      pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "remove"),
+      false,
+    );
+  });
+});
+
+test("real git createWorktree uses an existing local branch only when it is not checked out", async () => {
+  await withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    const worktreePath = join(temporaryRoot, "feature-existing");
+    const rejectedPath = join(temporaryRoot, "feature-existing-duplicate");
+    const pi = makeRealGitPi(repoRoot, [worktreePath, rejectedPath]);
+    const branchHead = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    await runGit(repoRoot, ["branch", "feature/existing-worktree"]);
+
+    const created = await createWorktree(
+      pi,
+      { cwd: repoRoot },
+      worktreePath,
+      "feature/existing-worktree",
+      "existing",
+    );
+
+    assert.equal(created.verified.before.branchExisted, true);
+    assert.equal(created.handoff.cwd, worktreePath);
+    assert.equal(created.handoff.branch, "feature/existing-worktree");
+    assert.equal(created.handoff.head, branchHead);
+    assert.equal(await currentBranch(worktreePath), "feature/existing-worktree");
+    assert.equal((await runGit(worktreePath, ["rev-parse", "HEAD"])).stdout.trim(), branchHead);
+    assert.equal((await runGit(worktreePath, ["status", "--porcelain"])).stdout, "");
+
+    await assert.rejects(
+      () => createWorktree(
+        pi,
+        { cwd: repoRoot },
+        rejectedPath,
+        "feature/existing-worktree",
+        "existing",
+      ),
+      /already checked out in a worktree/i,
+    );
+    await assert.rejects(() => realpath(rejectedPath), { code: "ENOENT" });
+
+    await removeWorktree(pi, { cwd: repoRoot }, worktreePath);
+    assert.equal(
+      (await runGit(repoRoot, ["rev-parse", "refs/heads/feature/existing-worktree"])).stdout.trim(),
+      branchHead,
+    );
   });
 });
 

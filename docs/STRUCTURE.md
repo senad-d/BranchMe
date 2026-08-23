@@ -1,6 +1,6 @@
 # BranchMe Structure Guide
 
-BranchMe is a TypeScript Pi extension package for current-repository git branch fetch/update/rebase, push, and GitHub pull request workflows.
+BranchMe is a TypeScript Pi extension package for current-repository Git branch, verified linked-worktree, push, and GitHub pull request workflows.
 
 ## Source layout
 
@@ -13,8 +13,8 @@ src/
 ├── commands/
 │   └── branchme-command.ts       # /branchme status/help command; informational only
 ├── tools/
-│   └── branchme-tools.ts         # registration for eight branch/GitHub workflow tools
-├── git.ts                        # argv-style git helpers and per-repo workflow queue
+│   └── branchme-tools.ts         # registration for eleven branch/worktree/GitHub workflow tools
+├── git.ts                        # argv-style branch/worktree helpers and per-repo workflow queue
 ├── github.ts                     # GitHub repo resolution, env/.env tokens, branch preflight, REST calls, redaction
 └── ui/
     └── branchme-panel.ts         # compact /branchme status panel renderer
@@ -22,11 +22,11 @@ src/
 
 ## Module boundaries
 
-1. `src/extension.ts` stays small and registers the command, eight tools, and one `before_agent_start` context hook.
+1. `src/extension.ts` stays small and registers the command, eleven tools, and one `before_agent_start` context hook.
 2. `src/git-context.ts` owns the shared read-only collector, escaped/bounded formatter, automatic system-prompt append, and the current-state output used by `branch_status`.
 3. `src/commands/branchme-command.ts` parses `/branchme`, `/branchme help`, `--help`, and `-h`; it never performs git or GitHub mutations and avoids raw stdout in JSON mode.
-4. `src/tools/branchme-tools.ts` owns TypeBox schemas, prompt metadata, tool content, and safe structured details. `branch_status` delegates to the shared context collector for an explicit refresh.
-5. `src/git.ts` owns current-repository git behavior: root detection, branch/upstream/ahead-behind inspection, working-tree parsing, recent-commit collection, PR base/commit-subject inference, branch validation, branch creation, existing-local-branch switching, configured-upstream fetch, clean-worktree preflight, fast-forward-only current-branch pull, current-branch rebase with automatic abort on failure, current-branch push/publish, and the per-repository workflow queue.
+4. `src/tools/branchme-tools.ts` owns strict TypeBox schemas, prompt metadata, bounded tool content, and safe structured details. `branch_status` delegates to the shared context collector; `list_worktrees`, `create_worktree`, and `remove_worktree` expose explicit repository inventory and verified handoff operations.
+5. `src/git.ts` owns current-repository Git behavior: root and common-Git-directory detection, branch/upstream/ahead-behind inspection, working-tree parsing, recent-commit collection, PR base/commit-subject inference, branch validation and branch workflows, NUL-delimited worktree parsing/inventory, canonical worktree path validation, verified create/remove postconditions, and the per-repository workflow queue.
 6. `src/github.ts` owns GitHub `owner/repo` parsing, repository boundary checks, `GITHUB_TOKEN`/`GH_TOKEN` and `BRANCHME_PR_AUTOFILL` process-env/hardened git-root `.env` resolution, authenticated related-open-PR lookup, PR branch-name syntax validation, GitHub branch visibility/commit preflight, PR REST calls, bounded response validation, and redacted errors.
 7. `src/redaction.ts` owns shared credential redaction for Git, GitHub, and prompt-bound metadata.
 8. `src/types.ts` keeps serializable details shared by helpers, context, and tools.
@@ -36,11 +36,12 @@ src/
 
 - No long-lived processes, watchers, timers, sockets, or background jobs start in the extension factory.
 - A single `before_agent_start` handler synchronously collects a fresh snapshot for each agent run and appends it to the existing system prompt; failures degrade to bounded unavailable context rather than blocking startup.
-- Slash commands are informational; tools perform branch fetch/update/rebase, push, and PR actions. There is no context command.
-- Every tool uses a strict TypeBox object schema with `additionalProperties: false`.
+- Slash commands are informational; tools perform branch, worktree, push, and PR actions. Commands never create/remove worktrees, change cwd, or start Pi sessions. There is no context command.
+- Every tool uses a strict TypeBox object schema with `additionalProperties: false`; worktree creation requires exactly `worktreePath`, `branchName`, and `branchMode`, while listing is empty and removal accepts only `worktreePath`.
 - Every tool defines a description, `promptSnippet`, and tool-specific `promptGuidelines` that explicitly name the tool.
-- Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from the verified git root and same-repository mutation/PR windows are serialized per repository.
-- Tool details avoid token values and unbounded raw command/API output.
+- Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from verified locations and same-repository mutation/PR windows are serialized per repository.
+- Worktree results expose serializable requested and verified before/after state. Create returns `handoff: { cwd: <absolute>, branch, head, ready: true, summary }`; remove returns the retained branch/HEAD with `cwd: null` and `ready: false`.
+- Tool details avoid token values, abort signals, runtime objects, and unbounded raw command/API output.
 - Automatic and explicit context include branch/upstream/ahead-behind state, working-tree counts, up to 20 unstaged/untracked entries, related open PR state, and up to 5 recent commits. Metadata values default to 512 characters and rendered context to 4,000 characters.
 - Pi core packages, including `@earendil-works/pi-tui` for key/width utilities, remain in `peerDependencies` with `"*"`.
 
@@ -55,10 +56,13 @@ src/
 - `pull_branch` requires a clean worktree and configured upstream, then updates only the current branch with an explicit `git pull --ff-only --no-rebase --no-autostash <remote> <remote-ref>` command; divergence fails without a rebase or merge commit.
 - `rebase_branch` requires a clean worktree and configured upstream, then rebases only the current branch with `git rebase --no-autostash --no-update-refs <upstream>`; it rewrites local commits and automatically attempts `git rebase --abort` on failure.
 - `create_branch` mutates local branch/HEAD only with `git switch -c`.
+- `list_worktrees` reads a bounded `git worktree list --porcelain -z` inventory and remains explicit rather than expanding automatic active-worktree context.
+- `create_worktree` requires an explicitly approved absolute destination, canonicalizes its existing parent, rejects existing or nested/common-Git-directory destinations, and creates only from current `HEAD` or an unoccupied existing local branch. It verifies canonical path, branch, `HEAD`, and cleanliness before returning a ready handoff.
+- `remove_worktree` resolves an exact fresh current-repository inventory match, rejects main/current/dirty/ignored-entry-containing/detached/locked/prunable/missing/bare entries, runs a bounded removal-specific ignored-entry scan, performs force-free removal with the verified path, and confirms that the local branch remains at the same commit.
 - `push_branch` mutates remote refs only for the current branch and uses an explicit upstream remote/refspec instead of bare `git push` when an upstream exists.
 - `pull_request` requires resolved `headBranch` and `baseBranch` values to be distinct and exist locally, requires `headBranch` to match the GitHub-visible branch commit, queues behind already-started same-repository git mutation windows, makes GitHub REST API calls for the resolved current repository only, and rejects owner-prefixed or unsafe branch refs before the request. Omitted fields require configured autofill.
 - `pull_request` reads `GITHUB_TOKEN` or `GH_TOKEN` from process environment first; only when neither process token is set does it read those token keys from a small regular `.env` file in the verified git root as a fallback. `BRANCHME_PR_AUTOFILL` uses the same process-first, `.env`-fallback precedence and defaults off.
-- BranchMe does not force checkout, stash, stage, create user-authored commits, reset, force-push, create merge commits, directly edit files, read unsupported `.env` keys, follow unsafe `.env` file types, depend on GitHub CLI, or collect telemetry. Rebase-driven commit rewriting occurs only through explicit `rebase_branch` calls.
+- BranchMe does not force checkout/removal, move/prune/repair/lock/unlock worktrees, create detached/orphan worktrees, infer remote worktree branches, copy ignored/untracked files such as `.env`, remove linked worktrees that contain ignored entries, delete retained worktree branches, change Pi's cwd, or start Pi sessions. It also does not stash, stage, create user-authored commits, reset, force-push, create merge commits, directly edit files, read unsupported `.env` keys, follow unsafe `.env` file types, depend on GitHub CLI, or collect telemetry. Git documents submodule worktree support as incomplete; BranchMe adds no force-based submodule cleanup.
 
 ## Documentation
 
@@ -73,11 +77,12 @@ src/
 test/
 ├── command.test.mjs      # /branchme parsing, help, fallback, panel width
 ├── git-context.test.mjs  # collection, prompt hook, formatting, safety, and output bounds
-├── git.test.mjs          # git helper command construction and failures
-├── git-integration.test.mjs # isolated real-git context and branch helper coverage
+├── git.test.mjs          # branch/worktree parsing, validation, command construction, postconditions, failures
+├── git-integration.test.mjs # isolated real-Git context, branch, and worktree lifecycle coverage
 ├── github.test.mjs       # GitHub parsing, token resolution, related-PR lookup, redaction
 ├── preparation.test.mjs  # package/docs/source metadata checks
-├── tools.test.mjs        # extension registration, schemas, shared refresh, tool behavior
+├── schema-validation.test.mjs # strict TypeBox schema validation, including worktree fields/modes
+├── tools.test.mjs        # extension registration, prompt metadata, shared refresh, tool behavior
 └── tui-capture.test.mjs  # generated text capture for TUI/help visual baselines
 ```
 

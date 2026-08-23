@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,18 +10,35 @@ import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
+  CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
   GIT_CONTEXT_SUMMARY_LIMIT_CHARS,
+  GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
+  LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
   REBASE_BRANCH_TOOL_NAME,
+  REMOVE_WORKTREE_TOOL_NAME,
 } from "../src/constants.ts";
-import { registerBranchMeTools } from "../src/tools/branchme-tools.ts";
+import { formatListWorktrees, registerBranchMeTools } from "../src/tools/branchme-tools.ts";
 
 const LOCAL_HEAD_SHA = "a".repeat(40);
 const REMOTE_BASE_SHA = "b".repeat(40);
 const STALE_REMOTE_HEAD_SHA = "c".repeat(40);
+const EXPECTED_BRANCHME_TOOL_NAMES = [
+  BRANCH_STATUS_TOOL_NAME,
+  CHANGE_BRANCH_TOOL_NAME,
+  CREATE_BRANCH_TOOL_NAME,
+  CREATE_WORKTREE_TOOL_NAME,
+  FETCH_BRANCH_TOOL_NAME,
+  LIST_WORKTREES_TOOL_NAME,
+  PULL_BRANCH_TOOL_NAME,
+  PULL_REQUEST_TOOL_NAME,
+  PUSH_BRANCH_TOOL_NAME,
+  REBASE_BRANCH_TOOL_NAME,
+  REMOVE_WORKTREE_TOOL_NAME,
+];
 
 function result(overrides = {}) {
   return { stdout: "", stderr: "", code: 0, killed: false, ...overrides };
@@ -106,6 +123,13 @@ function toolByName(pi, name) {
 
 const ctx = { cwd: "/repo", signal: undefined };
 const detailedStatusArgs = ["status", "--porcelain=v1", "-z", "--untracked-files=normal"];
+const ignoredWorktreeStatusArgs = [
+  "status",
+  "--porcelain=v1",
+  "-z",
+  "--untracked-files=normal",
+  "--ignored=matching",
+];
 const recentLogArgs = [
   "log",
   "-n",
@@ -119,7 +143,11 @@ function recentLogRecord(hash, shortHash, date, subject) {
   return `\0${hash}\u001f${shortHash}\u001f${date}\u001f${subject}\n`;
 }
 
-test("branchMeExtension registers exactly the BranchMe command and eight prompt-ready tools", () => {
+function worktreePorcelainRecord(...lines) {
+  return `${lines.join("\0")}\0\0`;
+}
+
+test("branchMeExtension registers exactly the BranchMe command and prompt-ready tool set", () => {
   const pi = makePi();
   branchMeExtension(pi);
 
@@ -127,10 +155,12 @@ test("branchMeExtension registers exactly the BranchMe command and eight prompt-
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(pi.tools.length, 8);
+  assert.deepEqual([...BRANCHME_TOOL_NAMES].sort(), [...EXPECTED_BRANCHME_TOOL_NAMES].sort());
+  assert.equal(pi.tools.length, EXPECTED_BRANCHME_TOOL_NAMES.length);
+  assert.equal(new Set(pi.tools.map((tool) => tool.name)).size, EXPECTED_BRANCHME_TOOL_NAMES.length);
   assert.deepEqual(
     pi.tools.map((tool) => tool.name).sort(),
-    [...BRANCHME_TOOL_NAMES].sort(),
+    [...EXPECTED_BRANCHME_TOOL_NAMES].sort(),
   );
 
   for (const tool of pi.tools) {
@@ -151,6 +181,224 @@ test("branchMeExtension registers exactly the BranchMe command and eight prompt-
   assert.equal(typeof pi.events[0].handler, "function");
   assert.equal(pi.commands.some((command) => /template/i.test(command.name)), false);
   assert.equal(pi.tools.some((tool) => /template|greet|hello/i.test(tool.name)), false);
+});
+
+test("worktree tools expose strict schemas and named handoff-oriented prompt guidance", () => {
+  const pi = makePi();
+  registerBranchMeTools(pi);
+  const listTool = toolByName(pi, LIST_WORKTREES_TOOL_NAME);
+  const createTool = toolByName(pi, CREATE_WORKTREE_TOOL_NAME);
+  const removeTool = toolByName(pi, REMOVE_WORKTREE_TOOL_NAME);
+
+  assert.deepEqual(listTool.parameters.properties, {});
+  assert.equal(listTool.parameters.required, undefined);
+  assert.equal(listTool.parameters.additionalProperties, false);
+
+  assert.deepEqual(createTool.parameters.required, ["worktreePath", "branchName", "branchMode"]);
+  assert.deepEqual(Object.keys(createTool.parameters.properties), ["worktreePath", "branchName", "branchMode"]);
+  assert.deepEqual(createTool.parameters.properties.branchMode.enum, ["new", "existing"]);
+  assert.equal(createTool.parameters.additionalProperties, false);
+
+  assert.deepEqual(removeTool.parameters.required, ["worktreePath"]);
+  assert.deepEqual(Object.keys(removeTool.parameters.properties), ["worktreePath"]);
+  assert.equal(removeTool.parameters.additionalProperties, false);
+
+  const unsupported = ["force", "baseRef", "remote", "detach", "orphan", "move", "prune", "repair", "lock", "unlock"];
+  for (const field of unsupported) {
+    assert.equal(field in listTool.parameters.properties, false);
+    assert.equal(field in createTool.parameters.properties, false);
+    assert.equal(field in removeTool.parameters.properties, false);
+  }
+
+  for (const tool of [listTool, createTool, removeTool]) {
+    assert.ok(tool.description.includes(tool.name));
+    assert.ok(tool.promptSnippet.includes(tool.name));
+    assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(tool.name)));
+  }
+  assert.match(createTool.promptGuidelines.join(" "), /explicitly requests.*exact absolute worktreePath/i);
+  assert.match(createTool.promptGuidelines.join(" "), /never infer a filesystem path silently/i);
+  assert.match(createTool.promptGuidelines.join(" "), /Do not batch.*wait.*handoff\.cwd/i);
+  assert.match(removeTool.promptGuidelines.join(" "), /explicitly requests.*exact absolute worktreePath/i);
+  assert.match(removeTool.promptGuidelines.join(" "), /never infer a filesystem path silently/i);
+  assert.match(removeTool.promptGuidelines.join(" "), /Do not batch.*non-ready handoff/i);
+});
+
+test("list_worktrees returns structured details and a compact bounded inventory", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-tool-list-worktrees-"));
+  const repoRoot = join(tempRoot, "repo");
+  const detachedRoot = join(tempRoot, "detached");
+  const lockedRoot = join(tempRoot, "locked");
+  const prunableRoot = join(tempRoot, "prunable");
+  await mkdir(repoRoot);
+  await mkdir(detachedRoot);
+  await mkdir(lockedRoot);
+
+  try {
+    const porcelain = [
+      worktreePorcelainRecord(
+        `worktree ${repoRoot}`,
+        `HEAD ${"a".repeat(40)}`,
+        "branch refs/heads/main",
+      ),
+      worktreePorcelainRecord(`worktree ${detachedRoot}`, `HEAD ${"b".repeat(40)}`, "detached"),
+      worktreePorcelainRecord(
+        `worktree ${lockedRoot}`,
+        `HEAD ${"c".repeat(40)}`,
+        "branch refs/heads/feature/locked",
+        "locked administrative reason",
+      ),
+      worktreePorcelainRecord(
+        `worktree ${prunableRoot}`,
+        `HEAD ${"d".repeat(40)}`,
+        "branch refs/heads/feature/prunable",
+        "prunable gitdir points to a missing location",
+      ),
+    ].join("");
+    const pi = makePi({
+      ["rev-parse\0--show-toplevel"]: { stdout: `${repoRoot}\n` },
+      ["worktree\0list\0--porcelain\0-z"]: { stdout: porcelain },
+    });
+    registerBranchMeTools(pi);
+    const tool = toolByName(pi, LIST_WORKTREES_TOOL_NAME);
+    const controller = new AbortController();
+
+    const output = await tool.execute("call-list-worktrees", {}, controller.signal, undefined, { ...ctx, cwd: repoRoot });
+
+    assert.equal(output.details.action, LIST_WORKTREES_TOOL_NAME);
+    assert.equal(output.details.worktrees.length, 4);
+    assert.equal(output.details.worktrees[0].current, true);
+    assert.match(output.content[0].text, new RegExp(`- ${repoRoot} \\| branch main \\| HEAD a{12} \\| main,current`, "u"));
+    assert.match(output.content[0].text, /detached.*HEAD b{12}/u);
+    assert.match(output.content[0].text, /feature\/locked.*HEAD c{12}.*locked/u);
+    assert.match(output.content[0].text, /feature\/prunable.*HEAD d{12}.*prunable/u);
+    assert.ok(output.content[0].text.length <= GIT_WORKTREE_SUMMARY_LIMIT_CHARS);
+    assert.ok(pi.calls.every((call) => call.options.signal === controller.signal));
+    assert.equal(pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] !== "list"), false);
+
+    const bounded = formatListWorktrees({
+      ...output.details,
+      worktrees: Array.from({ length: 100 }, (_, index) => ({
+        ...output.details.worktrees[0],
+        path: `/${"x".repeat(700)}-${index}`,
+        main: index === 0,
+        current: index === 0,
+      })),
+      omitted: 2,
+    });
+    assert.ok(bounded.length <= GIT_WORKTREE_SUMMARY_LIMIT_CHARS);
+    assert.match(bounded, /worktree entries omitted/u);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("create_worktree and remove_worktree return verified mutation summaries and full handoff details", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-tool-worktree-mutations-"));
+  const repoRoot = join(tempRoot, "repo");
+  const commonGitDir = join(tempRoot, "common-git");
+  const createDestination = join(tempRoot, "created");
+  const removeTarget = join(tempRoot, "remove-target");
+  const createBranch = "feature/created";
+  const removeBranch = "feature/retained";
+  const sourceHead = "a".repeat(40);
+  const removeHead = "b".repeat(40);
+  await mkdir(repoRoot);
+  await mkdir(commonGitDir);
+  await mkdir(removeTarget);
+  const canonicalRoot = await realpath(tempRoot);
+  const canonicalCreateDestination = join(canonicalRoot, "created");
+  const canonicalRemoveTarget = await realpath(removeTarget);
+
+  try {
+    const mainRecord = worktreePorcelainRecord(
+      `worktree ${repoRoot}`,
+      `HEAD ${sourceHead}`,
+      "branch refs/heads/main",
+    );
+    const createdRecord = worktreePorcelainRecord(
+      `worktree ${canonicalCreateDestination}`,
+      `HEAD ${sourceHead}`,
+      `branch refs/heads/${createBranch}`,
+    );
+    const createController = new AbortController();
+    const createPi = makePi({
+      ["rev-parse\0--show-toplevel"]: { stdout: `${repoRoot}\n` },
+      ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
+      ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: `${sourceHead}\n` },
+      ["worktree\0list\0--porcelain\0-z"]: [
+        { stdout: mainRecord },
+        { stdout: mainRecord + createdRecord },
+      ],
+      ["rev-parse\0--path-format=absolute\0--git-common-dir"]: { stdout: `${commonGitDir}\n` },
+      [`show-ref\0--verify\0--quiet\0refs/heads/${createBranch}`]: { code: 1 },
+      [`worktree\0add\0-b\0${createBranch}\0${canonicalCreateDestination}\0HEAD`]: { stdout: "Preparing worktree\n" },
+      [detailedStatusArgs.join("\0")]: { stdout: "" },
+    });
+    registerBranchMeTools(createPi);
+    const createTool = toolByName(createPi, CREATE_WORKTREE_TOOL_NAME);
+
+    const created = await createTool.execute(
+      "call-create-worktree",
+      { worktreePath: createDestination, branchName: createBranch, branchMode: "new" },
+      createController.signal,
+      undefined,
+      { ...ctx, cwd: repoRoot },
+    );
+
+    assert.equal(created.details.handoff.ready, true);
+    assert.equal(created.details.handoff.cwd, canonicalCreateDestination);
+    assert.equal(created.details.handoff.branch, createBranch);
+    assert.equal(created.details.handoff.head, sourceHead);
+    assert.match(created.content[0].text, /^Created linked worktree/u);
+    assert.match(created.content[0].text, /Verified its canonical path, local branch, HEAD .* clean working tree, and ready handoff\.$/u);
+    assert.ok(createPi.calls.every((call) => call.options.signal === createController.signal));
+
+    const removeRecord = worktreePorcelainRecord(
+      `worktree ${removeTarget}`,
+      `HEAD ${removeHead}`,
+      `branch refs/heads/${removeBranch}`,
+    );
+    const removeController = new AbortController();
+    const removePi = makePi({
+      ["rev-parse\0--show-toplevel"]: { stdout: `${repoRoot}\n` },
+      ["worktree\0list\0--porcelain\0-z"]: [
+        { stdout: mainRecord + removeRecord },
+        { stdout: mainRecord },
+      ],
+      [detailedStatusArgs.join("\0")]: { stdout: "" },
+      [ignoredWorktreeStatusArgs.join("\0")]: { stdout: "" },
+      [`rev-parse\0--verify\0refs/heads/${removeBranch}^{commit}`]: [
+        { stdout: `${removeHead}\n` },
+        { stdout: `${removeHead}\n` },
+      ],
+      [`worktree\0remove\0${canonicalRemoveTarget}`]: { stdout: "" },
+    });
+    registerBranchMeTools(removePi);
+    const removeTool = toolByName(removePi, REMOVE_WORKTREE_TOOL_NAME);
+
+    const removed = await removeTool.execute(
+      "call-remove-worktree",
+      { worktreePath: removeTarget },
+      removeController.signal,
+      undefined,
+      { ...ctx, cwd: repoRoot },
+    );
+
+    assert.equal(removed.details.handoff.cwd, null);
+    assert.equal(removed.details.handoff.ready, false);
+    assert.equal(removed.details.verified.after.branchRetained, true);
+    assert.equal(removed.details.verified.after.head, removeHead);
+    assert.match(removed.content[0].text, /^Removed linked worktree directory/u);
+    assert.match(removed.content[0].text, /Verified it is no longer registered and retained local branch/u);
+    assert.match(removed.content[0].text, /removed cwd is not ready for handoff\.$/u);
+    assert.ok(removePi.calls.every((call) => call.options.signal === removeController.signal));
+    assert.deepEqual(
+      removePi.calls.filter((call) => call.args[0] === "worktree" && call.args[1] === "remove").map((call) => call.args),
+      [["worktree", "remove", canonicalRemoveTarget]],
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("branch_status has strict schema, refresh guidance, and shared current Git context", async () => {

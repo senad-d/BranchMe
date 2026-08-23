@@ -16,7 +16,7 @@ UPDATE_TUI_CAPTURE=1 node --test test/tui-capture.test.mjs
 ```text
 # BranchMe
 
-Current-repository branch workflow tools for Pi.
+Current-repository Git workflow tools for Pi.
 
 Commands only show info; BranchMe tools perform actions.
 
@@ -30,6 +30,14 @@ Commands only show info; BranchMe tools perform actions.
 6. Commit outside BranchMe.
 7. `push_branch` — push the current branch.
 8. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.
+
+## Worktree handoff
+
+- `list_worktrees` — inspect the main and linked worktrees in the current repository.
+- `create_worktree` — create a linked worktree and return a ready handoff with an absolute `handoff.cwd`.
+- A separate orchestrator starts the next Pi session or subagent in `handoff.cwd`.
+- `remove_worktree` — remove a verified clean linked worktree while retaining its local branch.
+- BranchMe does not change cwd, start Pi, copy `.env`, or remove branches automatically.
 
 ## Requirements
 
@@ -72,7 +80,7 @@ Width: 40
 │                                      │
 │                                      │
 ├──────────────────────────────────────┤
-│ 1/2 • status • current repository on…│
+│ 1/3 • status • current repository on…│
 ╰──────────────────────────────────────╯
 ```
 
@@ -86,7 +94,7 @@ Width: 80
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │▶  Status            │ STATUS                                                 │
 │   Workflow          │  Current branch:    feature/current                    │
-│                     │  GitHub repository: senad-d/branchme                   │
+│   Worktrees         │  GitHub repository: senad-d/branchme                   │
 │                     │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
@@ -94,7 +102,7 @@ Width: 80
 │                     │                                                        │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 1/2 • status • current repository only • tools perform actions               │
+│ 1/3 • status • current repository only • tools perform actions               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -107,16 +115,38 @@ Width: 80
 │ ↑↓ section • q quit • /branchme help                                         │
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │   Status            │ WORKFLOW                                               │
-│▶  Workflow          │  branch_status  -> inspect                             │
-│                     │  change_branch  -> existing local                      │
-│                     │  fetch_branch   -> upstream remote                     │
-│                     │  pull_branch    -> fast-forward                        │
-│                     │  rebase_branch  -> onto upstream                       │
-│                     │  create_branch  -> from HEAD                           │
-│                     │  push_branch    -> current branch                      │
-│                     │  pull_request   -> after push                          │
+│▶  Workflow          │  branch_status   -> inspect                            │
+│   Worktrees         │  change_branch   -> existing local                     │
+│                     │  fetch_branch    -> upstream remote                    │
+│                     │  pull_branch     -> fast-forward                       │
+│                     │  rebase_branch   -> onto upstream                      │
+│                     │  create_branch   -> from HEAD                          │
+│                     │  push_branch     -> current branch                     │
+│                     │  pull_request    -> after push                         │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 2/2 • workflow • inspect → change → fetch/pull/rebase → create → push → PR   │
+│ 2/3 • workflow • inspect → change → fetch/pull/rebase → create → push → PR   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+## Panel: Wide mode: Worktrees selected
+
+Width: 80
+
+```text
+╭ BranchMe ───────────────────────────────────────────────────────── Worktrees ╮
+│ ↑↓ section • q quit • /branchme help                                         │
+├─────────────────────┬────────────────────────────────────────────────────────┤
+│   Status            │ WORKTREES                                              │
+│   Workflow          │  list_worktrees  -> inspect inventory                  │
+│▶  Worktrees         │  create_worktree -> ready handoff.cwd                  │
+│                     │  remove_worktree -> clean linked; branch retained      │
+│                     │                                                        │
+│                     │                                                        │
+│                     │                                                        │
+│                     │                                                        │
+│                     │                                                        │
+├─────────────────────┴────────────────────────────────────────────────────────┤
+│ 3/3 • worktrees • create → handoff cwd → next session • remove retains branch│
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -130,7 +160,7 @@ Width: 112
 ├──────────────────────┬───────────────────────────────────────────────────────────────────────┤
 │▶  Status             │ STATUS                                                                │
 │   Workflow           │  Current branch:    main                                              │
-│                      │  GitHub repository: senad-d/BranchMe                                  │
+│   Worktrees          │  GitHub repository: senad-d/BranchMe                                  │
 │                      │  GitHub token:      not set                                           │
 │                      │                                                                       │
 │                      │                                                                       │
@@ -138,7 +168,7 @@ Width: 112
 │                      │                                                                       │
 │                      │                                                                       │
 ├──────────────────────┴───────────────────────────────────────────────────────────────────────┤
-│ 1/2 • status • current repository only • tools perform actions                               │
+│ 1/3 • status • current repository only • tools perform actions                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -161,7 +191,7 @@ Width: 50
 │                                                │
 │                                                │
 ├────────────────────────────────────────────────┤
-│ 1/2 • warning • Unable to resolve a GitHub rep…│
+│ 1/3 • warning • Unable to resolve a GitHub rep…│
 ╰────────────────────────────────────────────────╯
 ```
 
@@ -175,7 +205,7 @@ Width: 80
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │▶  Status            │ STATUS                                                 │
 │   Workflow          │  Current branch:    main                               │
-│                     │  GitHub repository: warning: Repository boundary misma…│
+│   Worktrees         │  GitHub repository: warning: Repository boundary misma…│
 │                     │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
@@ -183,7 +213,7 @@ Width: 80
 │                     │                                                        │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 1/2 • warning • Repository boundary mismatch: local origin resolves to senad…│
+│ 1/3 • warning • Repository boundary mismatch: local origin resolves to senad…│
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -197,7 +227,7 @@ Width: 72
 ├───────────────────┬──────────────────────────────────────────────────┤
 │▶  Status          │ STATUS                                           │
 │   Workflow        │  Current branch:    main                         │
-│                   │  GitHub repository: senad-d/branchme             │
+│   Worktrees       │  GitHub repository: senad-d/branchme             │
 │                   │  GitHub token:      warning: Unable to read .env…│
 │                   │                                                  │
 │                   │                                                  │
@@ -205,7 +235,7 @@ Width: 72
 │                   │                                                  │
 │                   │                                                  │
 ├───────────────────┴──────────────────────────────────────────────────┤
-│ 1/2 • warning • Unable to read .env file for GitHub token fallback: …│
+│ 1/3 • warning • Unable to read .env file for GitHub token fallback: …│
 ╰──────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -219,7 +249,7 @@ Width: 72
 ├───────────────────┬──────────────────────────────────────────────────┤
 │▶  Status          │ STATUS                                           │
 │   Workflow        │  Current branch:    feature/super-long-branch-na…│
-│                   │  GitHub repository: very-long-owner-name/very-lo…│
+│   Worktrees       │  GitHub repository: very-long-owner-name/very-lo…│
 │                   │  GitHub token:      present                      │
 │                   │                                                  │
 │                   │                                                  │
@@ -227,6 +257,6 @@ Width: 72
 │                   │                                                  │
 │                   │                                                  │
 ├───────────────────┴──────────────────────────────────────────────────┤
-│ 1/2 • warning • This deliberately long status note is captured to de…│
+│ 1/3 • warning • This deliberately long status note is captured to de…│
 ╰──────────────────────────────────────────────────────────────────────╯
 ```

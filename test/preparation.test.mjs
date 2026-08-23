@@ -55,6 +55,9 @@ test("source tree registers BranchMe behavior and no template leftovers", async 
   const constants = await readProjectFile("src/constants.ts");
   assert.match(constants, /BranchMe/);
   assert.match(constants, /branch_status/);
+  assert.match(constants, /list_worktrees/);
+  assert.match(constants, /create_worktree/);
+  assert.match(constants, /remove_worktree/);
   assert.doesNotMatch(constants, /pi-extension-template/);
 });
 

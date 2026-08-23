@@ -23,6 +23,14 @@ const expectedBranchMeTools = [
   { name: "rebase_branch", properties: [], required: [] },
   { name: "push_branch", properties: [], required: [] },
   { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title"], required: [] },
+  { name: "list_worktrees", properties: [], required: [] },
+  {
+    name: "create_worktree",
+    properties: ["branchMode", "branchName", "worktreePath"],
+    required: ["worktreePath", "branchName", "branchMode"],
+    enums: { branchMode: ["new", "existing"] },
+  },
+  { name: "remove_worktree", properties: ["worktreePath"], required: ["worktreePath"] },
 ];
 
 function isTruthy(value) {
@@ -97,13 +105,33 @@ function schemaSummary(schema) {
   };
 }
 
-function verifyTool(tool, expected, activeTools) {
+function schemaEnumValues(schema, propertyName) {
+  const values = schema?.properties?.[propertyName]?.enum;
+  return Array.isArray(values) ? [...values] : [];
+}
+
+function hasExtensionSourceMetadata(sourceInfo) {
+  return Boolean(
+    sourceInfo &&
+    typeof sourceInfo.path === "string" &&
+    typeof sourceInfo.source === "string" &&
+    typeof sourceInfo.scope === "string" &&
+    typeof sourceInfo.origin === "string" &&
+    sourceInfo.source !== "builtin" &&
+    sourceInfo.source !== "sdk"
+  );
+}
+
+function verifyTool(tool, expected, activeTools, toolSnippets) {
   const failures = [];
   const schema = schemaSummary(tool.parameters);
   const guidelines = Array.isArray(tool.promptGuidelines) ? tool.promptGuidelines : [];
-  const source = tool.sourceInfo?.source ?? null;
+  const sourceInfo = tool.sourceInfo ?? null;
+  const sourceMetadataValid = hasExtensionSourceMetadata(sourceInfo);
   const active = activeTools.has(expected.name);
   const descriptionMentionsName = typeof tool.description === "string" && tool.description.includes(expected.name);
+  const promptSnippet = toolSnippets[expected.name];
+  const promptSnippetMentionsName = typeof promptSnippet === "string" && promptSnippet.includes(expected.name);
 
   if (!active) failures.push(expected.name + " is registered but not active");
   if (!schema.strict) failures.push(expected.name + " schema does not set additionalProperties: false");
@@ -113,13 +141,20 @@ function verifyTool(tool, expected, activeTools) {
   if (!stringListEquals(schema.required, expected.required)) {
     failures.push(expected.name + " schema required fields were " + (schema.required.join(",") || "<none>"));
   }
+  for (const [propertyName, expectedValues] of Object.entries(expected.enums ?? {})) {
+    const actualValues = schemaEnumValues(tool.parameters, propertyName);
+    if (!stringListEquals(actualValues, expectedValues)) {
+      failures.push(expected.name + " schema enum " + propertyName + " was " + (actualValues.join(",") || "<none>"));
+    }
+  }
   if (!descriptionMentionsName) failures.push(expected.name + " description does not name the tool");
+  if (!promptSnippetMentionsName) failures.push(expected.name + " prompt snippet is missing or does not name the tool");
   if (guidelines.length === 0) failures.push(expected.name + " has no prompt guidelines");
   if (!guidelines.every((guideline) => typeof guideline === "string" && guideline.includes(expected.name))) {
     failures.push(expected.name + " prompt guidelines do not consistently name the tool");
   }
-  if (source === "builtin" || source === "sdk" || source === null) {
-    failures.push(expected.name + " source metadata was " + (source ?? "missing"));
+  if (!sourceMetadataValid) {
+    failures.push(expected.name + " extension source metadata is missing or invalid");
   }
 
   return {
@@ -130,7 +165,11 @@ function verifyTool(tool, expected, activeTools) {
     required: schema.required,
     promptGuidelines: guidelines.length,
     descriptionMentionsName,
-    source,
+    promptSnippetMentionsName,
+    sourceMetadataValid,
+    source: sourceInfo?.source ?? null,
+    scope: sourceInfo?.scope ?? null,
+    origin: sourceInfo?.origin ?? null,
     failures,
   };
 }
@@ -138,24 +177,44 @@ function verifyTool(tool, expected, activeTools) {
 export default function branchMeRuntimeVerifier(pi) {
   pi.registerCommand(commandName, {
     description: "Verify BranchMe tool metadata through Pi's real extension runtime.",
-    handler: async () => {
+    handler: async (_args, ctx) => {
       const allTools = typeof pi.getAllTools === "function" ? pi.getAllTools() : [];
       const activeTools = new Set(typeof pi.getActiveTools === "function" ? pi.getActiveTools() : []);
+      const promptOptions = typeof ctx.getSystemPromptOptions === "function" ? ctx.getSystemPromptOptions() : {};
+      const toolSnippets = promptOptions.toolSnippets && typeof promptOptions.toolSnippets === "object"
+        ? promptOptions.toolSnippets
+        : {};
       const byName = new Map(allTools.map((tool) => [tool.name, tool]));
       const failures = [];
       const tools = [];
 
       for (const expected of expectedTools) {
+        const matching = allTools.filter((tool) => tool.name === expected.name);
+        if (matching.length !== 1) {
+          failures.push(expected.name + " appeared " + matching.length + " times in pi.getAllTools()");
+        }
         const tool = byName.get(expected.name);
         if (!tool) {
-          failures.push(expected.name + " is missing from pi.getAllTools()");
           tools.push({ name: expected.name, missing: true });
           continue;
         }
 
-        const verification = verifyTool(tool, expected, activeTools);
+        const verification = verifyTool(tool, expected, activeTools, toolSnippets);
         tools.push(verification);
         failures.push(...verification.failures);
+      }
+
+      const expectedNames = sortedStrings(expectedTools.map((tool) => tool.name));
+      const branchMeSourcePath = byName.get("branch_status")?.sourceInfo?.path;
+      if (typeof branchMeSourcePath !== "string") {
+        failures.push("Unable to identify BranchMe extension source path");
+      } else {
+        const sourceToolNames = sortedStrings(
+          allTools.filter((tool) => tool.sourceInfo?.path === branchMeSourcePath).map((tool) => tool.name),
+        );
+        if (!stringListEquals(sourceToolNames, expectedNames)) {
+          failures.push("BranchMe extension source registered unexpected tools: " + (sourceToolNames.join(",") || "<none>"));
+        }
       }
 
       process.stdout.write(marker + JSON.stringify({ ok: failures.length === 0, tools, failures }) + "\\n");
@@ -324,7 +383,7 @@ try {
   }
 
   console.log(
-    "Pi runtime smoke passed: loaded BranchMe with pi --no-extensions -e <package>, verified all eight BranchMe tools through pi.getAllTools(), and observed non-mutating command output.",
+    "Pi runtime smoke passed: loaded BranchMe with pi --no-extensions -e <package>, verified the complete BranchMe tool set and prompt metadata through Pi runtime APIs, and observed non-mutating command output.",
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

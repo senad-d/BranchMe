@@ -1,27 +1,35 @@
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
+  CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
+  LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
   REBASE_BRANCH_TOOL_NAME,
+  REMOVE_WORKTREE_TOOL_NAME,
 } from "../constants.ts";
 import {
   changeExistingLocalBranch,
   createLocalBranch,
+  createWorktree,
   fetchCurrentBranch,
   getGitRoot,
   getLocalBranchCommit,
   getPullRequestCommitSubjects,
   inferPullRequestBaseBranch,
+  listWorktrees,
   localBranchExists,
   pullCurrentBranch,
   pushCurrentBranch,
   rebaseCurrentBranch,
+  removeWorktree,
   requireCurrentBranch,
   validateBranchName,
   withRepositoryMutationQueue,
@@ -39,12 +47,16 @@ import {
 } from "../github.ts";
 import type {
   ChangeBranchDetails,
+  CreateWorktreeDetails,
   GitContextDetails,
+  ListWorktreesDetails,
   PullRequestDetails,
   PullRequestInput,
   PullRequestInputField,
   PullRequestToolDetails,
   PullRequestToolInput,
+  RemoveWorktreeDetails,
+  WorktreeEntry,
 } from "../types.ts";
 
 const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
@@ -59,6 +71,24 @@ const CreateBranchParametersSchema = Type.Object(
 const ChangeBranchParametersSchema = Type.Object(
   {
     branchName: Type.String({ minLength: 1, description: "Name of the existing local branch to switch to." }),
+  },
+  { additionalProperties: false },
+);
+
+const CreateWorktreeParametersSchema = Type.Object(
+  {
+    worktreePath: Type.String({ minLength: 1, description: "Explicit absolute destination path for the linked worktree." }),
+    branchName: Type.String({ minLength: 1, description: "New or existing local branch name for the linked worktree." }),
+    branchMode: StringEnum(["new", "existing"] as const, {
+      description: "Whether create_worktree creates a new local branch from current HEAD or uses an existing local branch.",
+    }),
+  },
+  { additionalProperties: false },
+);
+
+const RemoveWorktreeParametersSchema = Type.Object(
+  {
+    worktreePath: Type.String({ minLength: 1, description: "Explicit absolute path of the linked worktree to remove." }),
   },
   { additionalProperties: false },
 );
@@ -98,6 +128,86 @@ export function formatChangeBranch(details: ChangeBranchDetails): string {
 export function formatPullRequest(details: PullRequestDetails, autofilledFields: PullRequestInputField[] = []): string {
   const autofill = autofilledFields.length > 0 ? ` Autofilled fields: ${autofilledFields.join(", ")}.` : "";
   return `Created pull request #${details.number} (${details.state}) for ${repositoryLabel(details.repository)}: ${details.url}.${autofill}`;
+}
+
+const WORKTREE_FORMAT_PATH_LIMIT_CHARS = 512;
+const WORKTREE_FORMAT_BRANCH_LIMIT_CHARS = 256;
+
+function truncateWorktreeFormatValue(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  let end = limit - 1;
+  const lastCodePoint = value.codePointAt(end - 1);
+  if (lastCodePoint !== undefined && lastCodePoint > 0xffff) end -= 1;
+  return `${value.slice(0, end)}…`;
+}
+
+function worktreeDisplayState(worktree: WorktreeEntry): string {
+  if (worktree.bare) return "bare";
+  if (worktree.detached) return "detached";
+  const branch = worktree.branch ?? "unknown";
+  return `branch ${truncateWorktreeFormatValue(branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS)}`;
+}
+
+function worktreeDisplayIndicators(worktree: WorktreeEntry): string[] {
+  const indicators: string[] = [];
+  if (worktree.main) indicators.push("main");
+  if (worktree.current) indicators.push("current");
+  if (worktree.locked) indicators.push("locked");
+  if (worktree.prunable) indicators.push("prunable");
+  return indicators;
+}
+
+function formatWorktreeEntry(worktree: WorktreeEntry): string {
+  const path = truncateWorktreeFormatValue(worktree.path, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
+  const head = worktree.head === null ? "none" : shortCommit(worktree.head);
+  const indicators = worktreeDisplayIndicators(worktree);
+  const indicatorText = indicators.length === 0 ? "" : ` | ${indicators.join(",")}`;
+  return `- ${path} | ${worktreeDisplayState(worktree)} | HEAD ${head}${indicatorText}`;
+}
+
+function worktreeOmissionLine(omitted: number): string {
+  return `${omitted} worktree entr${omitted === 1 ? "y" : "ies"} omitted.`;
+}
+
+export function formatListWorktrees(details: ListWorktreesDetails): string {
+  const repoRoot = truncateWorktreeFormatValue(details.repoRoot, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
+  const lines = [`Worktrees for ${repoRoot}:`];
+  let omitted = details.omitted;
+
+  for (const [index, worktree] of details.worktrees.entries()) {
+    const line = formatWorktreeEntry(worktree);
+    const remaining = details.worktrees.length - index - 1;
+    const candidateOmitted = details.omitted + remaining;
+    const candidate = [
+      ...lines,
+      line,
+      ...(candidateOmitted > 0 ? [worktreeOmissionLine(candidateOmitted)] : []),
+    ].join("\n");
+    if (candidate.length > GIT_WORKTREE_SUMMARY_LIMIT_CHARS) {
+      omitted += details.worktrees.length - index;
+      break;
+    }
+    lines.push(line);
+  }
+
+  if (omitted > 0) lines.push(worktreeOmissionLine(omitted));
+  return lines.join("\n");
+}
+
+export function formatCreateWorktree(details: CreateWorktreeDetails): string {
+  const cwd = truncateWorktreeFormatValue(details.handoff.cwd, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
+  const branch = truncateWorktreeFormatValue(details.handoff.branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const mode = details.request.branchMode === "new" ? "new local branch" : "existing local branch";
+  return `Created linked worktree ${cwd} for ${mode} ${branch}. Verified its canonical path, local branch, HEAD ${shortCommit(details.handoff.head)}, clean working tree, and ready handoff.`;
+}
+
+export function formatRemoveWorktree(details: RemoveWorktreeDetails): string {
+  const path = truncateWorktreeFormatValue(
+    details.verified.before.worktree.path,
+    WORKTREE_FORMAT_PATH_LIMIT_CHARS,
+  );
+  const branch = truncateWorktreeFormatValue(details.handoff.branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  return `Removed linked worktree directory ${path}. Verified it is no longer registered and retained local branch ${branch} at HEAD ${shortCommit(details.handoff.head)}; the removed cwd is not ready for handoff.`;
 }
 
 const PULL_REQUEST_INPUT_FIELDS: PullRequestInputField[] = ["headBranch", "baseBranch", "title", "body", "draft"];
@@ -462,6 +572,72 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
           throw new Error(redactSecrets(message, [token]));
         }
       });
+    },
+  });
+
+  pi.registerTool({
+    name: LIST_WORKTREES_TOOL_NAME,
+    label: "List Worktrees",
+    description: "list_worktrees reads the current repository's bounded linked-worktree inventory without changing Git or filesystem state. list_worktrees accepts no parameters and reports paths, local branches or detached state, HEADs, and safety indicators.",
+    promptSnippet: "list_worktrees: explicitly inspect the bounded current-repository worktree inventory without mutation",
+    promptGuidelines: [
+      "Use list_worktrees when the user or task explicitly needs the current repository's worktree inventory; list_worktrees is read-only.",
+      "Use list_worktrees explicitly because automatic Git context remains focused on the active worktree and does not include worktree inventory.",
+    ],
+    parameters: EmptyParametersSchema,
+    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+      const details = await listWorktrees(pi, ctx, signal);
+      return {
+        content: [{ type: "text", text: formatListWorktrees(details) }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: CREATE_WORKTREE_TOOL_NAME,
+    label: "Create Worktree",
+    description: "create_worktree creates and verifies one linked worktree at an explicit absolute worktreePath for either a new local branch from current HEAD or an existing unoccupied local branch. create_worktree never infers paths, remotes, base refs, detached or orphan modes, or force behavior.",
+    promptSnippet: "create_worktree: create and verify a linked worktree at an explicit absolute path with a ready handoff cwd",
+    promptGuidelines: [
+      "Use create_worktree only when the user explicitly requests worktree creation and provides or approves the exact absolute worktreePath; create_worktree must never infer a filesystem path silently.",
+      "Use create_worktree with exactly worktreePath, branchName, and branchMode; create_worktree never accepts force, baseRef, remote, detach, orphan, move, prune, repair, lock, or unlock parameters.",
+      "Do not batch create_worktree with dependent worktree mutations; wait for create_worktree to complete and verify its ready handoff.cwd before passing that cwd to another agent or session.",
+    ],
+    parameters: CreateWorktreeParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await createWorktree(
+        pi,
+        ctx,
+        params.worktreePath,
+        params.branchName,
+        params.branchMode,
+        signal,
+      );
+      return {
+        content: [{ type: "text", text: formatCreateWorktree(details) }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: REMOVE_WORKTREE_TOOL_NAME,
+    label: "Remove Worktree",
+    description: "remove_worktree force-free removes one verified clean linked worktree at an explicit absolute worktreePath while retaining its local branch. remove_worktree rejects main, current, dirty, detached, locked, prunable, missing, and foreign worktrees and never deletes branches.",
+    promptSnippet: "remove_worktree: force-free removal of an explicitly selected clean linked worktree while retaining its branch",
+    promptGuidelines: [
+      "Use remove_worktree only when the user explicitly requests worktree removal and provides or approves the exact absolute worktreePath; remove_worktree must never infer a filesystem path silently.",
+      "Use remove_worktree with exactly worktreePath; remove_worktree never accepts force, move, prune, repair, lock, unlock, branch deletion, remote, or refspec parameters.",
+      "Do not batch remove_worktree with dependent worktree mutations; wait for remove_worktree to complete and verify its non-ready handoff before continuing.",
+    ],
+    parameters: RemoveWorktreeParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await removeWorktree(pi, ctx, params.worktreePath, signal);
+      return {
+        content: [{ type: "text", text: formatRemoveWorktree(details) }],
+        details,
+      };
     },
   });
 }
