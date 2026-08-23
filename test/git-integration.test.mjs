@@ -117,6 +117,11 @@ async function currentBranch(repoRoot) {
   return (await runGit(repoRoot, ["branch", "--show-current"])).stdout.trim();
 }
 
+async function localRefExists(repoRoot, ref) {
+  const result = await execFileResult("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoRoot });
+  return result.code === 0;
+}
+
 test("real git getBranchStatus reports a clean local repository", async () => {
   await withTempGitRepo(async (repoRoot) => {
     const pi = makeRealGitPi(repoRoot);
@@ -290,6 +295,53 @@ test("real git removeWorktree preserves a linked checkout containing an ignored 
     assert.equal(await realpath(worktreePath), worktreePath);
     assert.equal(await readFile(ignoredPath, "utf8"), "local-only test data\n");
     assert.equal((await listWorktrees(pi, { cwd: repoRoot })).worktrees.length, 2);
+    assert.equal(
+      pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "remove"),
+      false,
+    );
+  });
+});
+
+test("real git worktree mutations reject non-lossless machine identities before changing state", async () => {
+  await withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    const tokenPath = join(temporaryRoot, "ghp_losslesspathsecret123");
+    const tokenBranchPath = join(temporaryRoot, "token-branch-destination");
+    const retainedBranchPath = join(temporaryRoot, "retained-token-branch");
+    const safeBranch = "feature/lossless-path-rejection";
+    const tokenBranch = "feature/ghp_losslessbranchsecret123";
+    const retainedTokenBranch = "feature/ghp_retainedbranchsecret123";
+    const sourceHead = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    const pi = makeRealGitPi(repoRoot, [tokenPath, tokenBranchPath, retainedBranchPath]);
+
+    await assert.rejects(
+      () => createWorktree(pi, { cwd: repoRoot }, tokenPath, safeBranch, "new"),
+      /canonical worktree path cannot be returned safely and losslessly/i,
+    );
+    await assert.rejects(() => realpath(tokenPath), { code: "ENOENT" });
+    assert.equal(await localRefExists(repoRoot, `refs/heads/${safeBranch}`), false);
+
+    await assert.rejects(
+      () => createWorktree(pi, { cwd: repoRoot }, tokenBranchPath, tokenBranch, "new"),
+      /local branch name cannot be returned safely and losslessly/i,
+    );
+    await assert.rejects(() => realpath(tokenBranchPath), { code: "ENOENT" });
+    assert.equal(await localRefExists(repoRoot, `refs/heads/${tokenBranch}`), false);
+    assert.equal(
+      pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "add"),
+      false,
+    );
+
+    await runGit(repoRoot, ["worktree", "add", "-b", retainedTokenBranch, retainedBranchPath, "HEAD"]);
+    await assert.rejects(
+      () => removeWorktree(pi, { cwd: repoRoot }, retainedBranchPath),
+      /local branch name cannot be returned safely and losslessly/i,
+    );
+    assert.equal(await realpath(retainedBranchPath), retainedBranchPath);
+    assert.equal(await localRefExists(repoRoot, `refs/heads/${retainedTokenBranch}`), true);
+    assert.equal(
+      (await runGit(repoRoot, ["rev-parse", `refs/heads/${retainedTokenBranch}`])).stdout.trim(),
+      sourceHead,
+    );
     assert.equal(
       pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "remove"),
       false,

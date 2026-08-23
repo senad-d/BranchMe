@@ -225,7 +225,7 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | --- | --- | --- |
 | `branch_status` | `{}` | Explicitly refreshes the same bounded context used at agent start: repo root in structured details, branch/detached state, upstream and ahead/behind counts, working-tree counts and unstaged/untracked paths, related open PR, and recent commits. It is read-only. |
 | `list_worktrees` | `{}` | Runs a bounded, read-only inventory of the current repository's main and linked worktrees, including path, branch/detached state, `HEAD`, current/main, locked, prunable, and omitted-entry details. Automatic Git context does not include this inventory. |
-| `create_worktree` | `{ "worktreePath": string, "branchName": string, "branchMode": "new" \| "existing" }` | Creates and verifies a linked worktree at an explicitly approved absolute path. `new` creates a local branch from current `HEAD`; `existing` requires an existing local branch not checked out elsewhere. It returns a ready handoff with the canonical absolute cwd. |
+| `create_worktree` | `{ "worktreePath": string, "branchName": string, "branchMode": "new" \| "existing" }` | Creates and verifies a linked worktree at an explicitly approved absolute path. `new` creates a local branch from current `HEAD`; `existing` requires an existing local branch not checked out elsewhere. It returns a ready handoff with the exact canonical absolute cwd and local branch identity. |
 | `remove_worktree` | `{ "worktreePath": string }` | Force-free removal of an explicitly selected, verified clean linked worktree. It rejects the main/current, detached, locked, prunable/missing, dirty, ignored-file-containing, or foreign worktree and verifies that the local branch remains at the same commit. |
 | `change_branch` | `{ "branchName": string }` | Validates `branchName`, requires `refs/heads/<branchName>` to exist locally, rejects dirty worktrees, and runs `git switch <branchName>`. |
 | `fetch_branch` | `{}` | Requires a current branch with a configured upstream and runs `git fetch --no-tags --no-recurse-submodules <upstream-remote> <upstream-branch-ref>:<remote-tracking-ref>`; only that tracking ref is refreshed without changing local branches or working-tree files. |
@@ -274,7 +274,7 @@ If pull request field autofill is enabled, after push_branch completes create a 
 
 ### Linked worktree verification and handoff
 
-`create_worktree` requires a non-blank absolute path with no control characters. Its immediate parent must already be a directory. BranchMe resolves that parent to build a canonical destination, rejects any existing file, directory, or symlink there, and rejects destinations inside a registered worktree or the repository's common Git directory. A dirty source worktree is allowed because creation does not switch or overwrite it.
+`create_worktree` requires a non-blank absolute path with no control characters. Its immediate parent must already be a directory. BranchMe resolves that parent to build a canonical destination, rejects any existing file, directory, or symlink there, and rejects destinations inside a registered worktree or the repository's common Git directory. Before mutation, the canonical path and local branch must be returnable without redaction, escaping, Unicode alteration, or truncation: canonical paths are limited to 4,096 characters and branch identities to 512 characters, and credential-like token text is rejected. A dirty source worktree is allowed because creation does not switch or overwrite it.
 
 For `branchMode: "new"`, BranchMe creates the requested local branch from the current `HEAD` only. For `branchMode: "existing"`, it uses only an existing local branch that is not checked out in another worktree; it never infers a local branch from a remote. After Git succeeds, BranchMe re-lists worktrees and verifies the canonical path, local branch, `HEAD`, and clean checkout. A representative structured result subset is:
 
@@ -291,9 +291,9 @@ For `branchMode: "new"`, BranchMe creates the requested local branch from the cu
 }
 ```
 
-The full details also distinguish requested input from verified before/after state. An orchestrator may use `handoff.cwd` only after `ready` is `true`, and must start the next Pi session or subagent itself with that exact working directory. BranchMe never changes the active process's cwd or starts another process/session.
+The full details also distinguish requested input from verified before/after state. Successful `handoff.cwd` and `handoff.branch` values are the exact identities verified against Git; BranchMe never substitutes `[REDACTED]`, escaped control sequences, or a truncation ellipsis in these machine-readable fields. Display content, summaries, and worktree inventory remain sanitized and bounded separately. An orchestrator may use `handoff.cwd` only after `ready` is `true`, and must start the next Pi session or subagent itself with that exact working directory. BranchMe never changes the active process's cwd or starts another process/session.
 
-`remove_worktree` canonicalizes the approved absolute path and requires an exact match in a fresh inventory for the current repository. It accepts only a present, unlocked, non-prunable, non-bare, branch-attached linked worktree that is neither main nor current, then rejects staged, unstaged, untracked, unmerged, or ignored entries. The ignored-entry preflight is bounded and does not return ignored paths. Removal uses `git worktree remove <verified-path>` without force, verifies the entry is gone, and verifies the branch still points to the captured commit:
+`remove_worktree` canonicalizes the approved absolute path and requires an exact match in a fresh inventory for the current repository. It accepts only a present, unlocked, non-prunable, non-bare, branch-attached linked worktree that is neither main nor current, then rejects staged, unstaged, untracked, unmerged, or ignored entries. The canonical path and retained branch must pass the same pre-mutation lossless-identity checks used for creation. The ignored-entry preflight is bounded and does not return ignored paths. Removal uses `git worktree remove <verified-path>` without force, verifies the entry is gone, and returns the exact retained branch identity after confirming it still points to the captured commit:
 
 ```json
 {
@@ -372,7 +372,7 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | Detached `HEAD` | Use `change_branch` to switch to an existing local branch, or checkout a branch before `fetch_branch`, `pull_branch`, `rebase_branch`, `create_branch`, or `push_branch`. |
 | Branch already exists | Choose a new local branch name for `create_branch`, or use `change_branch` to switch to it. |
 | Branch does not exist locally | Create a local branch first; `change_branch` and `create_worktree` existing mode do not infer local branches from remote branches. |
-| Worktree destination rejected | Provide an exact absolute path whose immediate parent exists; the destination must not exist or be inside another registered worktree or the repository's common Git directory. |
+| Worktree destination rejected | Provide an exact absolute path whose immediate parent exists; the destination must not exist or be inside another registered worktree or the repository's common Git directory. Its canonical path and branch identity must also fit the documented limits without credential-like token text or characters that require escaping. |
 | Existing worktree branch is occupied | Choose another existing local branch or remove its other linked checkout after cleaning it; BranchMe does not force multiple checkouts. |
 | Worktree removal rejected | Use `list_worktrees`, select a non-main/non-current linked worktree, and remove or preserve staged, unstaged, untracked, unmerged, and ignored files outside the checkout. Locked, detached, prunable/missing, bare, and foreign paths are not removable. |
 | Linked-worktree agent cannot find credentials | Pass credentials through the process environment. BranchMe does not copy repository-root `.env` or other ignored/untracked files. |
@@ -450,11 +450,13 @@ BranchMe publishes to npm as `@senad-d/branchme`. You need an npm account with p
 ```bash
 npm login
 npm whoami
-npm run release:check # optional preflight; the publish script runs this too
+npm run release:check # optional preflight; every publish path runs this gate
 node scripts/publish-npm.mjs
 ```
 
-The publish script requires a clean working tree, asks for the version number, runs `npm run release:check` (validation plus installed-package smoke), runs `npm version <version>` to update `package.json` and `package-lock.json`, creates the `v<version>` git tag, publishes with `npm publish --access public`, and then offers to push the release commit and tag.
+`npm run release:check` is the canonical release gate: it runs checkout validation and then installs and loads the packed npm artifact in isolation. Both the local publish script and the GitHub `Publish to npm` workflow run this gate before npm publication; a failure prevents publication and the workflow's Git tag creation.
+
+The publish script requires a clean working tree, asks for the version number, runs `npm run release:check`, runs `npm version <version>` to update `package.json` and `package-lock.json`, creates the `v<version>` git tag, publishes with `npm publish --access public`, and then offers to push the release commit and tag.
 
 Run it only from a clean working tree after updating `CHANGELOG.md`.
 

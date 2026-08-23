@@ -21,7 +21,12 @@ import {
   REBASE_BRANCH_TOOL_NAME,
   REMOVE_WORKTREE_TOOL_NAME,
 } from "../src/constants.ts";
-import { formatListWorktrees, registerBranchMeTools } from "../src/tools/branchme-tools.ts";
+import {
+  formatCreateWorktree,
+  formatListWorktrees,
+  formatRemoveWorktree,
+  registerBranchMeTools,
+} from "../src/tools/branchme-tools.ts";
 
 const LOCAL_HEAD_SHA = "a".repeat(40);
 const REMOTE_BASE_SHA = "b".repeat(40);
@@ -287,6 +292,19 @@ test("list_worktrees returns structured details and a compact bounded inventory"
     });
     assert.ok(bounded.length <= GIT_WORKTREE_SUMMARY_LIMIT_CHARS);
     assert.match(bounded, /worktree entries omitted/u);
+
+    const unsafeDisplay = formatListWorktrees({
+      ...output.details,
+      repoRoot: "/tmp/ghp_tooldisplayreposecret123",
+      worktrees: [{
+        ...output.details.worktrees[0],
+        path: "/tmp/ghp_tooldisplaypathsecret123\u200b",
+        branch: "feature/ghp_tooldisplaybranchsecret123",
+      }],
+    });
+    assert.match(unsafeDisplay, /\[REDACTED\]/u);
+    assert.doesNotMatch(unsafeDisplay, /tooldisplay(?:repo|path|branch)secret/u);
+    assert.doesNotMatch(unsafeDisplay, /\u200b/u);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -353,6 +371,14 @@ test("create_worktree and remove_worktree return verified mutation summaries and
     assert.match(created.content[0].text, /Verified its canonical path, local branch, HEAD .* clean working tree, and ready handoff\.$/u);
     assert.ok(createPi.calls.every((call) => call.options.signal === createController.signal));
 
+    const unsafeCreateDisplay = structuredClone(created.details);
+    unsafeCreateDisplay.handoff.cwd = "/tmp/ghp_toolcreatepathsecret123\u200b";
+    unsafeCreateDisplay.handoff.branch = "feature/ghp_toolcreatebranchsecret123";
+    const safeCreateContent = formatCreateWorktree(unsafeCreateDisplay);
+    assert.match(safeCreateContent, /\[REDACTED\]/u);
+    assert.doesNotMatch(safeCreateContent, /toolcreate(?:path|branch)secret/u);
+    assert.doesNotMatch(safeCreateContent, /\u200b/u);
+
     const removeRecord = worktreePorcelainRecord(
       `worktree ${removeTarget}`,
       `HEAD ${removeHead}`,
@@ -392,6 +418,14 @@ test("create_worktree and remove_worktree return verified mutation summaries and
     assert.match(removed.content[0].text, /Verified it is no longer registered and retained local branch/u);
     assert.match(removed.content[0].text, /removed cwd is not ready for handoff\.$/u);
     assert.ok(removePi.calls.every((call) => call.options.signal === removeController.signal));
+
+    const unsafeRemoveDisplay = structuredClone(removed.details);
+    unsafeRemoveDisplay.verified.before.worktree.path = "/tmp/ghp_toolremovepathsecret123\u200b";
+    unsafeRemoveDisplay.handoff.branch = "feature/ghp_toolremovebranchsecret123";
+    const safeRemoveContent = formatRemoveWorktree(unsafeRemoveDisplay);
+    assert.match(safeRemoveContent, /\[REDACTED\]/u);
+    assert.doesNotMatch(safeRemoveContent, /toolremove(?:path|branch)secret/u);
+    assert.doesNotMatch(safeRemoveContent, /\u200b/u);
     assert.deepEqual(
       removePi.calls.filter((call) => call.args[0] === "worktree" && call.args[1] === "remove").map((call) => call.args),
       [["worktree", "remove", canonicalRemoveTarget]],

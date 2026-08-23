@@ -461,7 +461,7 @@ The final gate must prove type safety, formatting, unit behavior, real Git behav
 
 ### 13. Guarantee lossless machine-readable worktree handoffs
 
-- [ ] Ensure successful worktree handoff identity fields always contain exact usable values rather than redacted, escaped, or truncated substitutes.
+- [x] Ensure successful worktree handoff identity fields always contain exact usable values rather than redacted, escaped, or truncated substitutes.
 
 #### Why
 
@@ -499,7 +499,7 @@ The final gate must prove type safety, formatting, unit behavior, real Git behav
 
 ### 14. Enforce installed-package smoke testing in automated publishing
 
-- [ ] Make the GitHub publish workflow run the installed npm artifact smoke before `npm publish`.
+- [x] Make the GitHub publish workflow run the installed npm artifact smoke before `npm publish`.
 
 #### Why
 
@@ -529,7 +529,7 @@ The checkout validation suite does not run `smoke:pi:packed`. Worktree tool regi
 
 ### 15. Align packaged documentation and changelog with version 0.1.8
 
-- [ ] Remove stale branch-only and no-filesystem-mutation claims from packaged documentation and align the changelog heading with the package version.
+- [x] Remove stale branch-only and no-filesystem-mutation claims from packaged documentation and align the changelog heading with the package version.
 
 #### Why
 

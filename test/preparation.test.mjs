@@ -45,6 +45,28 @@ test("approved docs and specs exist", async () => {
   }
 });
 
+test("packaged project brief describes current worktree behavior", async () => {
+  const projectBrief = await readProjectFile("docs/PROJECT_DEFINITION_BRIEF.md");
+
+  assert.ok(packageJson.files.includes("docs/**/*.md"));
+  assert.match(projectBrief, /eleven strict agent-callable tools/i);
+  for (const toolName of ["list_worktrees", "create_worktree", "remove_worktree"]) {
+    assert.match(projectBrief, new RegExp(`\\b${toolName}\\b`, "u"));
+  }
+  assert.match(projectBrief, /create a checkout directory outside the active checkout/i);
+  assert.match(projectBrief, /ignored entries all block removal/i);
+  assert.match(projectBrief, /exact canonical absolute cwd/i);
+  assert.doesNotMatch(projectBrief, /files written:\s*none/i);
+  assert.doesNotMatch(projectBrief, /minimal pi tools for changing\/creating current-repo branches/i);
+});
+
+test("active changelog heading matches the unreleased package version", async () => {
+  const changelog = await readProjectFile("CHANGELOG.md");
+  const activeHeading = changelog.match(/^##\s+(.+)$/mu)?.[1];
+
+  assert.equal(activeHeading, `${packageJson.version} - Unreleased`);
+});
+
 test("source tree registers BranchMe behavior and no template leftovers", async () => {
   const extension = await readProjectFile("src/extension.ts");
   assert.match(extension, /branchMeExtension/);

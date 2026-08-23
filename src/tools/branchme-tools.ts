@@ -141,11 +141,25 @@ function truncateWorktreeFormatValue(value: string, limit: number): string {
   return `${value.slice(0, end)}…`;
 }
 
+function escapeWorktreeFormatControlCharacter(character: string): string {
+  const codePoint = character.codePointAt(0);
+  return codePoint === undefined ? "" : String.raw`\u${codePoint.toString(16).padStart(4, "0")}`;
+}
+
+function safeWorktreeFormatValue(value: string, limit: number): string {
+  const redacted = redactSecrets(value);
+  const escaped = redacted.replace(
+    /[\p{Cc}\p{Cf}\u2028\u2029]/gu,
+    escapeWorktreeFormatControlCharacter,
+  );
+  return truncateWorktreeFormatValue(escaped, limit);
+}
+
 function worktreeDisplayState(worktree: WorktreeEntry): string {
   if (worktree.bare) return "bare";
   if (worktree.detached) return "detached";
   const branch = worktree.branch ?? "unknown";
-  return `branch ${truncateWorktreeFormatValue(branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS)}`;
+  return `branch ${safeWorktreeFormatValue(branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS)}`;
 }
 
 function worktreeDisplayIndicators(worktree: WorktreeEntry): string[] {
@@ -158,7 +172,7 @@ function worktreeDisplayIndicators(worktree: WorktreeEntry): string[] {
 }
 
 function formatWorktreeEntry(worktree: WorktreeEntry): string {
-  const path = truncateWorktreeFormatValue(worktree.path, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
+  const path = safeWorktreeFormatValue(worktree.path, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
   const head = worktree.head === null ? "none" : shortCommit(worktree.head);
   const indicators = worktreeDisplayIndicators(worktree);
   const indicatorText = indicators.length === 0 ? "" : ` | ${indicators.join(",")}`;
@@ -170,7 +184,7 @@ function worktreeOmissionLine(omitted: number): string {
 }
 
 export function formatListWorktrees(details: ListWorktreesDetails): string {
-  const repoRoot = truncateWorktreeFormatValue(details.repoRoot, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
+  const repoRoot = safeWorktreeFormatValue(details.repoRoot, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
   const lines = [`Worktrees for ${repoRoot}:`];
   let omitted = details.omitted;
 
@@ -195,18 +209,18 @@ export function formatListWorktrees(details: ListWorktreesDetails): string {
 }
 
 export function formatCreateWorktree(details: CreateWorktreeDetails): string {
-  const cwd = truncateWorktreeFormatValue(details.handoff.cwd, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
-  const branch = truncateWorktreeFormatValue(details.handoff.branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const cwd = safeWorktreeFormatValue(details.handoff.cwd, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
+  const branch = safeWorktreeFormatValue(details.handoff.branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
   const mode = details.request.branchMode === "new" ? "new local branch" : "existing local branch";
   return `Created linked worktree ${cwd} for ${mode} ${branch}. Verified its canonical path, local branch, HEAD ${shortCommit(details.handoff.head)}, clean working tree, and ready handoff.`;
 }
 
 export function formatRemoveWorktree(details: RemoveWorktreeDetails): string {
-  const path = truncateWorktreeFormatValue(
+  const path = safeWorktreeFormatValue(
     details.verified.before.worktree.path,
     WORKTREE_FORMAT_PATH_LIMIT_CHARS,
   );
-  const branch = truncateWorktreeFormatValue(details.handoff.branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const branch = safeWorktreeFormatValue(details.handoff.branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
   return `Removed linked worktree directory ${path}. Verified it is no longer registered and retained local branch ${branch} at HEAD ${shortCommit(details.handoff.head)}; the removed cwd is not ready for handoff.`;
 }
 
@@ -597,12 +611,12 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: CREATE_WORKTREE_TOOL_NAME,
     label: "Create Worktree",
-    description: "create_worktree creates and verifies one linked worktree at an explicit absolute worktreePath for either a new local branch from current HEAD or an existing unoccupied local branch. create_worktree never infers paths, remotes, base refs, detached or orphan modes, or force behavior.",
+    description: "create_worktree creates and verifies one linked worktree at an explicit absolute worktreePath for either a new local branch from current HEAD or an existing unoccupied local branch. create_worktree returns exact lossless handoff identity fields and never infers paths, remotes, base refs, detached or orphan modes, or force behavior.",
     promptSnippet: "create_worktree: create and verify a linked worktree at an explicit absolute path with a ready handoff cwd",
     promptGuidelines: [
       "Use create_worktree only when the user explicitly requests worktree creation and provides or approves the exact absolute worktreePath; create_worktree must never infer a filesystem path silently.",
       "Use create_worktree with exactly worktreePath, branchName, and branchMode; create_worktree never accepts force, baseRef, remote, detach, orphan, move, prune, repair, lock, or unlock parameters.",
-      "Do not batch create_worktree with dependent worktree mutations; wait for create_worktree to complete and verify its ready handoff.cwd before passing that cwd to another agent or session.",
+      "Do not batch create_worktree with dependent worktree mutations; wait for create_worktree to complete and verify its ready exact handoff.cwd before passing that cwd to another agent or session.",
     ],
     parameters: CreateWorktreeParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -624,7 +638,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: REMOVE_WORKTREE_TOOL_NAME,
     label: "Remove Worktree",
-    description: "remove_worktree force-free removes one verified clean linked worktree at an explicit absolute worktreePath while retaining its local branch. remove_worktree rejects main, current, dirty, detached, locked, prunable, missing, and foreign worktrees and never deletes branches.",
+    description: "remove_worktree force-free removes one verified clean linked worktree at an explicit absolute worktreePath while retaining and returning its exact local branch identity. remove_worktree rejects main, current, dirty, detached, locked, prunable, missing, and foreign worktrees and never deletes branches.",
     promptSnippet: "remove_worktree: force-free removal of an explicitly selected clean linked worktree while retaining its branch",
     promptGuidelines: [
       "Use remove_worktree only when the user explicitly requests worktree removal and provides or approves the exact absolute worktreePath; remove_worktree must never infer a filesystem path silently.",

@@ -15,6 +15,7 @@ npm run check:pack
 npm run smoke:worktree-handoff
 npm run validate
 npm run smoke:pi:packed
+npm run release:check
 printf '/branchme help\n/quit\n' | pi --no-extensions -e .
 pi --no-extensions -e .
 ```
@@ -30,7 +31,7 @@ pi --no-extensions -e .
 - `npm run validate` includes the isolated handoff smoke after package-content checks.
 - The checkout command smoke accepts either `/branchme help` text or the read-only BranchMe status fallback as equivalent non-mutating command output.
 - `npm run smoke:pi:packed` creates an npm tarball under a temporary directory, installs that tarball into a separate temporary package with `npm install --omit=dev`, and runs pi against the installed package instead of the source checkout.
-- `npm run smoke:pi:packed` is the release gate for packaged runtime imports and required packaged files; `npm run release:check` and `node scripts/publish-npm.mjs` run it before publish, while everyday `npm run validate` keeps the faster checkout smoke.
+- `npm run release:check` is the canonical release gate: it runs `npm run validate` and then `npm run smoke:pi:packed`. Both `node scripts/publish-npm.mjs` and the GitHub `Publish to npm` workflow run it before npm publication; a packed install/load failure stops publication and the workflow's Git tag step. Everyday `npm run validate` keeps the faster checkout smoke.
 - Both Pi smoke runs disable discovered extensions, skills, prompt templates, themes, context files, persistent sessions, telemetry, startup network checks, and GitHub token environment variables.
 - Both Pi smoke runs are credential-free, allow documented credential variable names in help text, reject credential value patterns, do not call BranchMe mutation or remote tools, and do not contact GitHub.
 - Pi's documented `getAllTools()` metadata exposes parameter schemas, descriptions, prompt guidelines, and source metadata, while command context exposes active `promptSnippet` values through `getSystemPromptOptions().toolSnippets`; the runtime verifier checks both surfaces. The deterministic local smoke model exercises `branch_status` through Pi's normal model tool-call loop without provider or GitHub network access.

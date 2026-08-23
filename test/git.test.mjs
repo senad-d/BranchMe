@@ -23,6 +23,7 @@ import {
   pushCurrentBranch,
   rebaseCurrentBranch,
   removeWorktree,
+  requireLosslessWorktreeIdentity,
   validateBranchName,
   validateBranchNameInput,
   validateWorktreeCreationPath,
@@ -620,6 +621,37 @@ test("validateWorktreePathInput rejects blank, relative, root, and control-chara
   assert.equal(validateWorktreePathInput("/tmp/parent/../worktree"), "/tmp/worktree");
 });
 
+test("requireLosslessWorktreeIdentity preserves safe boundary values and rejects transformed identities", () => {
+  const boundaryPath = `/${"p".repeat(4_095)}`;
+  const boundaryBranch = "b".repeat(512);
+  const unicodePath = "/tmp/linked-🚀-café";
+  const unicodeBranch = "feature/🚀-café";
+
+  assert.equal(requireLosslessWorktreeIdentity(boundaryPath, "cwd"), boundaryPath);
+  assert.equal(requireLosslessWorktreeIdentity(boundaryBranch, "branch"), boundaryBranch);
+  assert.equal(requireLosslessWorktreeIdentity(unicodePath, "cwd"), unicodePath);
+  assert.equal(requireLosslessWorktreeIdentity(unicodeBranch, "branch"), unicodeBranch);
+
+  for (const [value, identity] of [
+    [`/${"p".repeat(4_096)}`, "cwd"],
+    ["b".repeat(513), "branch"],
+    ["/tmp/ghp_losslesspathsecret123", "cwd"],
+    ["feature/ghp_losslessbranchsecret123", "branch"],
+    ["/tmp/format\u200bcharacter", "cwd"],
+  ]) {
+    assert.throws(
+      () => requireLosslessWorktreeIdentity(value, identity),
+      (error) => {
+        assert.match(error.message, /cannot be returned safely and losslessly/u);
+        assert.match(error.message, /at most \d+ characters/u);
+        assert.doesNotMatch(error.message, /lossless(?:path|branch)secret/u);
+        assert.ok(error.message.length < 300);
+        return true;
+      },
+    );
+  }
+});
+
 test("validateWorktreeCreationPath accepts an external destination and uses read-only Git discovery", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "branchme-worktree-create-path-"));
   const repoRoot = join(tempRoot, "repo");
@@ -735,6 +767,101 @@ test("validateWorktreeCreationPath rejects registered-worktree and common-Git-di
         call.args[0] === "rev-parse" || call.args.join("\0") === "worktree\0list\0--porcelain\0-z"),
       true,
     );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("createWorktree rejects a canonical path made unsafe by realpath before mutation", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-worktree-lossless-canonical-"));
+  const repoRoot = join(tempRoot, "repo");
+  const commonGitDir = join(tempRoot, "common-git");
+  const unsafeCanonicalParent = join(tempRoot, "ghp_canonicalparentsecret123");
+  const safeParentAlias = join(tempRoot, "safe-parent-alias");
+  const requestedDestination = join(safeParentAlias, "linked");
+  const branchName = "feature/lossless-canonical";
+  const sourceHead = "a".repeat(40);
+  await mkdir(repoRoot);
+  await mkdir(commonGitDir);
+  await mkdir(unsafeCanonicalParent);
+  await symlink(unsafeCanonicalParent, safeParentAlias, "dir");
+  const canonicalDestination = join(await realpath(unsafeCanonicalParent), "linked");
+
+  try {
+    const before = worktreePorcelainRecord(
+      `worktree ${repoRoot}`,
+      `HEAD ${sourceHead}`,
+      "branch refs/heads/main",
+    );
+    const pi = makeWorktreeCreationPi({
+      repoRoot,
+      commonGitDir,
+      destination: canonicalDestination,
+      sourceBranch: "main",
+      sourceHead,
+      branchName,
+      branchExists: false,
+      inventories: [before],
+    });
+
+    await assert.rejects(
+      () => createWorktree(pi, { cwd: repoRoot }, requestedDestination, branchName, "new"),
+      (error) => {
+        assert.match(error.message, /canonical worktree path cannot be returned safely and losslessly/u);
+        assert.doesNotMatch(error.message, /canonicalparentsecret/u);
+        return true;
+      },
+    );
+    assert.equal(pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "add"), false);
+    assert.equal(pi.calls.some((call) => call.args[0] === "check-ref-format"), false);
+    assert.equal(pi.calls.some((call) => call.args[0] === "show-ref"), false);
+    await assert.rejects(() => realpath(canonicalDestination), { code: "ENOENT" });
+    assertNoUnsafeWorktreeCreationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("createWorktree rejects a non-lossless branch before creating its directory or branch", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-worktree-lossless-branch-"));
+  const repoRoot = join(tempRoot, "repo");
+  const commonGitDir = join(tempRoot, "common-git");
+  const destination = join(tempRoot, "linked");
+  const branchName = "feature/ghp_losslessbranchsecret123";
+  const sourceHead = "a".repeat(40);
+  await mkdir(repoRoot);
+  await mkdir(commonGitDir);
+
+  try {
+    const before = worktreePorcelainRecord(
+      `worktree ${repoRoot}`,
+      `HEAD ${sourceHead}`,
+      "branch refs/heads/main",
+    );
+    const pi = makeWorktreeCreationPi({
+      repoRoot,
+      commonGitDir,
+      destination,
+      sourceBranch: "main",
+      sourceHead,
+      branchName,
+      branchExists: false,
+      inventories: [before],
+    });
+
+    await assert.rejects(
+      () => createWorktree(pi, { cwd: repoRoot }, destination, branchName, "new"),
+      (error) => {
+        assert.match(error.message, /local branch name cannot be returned safely and losslessly/u);
+        assert.doesNotMatch(error.message, /losslessbranchsecret/u);
+        return true;
+      },
+    );
+    assert.equal(pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "add"), false);
+    assert.equal(pi.calls.some((call) => call.args[0] === "check-ref-format"), false);
+    assert.equal(pi.calls.some((call) => call.args[0] === "show-ref"), false);
+    await assert.rejects(() => realpath(destination), { code: "ENOENT" });
+    assertNoUnsafeWorktreeCreationCommands(pi.calls);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1509,6 +1636,70 @@ test("removeWorktree bounds ignored-entry status output before removal", async (
     );
     assert.equal(pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "remove"), false);
     assertNoUnsafeWorktreeRemovalCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("removeWorktree rejects non-lossless path and retained branch identities before mutation", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-worktree-remove-lossless-"));
+  const repoRoot = join(tempRoot, "repo");
+  const unsafePathRoot = join(tempRoot, "ghp_removalpathsecret123");
+  const unsafeBranchRoot = join(tempRoot, "unsafe-branch");
+  const head = "b".repeat(40);
+  await mkdir(repoRoot);
+  await mkdir(unsafePathRoot);
+  await mkdir(unsafeBranchRoot);
+
+  try {
+    const scenarios = [
+      {
+        target: unsafePathRoot,
+        branchName: "feature/safe-removal",
+        expected: /canonical worktree path cannot be returned safely and losslessly/u,
+        secret: /removalpathsecret/u,
+      },
+      {
+        target: unsafeBranchRoot,
+        branchName: "feature/ghp_removalbranchsecret123",
+        expected: /local branch name cannot be returned safely and losslessly/u,
+        secret: /removalbranchsecret/u,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const canonicalTarget = await realpath(scenario.target);
+      const inventory = worktreePorcelainRecord(
+        `worktree ${repoRoot}`,
+        `HEAD ${"a".repeat(40)}`,
+        "branch refs/heads/main",
+      ) + worktreePorcelainRecord(
+        `worktree ${canonicalTarget}`,
+        `HEAD ${head}`,
+        `branch refs/heads/${scenario.branchName}`,
+      );
+      const pi = makeWorktreeRemovalPi({
+        repoRoot,
+        targetPath: canonicalTarget,
+        branchName: scenario.branchName,
+        head,
+        inventories: [inventory],
+      });
+
+      await assert.rejects(
+        () => removeWorktree(pi, { cwd: repoRoot }, scenario.target),
+        (error) => {
+          assert.match(error.message, scenario.expected);
+          assert.doesNotMatch(error.message, scenario.secret);
+          return true;
+        },
+      );
+      assert.equal(await realpath(scenario.target), canonicalTarget);
+      assert.equal(pi.calls.some((call) => call.args[0] === "status"), false);
+      assert.equal(pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "remove"), false);
+      assert.equal(pi.calls.some((call) => call.args[0] === "rev-parse" && call.args[2]?.startsWith("refs/heads/")), false);
+      assertNoUnsafeWorktreeRemovalCommands(pi.calls);
+    }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

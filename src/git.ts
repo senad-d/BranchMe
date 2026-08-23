@@ -612,6 +612,19 @@ function safeWorktreeBranchLabel(branchName: string): string {
   return JSON.stringify(safeWorktreeValue(branchName, GIT_CONTEXT_VALUE_LIMIT_CHARS));
 }
 
+export function requireLosslessWorktreeIdentity(
+  value: string,
+  identity: "cwd" | "branch",
+): string {
+  const limit = identity === "cwd" ? GIT_WORKTREE_PATH_LIMIT_CHARS : GIT_CONTEXT_VALUE_LIMIT_CHARS;
+  if (safeWorktreeValue(value, limit) === value) return value;
+
+  const label = identity === "cwd" ? "canonical worktree path" : "local branch name";
+  throw new Error(
+    `The ${label} cannot be returned safely and losslessly. Use a value of at most ${limit} characters without credential-like token text or control/format characters.`,
+  );
+}
+
 export function validateWorktreePathInput(worktreePath: unknown): string {
   if (typeof worktreePath !== "string") throw new TypeError("worktreePath must be a string.");
   if (worktreePath.trim().length === 0) throw new Error("worktreePath is required and cannot be blank.");
@@ -925,9 +938,9 @@ function requireCreatedWorktreeEntry(
   }
 
   return {
-    path: safeWorktreeValue(canonicalPath, GIT_WORKTREE_PATH_LIMIT_CHARS),
+    path: canonicalPath,
     head: record.head,
-    branch: safeWorktreeValue(branchName, GIT_CONTEXT_VALUE_LIMIT_CHARS),
+    branch: branchName,
     detached: false,
     bare: false,
     locked: false,
@@ -998,6 +1011,9 @@ export async function createWorktree(
     if (prepared.inventory.repoRoot !== repoRoot) {
       throw new Error("The current repository changed while preparing worktree creation.");
     }
+    const handoffCwd = requireLosslessWorktreeIdentity(prepared.canonicalPath, "cwd");
+    validateBranchNameInput(branchName);
+    const handoffBranch = requireLosslessWorktreeIdentity(branchName, "branch");
     requireSourceWorktreeEntry(prepared.inventory, source, sourceHead);
 
     await validateBranchName(pi, rootCtx, branchName, signal);
@@ -1039,10 +1055,10 @@ export async function createWorktree(
         expectedHead,
       );
       const workingTree = await inspectCreatedWorktree(pi, prepared.canonicalPath, signal);
-      const safeCanonicalPath = safeWorktreeValue(prepared.canonicalPath, GIT_WORKTREE_PATH_LIMIT_CHARS);
-      const safeBranchName = safeWorktreeValue(branchName, GIT_CONTEXT_VALUE_LIMIT_CHARS);
+      const displayCanonicalPath = safeWorktreeValue(handoffCwd, GIT_WORKTREE_PATH_LIMIT_CHARS);
+      const displayBranchName = safeWorktreeValue(handoffBranch, GIT_CONTEXT_VALUE_LIMIT_CHARS);
       const summary = safeWorktreeValue(
-        `Worktree ready at ${safeCanonicalPath} on branch ${safeBranchName} at ${worktree.head}.`,
+        `Worktree ready at ${displayCanonicalPath} on branch ${displayBranchName} at ${worktree.head}.`,
         GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
       );
 
@@ -1051,7 +1067,7 @@ export async function createWorktree(
         repoRoot: safeWorktreeValue(repoRoot, GIT_WORKTREE_PATH_LIMIT_CHARS),
         request: {
           worktreePath: safeWorktreeValue(requestedWorktreePath, GIT_WORKTREE_PATH_LIMIT_CHARS),
-          branchName: safeBranchName,
+          branchName: handoffBranch,
           branchMode,
         },
         verified: {
@@ -1065,7 +1081,7 @@ export async function createWorktree(
               : safeWorktreeValue(source.currentBranch, GIT_CONTEXT_VALUE_LIMIT_CHARS),
             sourceDetached: source.detached,
             sourceHead,
-            canonicalWorktreePath: safeCanonicalPath,
+            canonicalWorktreePath: handoffCwd,
             branchExisted,
             destinationRegistered: false,
           },
@@ -1076,8 +1092,8 @@ export async function createWorktree(
           },
         },
         handoff: {
-          cwd: safeCanonicalPath,
-          branch: safeBranchName,
+          cwd: handoffCwd,
+          branch: handoffBranch,
           head: worktree.head,
           ready: true,
           summary,
@@ -1104,9 +1120,9 @@ function requireRemovableWorktreeEntry(
   if (record.head === null) throw new Error("The target worktree HEAD could not be verified.");
 
   return {
-    path: safeWorktreeValue(resolved.canonicalPath, GIT_WORKTREE_PATH_LIMIT_CHARS),
+    path: resolved.canonicalPath,
     head: record.head,
-    branch: safeWorktreeValue(record.branch, GIT_CONTEXT_VALUE_LIMIT_CHARS),
+    branch: record.branch,
     detached: false,
     bare: false,
     locked: false,
@@ -1242,19 +1258,21 @@ export async function removeWorktree(
     }
 
     const worktree = requireRemovableWorktreeEntry(resolved);
-    await requirePresentWorktreeDirectory(resolved.canonicalPath);
-    const workingTree = await inspectRemovableWorktree(pi, resolved.canonicalPath, signal);
     const branchName = resolved.entry.record.branch;
     const head = resolved.entry.record.head;
     if (branchName === null || head === null) {
       throw new Error("The target branch and HEAD could not be captured before removal.");
     }
-    const branchHeadBefore = await getLocalBranchCommit(pi, rootCtx, branchName, signal);
+    const verifiedCanonicalPath = requireLosslessWorktreeIdentity(resolved.canonicalPath, "cwd");
+    const retainedBranch = requireLosslessWorktreeIdentity(branchName, "branch");
+    await requirePresentWorktreeDirectory(verifiedCanonicalPath);
+    const workingTree = await inspectRemovableWorktree(pi, verifiedCanonicalPath, signal);
+    const branchHeadBefore = await getLocalBranchCommit(pi, rootCtx, retainedBranch, signal);
     if (branchHeadBefore.toLowerCase() !== head.toLowerCase()) {
       throw new Error("The target local branch did not match the worktree HEAD before removal.");
     }
 
-    const args = ["worktree", "remove", resolved.canonicalPath];
+    const args = ["worktree", "remove", verifiedCanonicalPath];
     try {
       await runGit(pi, rootCtx, args, {
         signal,
@@ -1267,16 +1285,16 @@ export async function removeWorktree(
       ) {
         throw new Error("The source repository changed while verifying worktree removal.");
       }
-      assertWorktreeRemoved(afterInventory, resolved.canonicalPath);
-      const branchHeadAfter = await getLocalBranchCommit(pi, rootCtx, branchName, signal);
+      assertWorktreeRemoved(afterInventory, verifiedCanonicalPath);
+      const branchHeadAfter = await getLocalBranchCommit(pi, rootCtx, retainedBranch, signal);
       if (branchHeadAfter.toLowerCase() !== head.toLowerCase()) {
         throw new Error("The retained local branch moved after worktree removal.");
       }
 
-      const safeCanonicalPath = safeWorktreeValue(resolved.canonicalPath, GIT_WORKTREE_PATH_LIMIT_CHARS);
-      const safeBranchName = safeWorktreeValue(branchName, GIT_CONTEXT_VALUE_LIMIT_CHARS);
+      const displayCanonicalPath = safeWorktreeValue(verifiedCanonicalPath, GIT_WORKTREE_PATH_LIMIT_CHARS);
+      const displayBranchName = safeWorktreeValue(retainedBranch, GIT_CONTEXT_VALUE_LIMIT_CHARS);
       const summary = safeWorktreeValue(
-        `Worktree directory ${safeCanonicalPath} was removed; local branch ${safeBranchName} was retained at ${head}.`,
+        `Worktree directory ${displayCanonicalPath} was removed; local branch ${displayBranchName} was retained at ${head}.`,
         GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
       );
       return {
@@ -1293,13 +1311,13 @@ export async function removeWorktree(
           after: {
             worktreePresent: false,
             branchRetained: true,
-            branch: safeBranchName,
+            branch: retainedBranch,
             head,
           },
         },
         handoff: {
           cwd: null,
-          branch: safeBranchName,
+          branch: retainedBranch,
           head,
           ready: false,
           summary,
