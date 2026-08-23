@@ -156,12 +156,18 @@ test("/branchme help returns concise workflow and requirements through UI modes"
   assert.match(ctx.notifications[0].message, /conflict is automatically aborted.*restoration is verified/);
   assert.match(ctx.notifications[0].message, /does not resolve semantic conflicts/);
   assert.doesNotMatch(ctx.notifications[0].message, /continue_merge/);
+  assert.match(ctx.notifications[0].message, /## Branch retirement/);
+  assert.match(ctx.notifications[0].message, /remove_worktree.*retire_branch.*separate.*retains the branch/);
+  assert.match(ctx.notifications[0].message, /retire_branch.*exact local branch.*full expected `HEAD`.*exact local target.*ancestry verification/);
+  assert.match(ctx.notifications[0].message, /worktree occupancy rejects retirement/);
+  assert.match(ctx.notifications[0].message, /unmerged retirement requires explicit authorization.*force: true.*unreachable/);
+  assert.match(ctx.notifications[0].message, /never directly deletes a remote or remote-tracking branch/);
   assert.match(ctx.notifications[0].message, /list_worktrees/);
   assert.match(ctx.notifications[0].message, /create_worktree/);
   assert.match(ctx.notifications[0].message, /remove_worktree/);
   assert.match(ctx.notifications[0].message, /absolute `handoff\.cwd`/);
   assert.match(ctx.notifications[0].message, /separate orchestrator starts the next Pi session or subagent/);
-  assert.match(ctx.notifications[0].message, /does not change cwd, start Pi, copy `\.env`, or remove branches automatically/);
+  assert.match(ctx.notifications[0].message, /does not change cwd, start Pi, or copy `\.env`.*remove_worktree.*never removes its retained branch automatically/);
   assert.doesNotMatch(ctx.notifications[0].message, /\| Tool \|/);
   assert.equal(pi.calls.length, 0);
   assert.equal(getBranchMeHelpText().includes("Commands only show info"), true);
@@ -234,7 +240,7 @@ test("/branchme fallback uses read-only git status and no mutation commands", as
   });
 
   assert.match(ctx.notifications[0].message, /BranchMe/);
-  assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add"].includes(call.args[0])), false);
+  assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add", "update-ref"].includes(call.args[0])), false);
   assert.equal(pi.calls.some((call) => call.args[0] === "worktree"), false);
 });
 
@@ -255,7 +261,7 @@ test("/branchme opens custom panel only in TUI mode", async () => {
   assert.equal(ctx.notifications.length, 0);
   assert.equal(ctx.customCalls.length, 1);
   assert.equal(typeof ctx.customCalls[0].component.render, "function");
-  assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add"].includes(call.args[0])), false);
+  assert.equal(pi.calls.some((call) => ["switch", "push", "commit", "add", "update-ref"].includes(call.args[0])), false);
   assert.equal(pi.calls.some((call) => call.args[0] === "worktree"), false);
 });
 
@@ -486,7 +492,7 @@ test("BranchMe panel handles navigation keys through Pi key matching", () => {
   panel.handleInput("\t");
   assert.match(panel.render(80).join("\n"), /WORKFLOW/);
   panel.handleInput("\t");
-  assert.match(panel.render(80).join("\n"), /INTEGRATION/);
+  assert.match(panel.render(80).join("\n"), /LIFECYCLE/);
   panel.handleInput("\t");
   assert.match(panel.render(80).join("\n"), /WORKTREES/);
   panel.handleInput("\r");
@@ -517,7 +523,7 @@ test("BranchMe wide panel shows only the selected right-side section", () => {
   assert.equal(visibleText.split("\n").length <= 16, true);
 });
 
-test("BranchMe wide panel presents integration as an informational local-only workflow", () => {
+test("BranchMe panel presents integration and retirement as one informational local lifecycle", () => {
   const data = {
     currentBranch: "main",
     detached: false,
@@ -528,19 +534,33 @@ test("BranchMe wide panel presents integration as an informational local-only wo
   for (const width of [24, 40]) {
     const narrowLines = renderBranchMePanelLines(data, width, undefined, "integration");
     const narrowText = narrowLines.join("\n");
-    assert.match(narrowText, /INTEGRATION/);
-    assert.match(narrowText, /integrate_branch/);
+    assert.match(narrowText, /LIFECYCLE/);
+    for (const row of [
+      "integrate_branch",
+      "control target",
+      "conflict",
+      "semantic intent",
+      "remove_worktree",
+      "retire_branch",
+      "retirement guard",
+      "remote effects",
+    ]) {
+      assert.match(narrowText, new RegExp(row, "u"));
+    }
     assert.ok(narrowLines.every((line) => visibleWidth(line) <= width));
     assert.equal(narrowLines.length <= 16, true);
   }
 
   const visibleText = renderBranchMePanelLines(data, 80, undefined, "integration").join("\n");
-  assert.match(visibleText, /INTEGRATION/);
+  assert.match(visibleText, /LIFECYCLE/);
   assert.match(visibleText, /integrate_branch\s+-> exact local source -> target/);
   assert.match(visibleText, /control target\s+-> checked out \+ clean/);
-  assert.match(visibleText, /remote effects\s+-> never fetch or push/);
   assert.match(visibleText, /conflict\s+-> automatic verified abort/);
   assert.match(visibleText, /semantic intent\s+-> separate developer workflow/);
+  assert.match(visibleText, /remove_worktree\s+-> separate; branch retained/);
+  assert.match(visibleText, /retire_branch\s+-> leased local ref deletion/);
+  assert.match(visibleText, /retirement guard\s+-> unoccupied \+ target ancestry/);
+  assert.match(visibleText, /remote effects\s+-> never delete remote refs/);
   assert.doesNotMatch(visibleText, /continue_merge/);
   assert.equal(visibleText.split("\n").length <= 16, true);
 });

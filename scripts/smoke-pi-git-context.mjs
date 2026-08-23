@@ -99,6 +99,7 @@ const expectedTools = [
   "push_branch",
   "rebase_branch",
   "remove_worktree",
+  "retire_branch",
 ];
 const forbiddenSmokeTools = new Set([
   "create_worktree",
@@ -108,6 +109,7 @@ const forbiddenSmokeTools = new Set([
   "pull_request",
   "push_branch",
   "remove_worktree",
+  "retire_branch",
 ]);
 let fetchCalls = 0;
 let forbiddenToolCalls = 0;
@@ -173,7 +175,7 @@ function fail(model, message) {
 
 function verifyTools(context) {
   const available = new Set((context.tools ?? []).map((tool) => tool.name));
-  return expectedTools.length === 12 &&
+  return expectedTools.length === 13 &&
     expectedTools.every((name) => available.has(name)) &&
     !available.has("git_context") &&
     !available.has("continue_merge") &&
@@ -193,7 +195,7 @@ function streamSmokeModel(model, context) {
   const systemPrompt = context.systemPrompt ?? "";
   if (!verifyTools(context)) return fail(model, "unexpected BranchMe tool registration");
   if (fetchCalls !== 0) return fail(model, "a network request was attempted");
-  if (forbiddenToolCalls !== 0) return fail(model, "a worktree mutation or remote tool was invoked");
+  if (forbiddenToolCalls !== 0) return fail(model, "a worktree, remote, integration, or branch-retirement mutation tool was invoked");
 
   if (scenario === "no-tool") {
     if (!systemPrompt.includes("## Automatic Git Context")) return fail(model, "automatic context heading missing");

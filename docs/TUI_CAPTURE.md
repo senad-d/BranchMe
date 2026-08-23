@@ -37,13 +37,21 @@ Commands only show info; BranchMe tools perform actions.
 - It never fetches or pushes; a conflict is automatically aborted after paths are captured and restoration is verified.
 - BranchMe does not resolve semantic conflicts; handle them in a separate developer workflow.
 
+## Branch retirement
+
+- `remove_worktree` and `retire_branch` are separate: removal retains the branch; retirement later deletes only the exact local branch ref.
+- `retire_branch` requires the exact local branch, its full expected `HEAD`, and an exact local target for ancestry verification.
+- Any registered worktree occupancy rejects retirement; remove an occupying linked worktree separately first.
+- Merged retirement uses `force: false`; unmerged retirement requires explicit authorization with `force: true` and may make commits unreachable.
+- It never directly deletes a remote or remote-tracking branch.
+
 ## Worktree handoff
 
 - `list_worktrees` — inspect the main and linked worktrees in the current repository.
 - `create_worktree` — create a linked worktree and return a ready handoff with an absolute `handoff.cwd`.
 - A separate orchestrator starts the next Pi session or subagent in `handoff.cwd`.
 - `remove_worktree` — remove a verified clean linked worktree while retaining its local branch.
-- BranchMe does not change cwd, start Pi, copy `.env`, or remove branches automatically.
+- BranchMe does not change cwd, start Pi, or copy `.env`; `remove_worktree` never removes its retained branch automatically.
 
 ## Requirements
 
@@ -90,26 +98,26 @@ Width: 40
 ╰──────────────────────────────────────╯
 ```
 
-## Panel: Narrow mode: Integration selected
+## Panel: Narrow mode: Lifecycle selected
 
 Width: 40
 
 ```text
-╭ BranchMe ─────────────── Integration ╮
+╭ BranchMe ───────────────── Lifecycle ╮
 │current repo only • informational     │
 │ ↑↓ section • q quit • /branchme help │
 ├──────────────────────────────────────┤
-│ INTEGRATION                          │
+│ LIFECYCLE                            │
 │  integrate_branch -> exact local sou…│
 │  control target   -> checked out + c…│
-│  remote effects   -> never fetch or …│
 │  conflict         -> automatic verif…│
 │  semantic intent  -> separate develo…│
-│                                      │
-│                                      │
-│                                      │
+│  remove_worktree  -> separate; branc…│
+│  retire_branch    -> leased local re…│
+│  retirement guard -> unoccupied + ta…│
+│  remote effects   -> never delete re…│
 ├──────────────────────────────────────┤
-│ 3/4 • integration • local refs • cle…│
+│ 3/4 • lifecycle • integrate → remove…│
 ╰──────────────────────────────────────╯
 ```
 
@@ -123,7 +131,7 @@ Width: 80
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │▶  Status            │ STATUS                                                 │
 │   Workflow          │  Current branch:    feature/current                    │
-│   Integration       │  GitHub repository: senad-d/branchme                   │
+│   Lifecycle         │  GitHub repository: senad-d/branchme                   │
 │   Worktrees         │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
@@ -145,7 +153,7 @@ Width: 80
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │   Status            │ WORKFLOW                                               │
 │▶  Workflow          │  branch_status    -> inspect                           │
-│   Integration       │  change_branch    -> existing local                    │
+│   Lifecycle         │  change_branch    -> existing local                    │
 │   Worktrees         │  fetch_branch     -> upstream remote                   │
 │                     │  pull_branch      -> fast-forward                      │
 │                     │  rebase_branch    -> onto upstream                     │
@@ -157,25 +165,25 @@ Width: 80
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-## Panel: Wide mode: Integration selected
+## Panel: Wide mode: Lifecycle selected
 
 Width: 80
 
 ```text
-╭ BranchMe ─────────────────────────────────────────────────────── Integration ╮
+╭ BranchMe ───────────────────────────────────────────────────────── Lifecycle ╮
 │ ↑↓ section • q quit • /branchme help                                         │
 ├─────────────────────┬────────────────────────────────────────────────────────┤
-│   Status            │ INTEGRATION                                            │
+│   Status            │ LIFECYCLE                                              │
 │   Workflow          │  integrate_branch -> exact local source -> target      │
-│▶  Integration       │  control target   -> checked out + clean               │
-│   Worktrees         │  remote effects   -> never fetch or push               │
-│                     │  conflict         -> automatic verified abort          │
+│▶  Lifecycle         │  control target   -> checked out + clean               │
+│   Worktrees         │  conflict         -> automatic verified abort          │
 │                     │  semantic intent  -> separate developer workflow       │
-│                     │                                                        │
-│                     │                                                        │
-│                     │                                                        │
+│                     │  remove_worktree  -> separate; branch retained         │
+│                     │  retire_branch    -> leased local ref deletion         │
+│                     │  retirement guard -> unoccupied + target ancestry      │
+│                     │  remote effects   -> never delete remote refs          │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 3/4 • integration • local refs • clean target • conflicts auto-abort         │
+│ 3/4 • lifecycle • integrate → remove worktree separately → retire local ref  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -189,7 +197,7 @@ Width: 80
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │   Status            │ WORKTREES                                              │
 │   Workflow          │  list_worktrees   -> inspect inventory                 │
-│   Integration       │  create_worktree  -> ready handoff.cwd                 │
+│   Lifecycle         │  create_worktree  -> ready handoff.cwd                 │
 │▶  Worktrees         │  remove_worktree  -> clean linked; branch retained     │
 │                     │                                                        │
 │                     │                                                        │
@@ -211,7 +219,7 @@ Width: 112
 ├──────────────────────┬───────────────────────────────────────────────────────────────────────┤
 │▶  Status             │ STATUS                                                                │
 │   Workflow           │  Current branch:    main                                              │
-│   Integration        │  GitHub repository: senad-d/BranchMe                                  │
+│   Lifecycle          │  GitHub repository: senad-d/BranchMe                                  │
 │   Worktrees          │  GitHub token:      not set                                           │
 │                      │                                                                       │
 │                      │                                                                       │
@@ -256,7 +264,7 @@ Width: 80
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │▶  Status            │ STATUS                                                 │
 │   Workflow          │  Current branch:    main                               │
-│   Integration       │  GitHub repository: warning: Repository boundary misma…│
+│   Lifecycle         │  GitHub repository: warning: Repository boundary misma…│
 │   Worktrees         │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
@@ -278,7 +286,7 @@ Width: 72
 ├───────────────────┬──────────────────────────────────────────────────┤
 │▶  Status          │ STATUS                                           │
 │   Workflow        │  Current branch:    main                         │
-│   Integration     │  GitHub repository: senad-d/branchme             │
+│   Lifecycle       │  GitHub repository: senad-d/branchme             │
 │   Worktrees       │  GitHub token:      warning: Unable to read .env…│
 │                   │                                                  │
 │                   │                                                  │
@@ -300,7 +308,7 @@ Width: 72
 ├───────────────────┬──────────────────────────────────────────────────┤
 │▶  Status          │ STATUS                                           │
 │   Workflow        │  Current branch:    feature/super-long-branch-na…│
-│   Integration     │  GitHub repository: very-long-owner-name/very-lo…│
+│   Lifecycle       │  GitHub repository: very-long-owner-name/very-lo…│
 │   Worktrees       │  GitHub token:      present                      │
 │                   │                                                  │
 │                   │                                                  │

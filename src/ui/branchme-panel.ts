@@ -154,7 +154,7 @@ function sectionTitle(section: BranchMePanelSection): string {
     case "workflow":
       return "WORKFLOW";
     case "integration":
-      return "INTEGRATION";
+      return "LIFECYCLE";
     case "worktrees":
       return "WORKTREES";
   }
@@ -183,7 +183,7 @@ function sectionFooter(section: BranchMePanelSection, data: BranchMePanelData): 
     case "workflow":
       return "workflow • inspect → change → fetch/pull/rebase → create → push → PR";
     case "integration":
-      return "integration • local refs • clean target • conflicts auto-abort";
+      return "lifecycle • integrate → remove worktree separately → retire local ref";
     case "worktrees":
       return "worktrees • create → handoff cwd → next session • remove retains branch";
   }
@@ -214,12 +214,15 @@ function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): Pa
       ];
     case "integration":
       return [
-        heading("INTEGRATION"),
+        heading("LIFECYCLE"),
         workflowDetailRow("integrate_branch", "exact local source -> target"),
         workflowDetailRow("control target", "checked out + clean"),
-        workflowDetailRow("remote effects", "never fetch or push"),
         workflowDetailRow("conflict", "automatic verified abort"),
         workflowDetailRow("semantic intent", "separate developer workflow"),
+        workflowDetailRow("remove_worktree", "separate; branch retained"),
+        workflowDetailRow("retire_branch", "leased local ref deletion"),
+        workflowDetailRow("retirement guard", "unoccupied + target ancestry"),
+        workflowDetailRow("remote effects", "never delete remote refs"),
       ];
     case "worktrees":
       return [

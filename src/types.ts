@@ -34,6 +34,13 @@ export interface IntegrateBranchToolInput {
   targetBranch: string;
 }
 
+export interface RetireBranchToolInput {
+  branchName: string;
+  expectedHead: string;
+  targetBranch: string;
+  force: boolean;
+}
+
 export type CreateWorktreeMode = "new" | "existing";
 
 export type ListWorktreesToolInput = Record<string, never>;
@@ -353,6 +360,75 @@ export type IntegrateBranchDetails =
   | IntegrateBranchFastForwardDetails
   | IntegrateBranchMergeCommitDetails
   | IntegrateBranchConflictDetails;
+
+export type RetireBranchMode = "merged" | "forced_unmerged";
+
+export interface RetireBranchRepositoryIdentity {
+  worktreeRoot: string;
+  canonicalCommonGitDirectory: string;
+}
+
+export interface RetireBranchRefIdentity {
+  branchName: string;
+  fullRef: string;
+  head: string;
+}
+
+export interface RetireBranchAbsentRefProof {
+  branchName: string;
+  fullRef: string;
+  absent: true;
+}
+
+export interface RetireBranchWorktreeOccupancyProof {
+  branchName: string;
+  completeInventoryInspected: true;
+  occupied: false;
+  matchingWorktreeCount: 0;
+}
+
+export interface RetireBranchDetails {
+  action: "retire_branch";
+  status: "retired";
+  mode: RetireBranchMode;
+  /** Exact normalized request values used for the verified retirement. */
+  request: RetireBranchToolInput;
+  verified: {
+    repository: {
+      before: RetireBranchRepositoryIdentity;
+      after: RetireBranchRepositoryIdentity;
+      identityPreserved: true;
+    };
+    refs: {
+      before: {
+        retiring: RetireBranchRefIdentity;
+        target: RetireBranchRefIdentity;
+        expectedHead: string;
+        expectedHeadMatches: true;
+      };
+      after: {
+        retiring: RetireBranchAbsentRefProof;
+        target: RetireBranchRefIdentity;
+        targetHeadPreserved: true;
+      };
+    };
+    ancestry: {
+      retiringHead: string;
+      targetHead: string;
+      retiringIsAncestorOfTarget: boolean;
+    };
+    worktreeOccupancy: {
+      before: RetireBranchWorktreeOccupancyProof;
+      after: RetireBranchWorktreeOccupancyProof;
+    };
+    mutation: {
+      exactLocalRefDeletionAttempted: true;
+      localBranchAbsentAfterDeletion: true;
+      directRemoteDeletionAttempted: false;
+      remoteTrackingRefDeletionAttempted: false;
+    };
+  };
+}
 
 export interface PullRequestDetails {
   repository: GitHubRepository;

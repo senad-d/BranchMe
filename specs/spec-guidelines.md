@@ -1,6 +1,6 @@
 # Plan: BranchMe Implementation Guidelines
 
-> Historical note (superseded, updated 2026-08-23): this preparation guideline is retained for context, but current behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Current implementation has twelve tools, including verified local `integrate_branch` and optional targeted `branch_status` ancestry verification. The original blanket rule against all merge behavior is superseded: BranchMe still has no staging or user-authored commit tool, while explicit integration may let Git create its standard merge commit.
+> Historical note (superseded, updated 2026-08-23): this preparation guideline is retained for context, but current behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Current implementation has thirteen tools, including verified local `integrate_branch`, leased local `retire_branch`, and optional targeted `branch_status` ancestry verification. The original blanket rules against all merge behavior and all branch deletion are superseded: BranchMe still has no staging or user-authored commit tool, explicit integration may let Git create its standard merge commit, and explicit retirement may delete one exact expected local branch ref. Bulk, inferred-target, remote, and remote-tracking deletion remain prohibited.
 
 ## Task Description
 
@@ -56,6 +56,7 @@ Use `StringEnum` from `@earendil-works/pi-ai` for string enum schemas if enum fi
 - `rebase_branch`: explicitly rebase the clean current branch onto its configured upstream.
 - `push_branch`: push/publish the current branch.
 - `integrate_branch`: integrate one exact local source into the already-current clean local target with verified outcomes and automatic conflict abort/restoration.
+- `retire_branch`: delete one exact unoccupied local branch ref with an expected-`HEAD` lease and exact target ancestry; unmerged history requires explicit force authorization.
 - `pull_request`: create a GitHub pull request in the current repository.
 
 ### Prompt Metadata Style
@@ -69,6 +70,7 @@ Good guideline examples:
 - `Use pull_branch only when the user explicitly wants a fast-forward-only update.`
 - `Use rebase_branch only when the user explicitly accepts local history rewriting.`
 - `Use push_branch only after commits already exist; push_branch never commits or stages files.`
+- `Use retire_branch only with explicit user intent, a fresh exact expected HEAD, verified target ancestry, and explicit force authorization for unmerged data loss.`
 - `Use pull_request only when the user provides explicit head branch, base branch, title, body, and draft values.`
 
 Avoid vague wording like `Use this tool when...` because Pi appends guidelines without grouping.
@@ -100,7 +102,7 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
 - `pull_branch` must remain fast-forward-only and must not rebase or create merge commits.
 - `rebase_branch` must require explicit user intent, a clean current branch, and a configured upstream; disable autostash and multi-ref updates, and attempt to abort on failure.
 - `push_branch` must push the current branch only and use an explicit upstream remote/refspec instead of bare `git push`.
-- Historical v1 rule (superseded for merge only): do not implement user-authored commit, staging, stash, reset, arbitrary-target rebase, or file-editing behavior. The active design permits only the fixed, verified `integrate_branch` merge boundary and still exposes no merge message, continuation, semantic resolution, or reset rollback.
+- Historical v1 rule (superseded for merge and exact local retirement only): do not implement user-authored commit, staging, stash, reset, arbitrary-target rebase, or file-editing behavior. The active design permits only the fixed, verified `integrate_branch` merge boundary and leased `retire_branch` local-ref deletion boundary. Retirement exposes no bulk, inferred-target, remote, remote-tracking, automatic worktree-removal, or reset-rollback behavior.
 
 ## GitHub Guidelines
 

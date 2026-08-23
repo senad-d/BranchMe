@@ -31,7 +31,7 @@ const panelCases = [
     },
   },
   {
-    title: "Narrow mode: Integration selected",
+    title: "Narrow mode: Lifecycle selected",
     width: 40,
     selectedSection: "integration",
     data: {
@@ -64,7 +64,7 @@ const panelCases = [
     },
   },
   {
-    title: "Wide mode: Integration selected",
+    title: "Wide mode: Lifecycle selected",
     width: 80,
     selectedSection: "integration",
     data: {

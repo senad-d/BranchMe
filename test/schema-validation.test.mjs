@@ -15,6 +15,7 @@ import {
   PUSH_BRANCH_TOOL_NAME,
   REBASE_BRANCH_TOOL_NAME,
   REMOVE_WORKTREE_TOOL_NAME,
+  RETIRE_BRANCH_TOOL_NAME,
 } from "../src/constants.ts";
 import { registerBranchMeTools } from "../src/tools/branchme-tools.ts";
 
@@ -84,6 +85,18 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
   });
   assertValid(tools.get(PULL_BRANCH_TOOL_NAME), {});
   assertValid(tools.get(REBASE_BRANCH_TOOL_NAME), {});
+  assertValid(tools.get(RETIRE_BRANCH_TOOL_NAME), {
+    branchName: "feature/runtime-schema",
+    expectedHead: "a".repeat(40),
+    targetBranch: "main",
+    force: false,
+  });
+  assertValid(tools.get(RETIRE_BRANCH_TOOL_NAME), {
+    branchName: "feature/runtime-schema-sha256",
+    expectedHead: "B".repeat(64),
+    targetBranch: "main",
+    force: true,
+  });
   assertValid(tools.get(PUSH_BRANCH_TOOL_NAME), {});
   assertValid(tools.get(LIST_WORKTREES_TOOL_NAME), {});
   assertValid(tools.get(CREATE_WORKTREE_TOOL_NAME), {
@@ -154,6 +167,52 @@ test("runtime schema validation enforces exact integrate_branch inputs", () => {
     "push",
     "fetch",
     "worktreePath",
+  ]) {
+    assertInvalid(tool, { ...valid, [forbidden]: "forbidden" });
+  }
+});
+
+test("runtime schema validation enforces exact retire_branch inputs", () => {
+  const tool = registeredTools().get(RETIRE_BRANCH_TOOL_NAME);
+  const valid = {
+    branchName: "feature/runtime-schema",
+    expectedHead: "a".repeat(40),
+    targetBranch: "main",
+    force: false,
+  };
+
+  assertValid(tool, valid);
+  assertValid(tool, { ...valid, expectedHead: "B".repeat(64), force: true });
+  assertInvalid(tool, null);
+  assertInvalid(tool, {});
+  for (const required of ["branchName", "expectedHead", "targetBranch", "force"]) {
+    const missing = { ...valid };
+    delete missing[required];
+    assertInvalid(tool, missing);
+  }
+  assertInvalid(tool, { ...valid, branchName: "" });
+  assertInvalid(tool, { ...valid, targetBranch: "" });
+  assertInvalid(tool, { ...valid, expectedHead: "a".repeat(39) });
+  assertInvalid(tool, { ...valid, expectedHead: "a".repeat(41) });
+  assertInvalid(tool, { ...valid, expectedHead: "a".repeat(63) });
+  assertInvalid(tool, { ...valid, expectedHead: "a".repeat(65) });
+  assertInvalid(tool, { ...valid, expectedHead: `${"a".repeat(39)}g` });
+  assertInvalid(tool, { ...valid, force: {} });
+  for (const forbidden of [
+    "path",
+    "repo",
+    "remote",
+    "refspec",
+    "pattern",
+    "branches",
+    "all",
+    "prune",
+    "deleteRemote",
+    "push",
+    "fetch",
+    "worktreePath",
+    "sourceBranch",
+    "baseBranch",
   ]) {
     assertInvalid(tool, { ...valid, [forbidden]: "forbidden" });
   }

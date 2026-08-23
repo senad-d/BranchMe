@@ -22,6 +22,7 @@ const requiredPublicFiles = [
   "src/commands/branchme-command.ts",
   "src/constants.ts",
   "src/extension.ts",
+  "src/git-retirement.ts",
   "src/git.ts",
   "src/github.ts",
   "src/redaction.ts",

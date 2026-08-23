@@ -629,6 +629,30 @@ export function parseWorktreePorcelain(output: string): Pick<ListWorktreesDetail
   return { worktrees, omitted: records.length - returnedCount };
 }
 
+export interface LocalBranchWorktreeOccupancy {
+  branchName: string;
+  completeInventoryInspected: true;
+  occupied: boolean;
+  matchingWorktreeCount: number;
+}
+
+export interface PresentDirectLocalBranchRef {
+  status: "present";
+  branchName: string;
+  fullRef: string;
+  objectId: string;
+}
+
+export interface AbsentDirectLocalBranchRef {
+  status: "absent";
+  branchName: string;
+  fullRef: string;
+}
+
+export type DirectLocalBranchRefInspection =
+  | PresentDirectLocalBranchRef
+  | AbsentDirectLocalBranchRef;
+
 interface WorktreeInventoryEntry {
   record: ParsedWorktreeRecord;
   index: number;
@@ -995,6 +1019,33 @@ export async function listWorktrees(
     repoRoot: safeWorktreeValue(inventory.repoRoot, GIT_WORKTREE_PATH_LIMIT_CHARS),
     worktrees,
     omitted: inventory.entries.length - returnedCount,
+  };
+}
+
+export async function inspectLocalBranchWorktreeOccupancy(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  branchName: string,
+  signal?: AbortSignal,
+): Promise<LocalBranchWorktreeOccupancy> {
+  validateBranchNameInput(branchName);
+  requireLosslessWorktreeIdentity(branchName, "branch");
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  const args = ["worktree", "list", "--porcelain", "-z"];
+  const result = await runGit(pi, { cwd: repoRoot }, args, {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+  });
+  const records = parseWorktreeRecords(result.stdout);
+  let matchingWorktreeCount = 0;
+  for (const record of records) {
+    if (record.branch === branchName) matchingWorktreeCount += 1;
+  }
+  return {
+    branchName,
+    completeInventoryInspected: true,
+    occupied: matchingWorktreeCount > 0,
+    matchingWorktreeCount,
   };
 }
 
@@ -1834,6 +1885,113 @@ export async function localBranchExists(
     allowFailure: true,
   });
   return result.code === 0;
+}
+
+function requireLosslessLocalRef(branchName: string): string {
+  requireLosslessWorktreeIdentity(branchName, "branch");
+  const fullRef = `refs/heads/${branchName}`;
+  if (!isLosslessGitMetadata(fullRef, GIT_CONTEXT_VALUE_LIMIT_CHARS)) {
+    throw new Error(
+      "The full local branch ref cannot be returned safely and losslessly. " +
+      `Use a branch name short enough to keep the full ref within ${GIT_CONTEXT_VALUE_LIMIT_CHARS} characters.`,
+    );
+  }
+  return fullRef;
+}
+
+interface ExactLocalRefListing {
+  exactObjectId: string | null;
+  exactRefFound: boolean;
+}
+
+function parseExactLocalRefListing(
+  branchName: string,
+  fullRef: string,
+  output: string,
+): ExactLocalRefListing {
+  const row = stripSingleLineTerminator(output);
+  if (!row) return { exactObjectId: null, exactRefFound: false };
+
+  const fields = row.split(NUL_SEPARATOR);
+  if (fields.length !== 2 || !fields[0] || !fields[1]) {
+    throw new Error(
+      `Unable to inspect local branch ${safeWorktreeBranchLabel(branchName)}: ` +
+      "Git returned a malformed exact-ref listing.",
+    );
+  }
+  const [observedRef, objectId] = fields;
+  if (observedRef !== fullRef) {
+    if (observedRef.startsWith(`${fullRef}/`)) {
+      return { exactObjectId: null, exactRefFound: false };
+    }
+    throw new Error(
+      `Unable to inspect local branch ${safeWorktreeBranchLabel(branchName)}: ` +
+      "Git returned a different ref identity for the requested exact local branch.",
+    );
+  }
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(objectId)) {
+    throw new Error(
+      `Unable to inspect local branch ${safeWorktreeBranchLabel(branchName)}: ` +
+      "Git returned a malformed full object identity.",
+    );
+  }
+  return { exactObjectId: objectId, exactRefFound: true };
+}
+
+async function rejectSymbolicLocalBranchRef(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  branchName: string,
+  fullRef: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const symbolicRefArgs = ["symbolic-ref", "--quiet", fullRef];
+  const symbolicRef = await runGit(pi, ctx, symbolicRefArgs, {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  if (symbolicRef.code === 0) {
+    throw new Error(
+      `Local branch ${safeWorktreeBranchLabel(branchName)} is symbolic; ` +
+      "retirement requires a verified direct local branch ref.",
+    );
+  }
+  if (symbolicRef.code !== 1 || symbolicRef.stdout.length > 0 || symbolicRef.stderr.length > 0) {
+    throw new Error(formatGitFailure(symbolicRefArgs, symbolicRef));
+  }
+}
+
+export async function inspectDirectLocalBranchRef(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  branchName: string,
+  signal?: AbortSignal,
+): Promise<DirectLocalBranchRefInspection> {
+  validateBranchNameInput(branchName);
+  const fullRef = requireLosslessLocalRef(branchName);
+  const listArgs = [
+    "for-each-ref",
+    "--count=1",
+    "--sort=refname",
+    "--format=%(refname)%00%(objectname)",
+    fullRef,
+  ];
+  const listing = await runGit(pi, ctx, listArgs, {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+  });
+  const parsed = parseExactLocalRefListing(branchName, fullRef, listing.stdout);
+  await rejectSymbolicLocalBranchRef(pi, ctx, branchName, fullRef, signal);
+  if (!parsed.exactRefFound || parsed.exactObjectId === null) {
+    return { status: "absent", branchName, fullRef };
+  }
+  return {
+    status: "present",
+    branchName,
+    fullRef,
+    objectId: parsed.exactObjectId,
+  };
 }
 
 export async function getLocalBranchCommit(

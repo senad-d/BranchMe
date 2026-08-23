@@ -14,6 +14,7 @@ import {
   FETCH_BRANCH_TOOL_NAME,
   GIT_CONTEXT_SUMMARY_LIMIT_CHARS,
   GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
+  GIT_RETIREMENT_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
   INTEGRATE_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
@@ -22,12 +23,14 @@ import {
   PUSH_BRANCH_TOOL_NAME,
   REBASE_BRANCH_TOOL_NAME,
   REMOVE_WORKTREE_TOOL_NAME,
+  RETIRE_BRANCH_TOOL_NAME,
 } from "../src/constants.ts";
 import {
   formatCreateWorktree,
   formatIntegrateBranch,
   formatListWorktrees,
   formatRemoveWorktree,
+  formatRetireBranch,
   registerBranchMeTools,
 } from "../src/tools/branchme-tools.ts";
 
@@ -47,6 +50,7 @@ const EXPECTED_BRANCHME_TOOL_NAMES = [
   PUSH_BRANCH_TOOL_NAME,
   REBASE_BRANCH_TOOL_NAME,
   REMOVE_WORKTREE_TOOL_NAME,
+  RETIRE_BRANCH_TOOL_NAME,
 ];
 
 function result(overrides = {}) {
@@ -170,6 +174,130 @@ function worktreePorcelainRecord(...lines) {
   return `${lines.join("\0")}\0\0`;
 }
 
+function exactRefListingKey(fullRef) {
+  return [
+    "for-each-ref",
+    "--count=1",
+    "--sort=refname",
+    "--format=%(refname)%00%(objectname)",
+    fullRef,
+  ].join("\0");
+}
+
+function exactRefListing(fullRef, objectId) {
+  return `${fullRef}\0${objectId}\n`;
+}
+
+async function makeToolRetirementFixture(ancestor = true) {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-tool-retire-"));
+  const worktreeRoot = join(tempRoot, "worktree");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const branchName = "feature/retire";
+  const targetBranch = "main";
+  const retiringHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  const canonicalWorktreeRoot = await realpath(worktreeRoot);
+  const canonicalCommonGitDirectory = await realpath(commonGitDirectory);
+  const retiringRef = `refs/heads/${branchName}`;
+  const targetRef = `refs/heads/${targetBranch}`;
+  const worktreeInventory = worktreePorcelainRecord(
+    `worktree ${canonicalWorktreeRoot}`,
+    `HEAD ${targetHead}`,
+    `branch ${targetRef}`,
+  );
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: Array.from(
+      { length: 7 },
+      () => ({ stdout: `${canonicalWorktreeRoot}\n` }),
+    ),
+    ["rev-parse\0--path-format=absolute\0--git-common-dir"]: Array.from(
+      { length: 3 },
+      () => ({ stdout: `${canonicalCommonGitDirectory}\n` }),
+    ),
+    [exactRefListingKey(retiringRef)]: [
+      { stdout: exactRefListing(retiringRef, retiringHead) },
+      { stdout: exactRefListing(retiringRef, retiringHead) },
+      {},
+    ],
+    [exactRefListingKey(targetRef)]: Array.from(
+      { length: 3 },
+      () => ({ stdout: exactRefListing(targetRef, targetHead) }),
+    ),
+    [`symbolic-ref\0--quiet\0${retiringRef}`]: Array.from({ length: 3 }, () => ({ code: 1 })),
+    [`symbolic-ref\0--quiet\0${targetRef}`]: Array.from({ length: 3 }, () => ({ code: 1 })),
+    [`rev-parse\0--verify\0${retiringRef}^{commit}`]: Array.from(
+      { length: 2 },
+      () => ({ stdout: `${retiringHead}\n` }),
+    ),
+    [`rev-parse\0--verify\0${targetRef}^{commit}`]: Array.from(
+      { length: 3 },
+      () => ({ stdout: `${targetHead}\n` }),
+    ),
+    ["worktree\0list\0--porcelain\0-z"]: Array.from(
+      { length: 3 },
+      () => ({ stdout: worktreeInventory }),
+    ),
+    [`merge-base\0--is-ancestor\0${retiringHead}\0${targetHead}`]: { code: ancestor ? 0 : 1 },
+    [`update-ref\0--no-deref\0-d\0${retiringRef}\0${retiringHead}`]: {},
+  });
+  return {
+    tempRoot,
+    worktreeRoot: canonicalWorktreeRoot,
+    branchName,
+    targetBranch,
+    retiringHead,
+    targetHead,
+    pi,
+  };
+}
+
+function retirementDetails(mode) {
+  const branchName = "feature/retire";
+  const targetBranch = "main";
+  const retiringHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  const repository = { worktreeRoot: "/repo", canonicalCommonGitDirectory: "/repo/.git" };
+  const retiring = { branchName, fullRef: `refs/heads/${branchName}`, head: retiringHead };
+  const target = { branchName: targetBranch, fullRef: `refs/heads/${targetBranch}`, head: targetHead };
+  const occupancy = {
+    branchName,
+    completeInventoryInspected: true,
+    occupied: false,
+    matchingWorktreeCount: 0,
+  };
+  return {
+    action: RETIRE_BRANCH_TOOL_NAME,
+    status: "retired",
+    mode,
+    request: { branchName, expectedHead: retiringHead, targetBranch, force: mode === "forced_unmerged" },
+    verified: {
+      repository: { before: repository, after: repository, identityPreserved: true },
+      refs: {
+        before: { retiring, target, expectedHead: retiringHead, expectedHeadMatches: true },
+        after: {
+          retiring: { branchName, fullRef: retiring.fullRef, absent: true },
+          target,
+          targetHeadPreserved: true,
+        },
+      },
+      ancestry: {
+        retiringHead,
+        targetHead,
+        retiringIsAncestorOfTarget: mode === "merged",
+      },
+      worktreeOccupancy: { before: occupancy, after: occupancy },
+      mutation: {
+        exactLocalRefDeletionAttempted: true,
+        localBranchAbsentAfterDeletion: true,
+        directRemoteDeletionAttempted: false,
+        remoteTrackingRefDeletionAttempted: false,
+      },
+    },
+  };
+}
+
 function integrationDetails(status) {
   const sourceHead = "a".repeat(40);
   const targetHead = "b".repeat(40);
@@ -238,7 +366,7 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 12);
+  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 13);
   assert.deepEqual([...BRANCHME_TOOL_NAMES].sort(), [...EXPECTED_BRANCHME_TOOL_NAMES].sort());
   assert.equal(pi.tools.length, EXPECTED_BRANCHME_TOOL_NAMES.length);
   assert.equal(new Set(pi.tools.map((tool) => tool.name)).size, EXPECTED_BRANCHME_TOOL_NAMES.length);
@@ -421,6 +549,130 @@ test("integrate_branch returns complete helper details and forwards the caller s
     );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("retire_branch exposes an exact strict schema and explicit destructive sequencing guidance", () => {
+  const pi = makePi();
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, RETIRE_BRANCH_TOOL_NAME);
+
+  assert.deepEqual(tool.parameters.required, ["branchName", "expectedHead", "targetBranch", "force"]);
+  assert.deepEqual(
+    Object.keys(tool.parameters.properties),
+    ["branchName", "expectedHead", "targetBranch", "force"],
+  );
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.equal(tool.parameters.properties.expectedHead.pattern, "^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$");
+  assert.equal(tool.parameters.properties.force.type, "boolean");
+  for (const unsupported of [
+    "path",
+    "repo",
+    "remote",
+    "refspec",
+    "pattern",
+    "branches",
+    "all",
+    "prune",
+    "deleteRemote",
+    "push",
+    "fetch",
+    "worktreePath",
+    "sourceBranch",
+    "baseBranch",
+  ]) {
+    assert.equal(unsupported in tool.parameters.properties, false);
+  }
+
+  assert.ok(tool.description.includes(RETIRE_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptSnippet.includes(RETIRE_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(RETIRE_BRANCH_TOOL_NAME)));
+  const guidance = tool.promptGuidelines.join(" ");
+  assert.match(guidance, /user explicitly intends to delete one exact local branch/iu);
+  assert.match(guidance, /fresh expected commit and ancestry proof with branch_status.*exact commit was already supplied/iu);
+  assert.match(guidance, /branch_status and retire_branch sequentially.*same parallel tool batch/iu);
+  assert.match(guidance, /retire_branch by itself.*another Git mutation/iu);
+  assert.match(guidance, /force: true.*explicit user authorization for unmerged data loss/iu);
+  assert.match(guidance, /remove_worktree and retire_branch.*separate sequential operations/iu);
+  assert.match(guidance, /never directly deletes a remote or remote-tracking branch/iu);
+});
+
+test("retire_branch formats merged and forced-unmerged outcomes with bounded local-only content", () => {
+  const merged = formatRetireBranch(retirementDetails("merged"));
+  const forced = formatRetireBranch(retirementDetails("forced_unmerged"));
+
+  assert.match(merged, /^retire_branch retired merged local branch/iu);
+  assert.match(merged, /verifying ancestry/iu);
+  assert.match(forced, /^retire_branch force-retired unmerged local branch/iu);
+  assert.match(
+    forced,
+    /retired commit may lose its remaining local branch reference and can eventually become unreachable/iu,
+  );
+  assert.match(merged, /No remote or remote-tracking branch was deleted/iu);
+  assert.match(forced, /No remote or remote-tracking branch was deleted/iu);
+  assert.ok(merged.length <= GIT_RETIREMENT_SUMMARY_LIMIT_CHARS);
+  assert.ok(forced.length <= GIT_RETIREMENT_SUMMARY_LIMIT_CHARS);
+
+  const unsafe = retirementDetails("forced_unmerged");
+  unsafe.request.branchName = "feature/ghp_toolretirebranchsecret123\u200b";
+  unsafe.request.targetBranch = "ghp_toolretiretargetsecret123\u200b";
+  const sanitized = formatRetireBranch(unsafe);
+  assert.match(sanitized, /\[REDACTED\]/u);
+  assert.doesNotMatch(sanitized, /toolretire(?:branch|target)secret/u);
+  assert.doesNotMatch(sanitized, /\u200b/u);
+  assert.ok(sanitized.length <= GIT_RETIREMENT_SUMMARY_LIMIT_CHARS);
+});
+
+test("retire_branch returns complete helper details and keeps post-mutation verification cancellation-safe", async () => {
+  const fixture = await makeToolRetirementFixture();
+  try {
+    registerBranchMeTools(fixture.pi);
+    const tool = toolByName(fixture.pi, RETIRE_BRANCH_TOOL_NAME);
+    const controller = new AbortController();
+    const output = await tool.execute(
+      "call-retire",
+      {
+        branchName: fixture.branchName,
+        expectedHead: fixture.retiringHead.toUpperCase(),
+        targetBranch: fixture.targetBranch,
+        force: false,
+      },
+      controller.signal,
+      undefined,
+      { ...ctx, cwd: fixture.worktreeRoot },
+    );
+
+    assert.equal(output.details.action, RETIRE_BRANCH_TOOL_NAME);
+    assert.equal(output.details.status, "retired");
+    assert.equal(output.details.mode, "merged");
+    assert.deepEqual(output.details.request, {
+      branchName: fixture.branchName,
+      expectedHead: fixture.retiringHead,
+      targetBranch: fixture.targetBranch,
+      force: false,
+    });
+    assert.equal(output.details.verified.refs.before.retiring.head, fixture.retiringHead);
+    assert.equal(output.details.verified.refs.before.target.head, fixture.targetHead);
+    assert.equal(output.details.verified.refs.after.retiring.absent, true);
+    assert.equal(output.details.verified.refs.after.targetHeadPreserved, true);
+    assert.deepEqual(output.details.verified.mutation, {
+      exactLocalRefDeletionAttempted: true,
+      localBranchAbsentAfterDeletion: true,
+      directRemoteDeletionAttempted: false,
+      remoteTrackingRefDeletionAttempted: false,
+    });
+    assert.equal(output.content[0].text, formatRetireBranch(output.details));
+
+    const mutationIndex = fixture.pi.calls.findIndex((call) => call.args[0] === "update-ref");
+    assert.notEqual(mutationIndex, -1);
+    assert.ok(
+      fixture.pi.calls.slice(0, mutationIndex + 1).every((call) => call.options.signal === controller.signal),
+    );
+    assert.ok(
+      fixture.pi.calls.slice(mutationIndex + 1).every((call) => call.options.signal === undefined),
+    );
+  } finally {
+    await rm(fixture.tempRoot, { recursive: true, force: true });
   }
 });
 

@@ -11,6 +11,7 @@ import {
   CREATE_WORKTREE_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   REMOVE_WORKTREE_TOOL_NAME,
+  RETIRE_BRANCH_TOOL_NAME,
 } from "../src/constants.ts";
 
 const execFileAsync = promisify(execFile);
@@ -19,6 +20,7 @@ const maxBuffer = 1024 * 1024;
 const sessionMarker = "BRANCHME_HANDOFF_SESSION:";
 const resultMarker = "BRANCHME_WORKTREE_HANDOFF_SMOKE:";
 let networkAttempts = 0;
+const executedToolNames = [];
 
 function denyNetwork() {
   networkAttempts += 1;
@@ -184,6 +186,7 @@ async function runHandoffSession(handoff, baseEnv) {
 }
 
 async function executeTool(tool, toolCallId, params, repoRoot) {
+  executedToolNames.push(tool.name);
   const controller = new AbortController();
   return tool.execute(toolCallId, params, controller.signal, undefined, { cwd: repoRoot });
 }
@@ -246,6 +249,7 @@ async function main() {
     assert.equal(removed.details.verified.after.branchRetained, true);
     await assert.rejects(access(worktreePath), { code: "ENOENT" });
     assert.equal(await runGit(repoRoot, ["rev-parse", `refs/heads/${branchName}`], env), sourceHead);
+    assert.equal(executedToolNames.includes(RETIRE_BRANCH_TOOL_NAME), false);
     assert.equal(networkAttempts, 0);
 
     process.stdout.write(
@@ -256,6 +260,7 @@ async function main() {
         head: sourceHead,
         separateSessionVerified: true,
         branchRetained: true,
+        retireBranchInvoked: false,
         networkRequests: networkAttempts,
         credentialSource: "isolated-empty-environment",
       })}\n`,

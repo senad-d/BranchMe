@@ -8,7 +8,10 @@ import {
   GIT_INTEGRATION_CONFLICT_RAW_OUTPUT_LIMIT_BYTES,
   GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
   GIT_INTEGRATION_TIMEOUT_MS,
+  GIT_RETIREMENT_MUTATION_TIMEOUT_MS,
+  GIT_RETIREMENT_SUMMARY_LIMIT_CHARS,
   INTEGRATE_BRANCH_TOOL_NAME,
+  RETIRE_BRANCH_TOOL_NAME,
 } from "../src/constants.ts";
 
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -21,6 +24,7 @@ test("package metadata identifies BranchMe", async () => {
   assert.equal(packageJson.name, "@senad-d/branchme");
   assert.match(packageJson.description, /branch/i);
   assert.match(packageJson.description, /integration/i);
+  assert.match(packageJson.description, /retirement/i);
   assert.equal(packageJson.repository.url, "git+https://github.com/senad-d/branchme.git");
   assert.equal(packageJson.bugs.url, "https://github.com/senad-d/branchme/issues");
   assert.equal(packageJson.homepage, "https://github.com/senad-d/branchme#readme");
@@ -59,13 +63,15 @@ test("packaged project brief describes current worktree behavior", async () => {
   const projectBrief = await readProjectFile("docs/PROJECT_DEFINITION_BRIEF.md");
 
   assert.ok(packageJson.files.includes("docs/**/*.md"));
-  assert.match(projectBrief, /twelve strict agent-callable tools/i);
-  for (const toolName of ["list_worktrees", "create_worktree", "remove_worktree"]) {
+  assert.match(projectBrief, /thirteen strict agent-callable tools/i);
+  for (const toolName of ["list_worktrees", "create_worktree", "remove_worktree", "retire_branch"]) {
     assert.match(projectBrief, new RegExp(`\\b${toolName}\\b`, "u"));
   }
   assert.match(projectBrief, /create a checkout directory outside the active checkout/i);
   assert.match(projectBrief, /ignored entries all block removal/i);
   assert.match(projectBrief, /exact canonical absolute cwd/i);
+  assert.match(projectBrief, /expected-`HEAD` lease/i);
+  assert.match(projectBrief, /branch\.<branchName>\.\*/u);
   assert.doesNotMatch(projectBrief, /files written:\s*none/i);
   assert.doesNotMatch(projectBrief, /minimal pi tools for changing\/creating current-repo branches/i);
 });
@@ -128,6 +134,52 @@ test("branch integration contracts and runtime registration stay atomic", async 
   assert.match(types, /abort:[\s\S]*succeeded: true;[\s\S]*restoration:[\s\S]*verified: true;/u);
 });
 
+test("branch retirement contracts are bounded and registered atomically", async () => {
+  const constants = await readProjectFile("src/constants.ts");
+  const types = await readProjectFile("src/types.ts");
+  const tools = await readProjectFile("src/tools/branchme-tools.ts");
+
+  assert.equal(RETIRE_BRANCH_TOOL_NAME, "retire_branch");
+  assert.equal(BRANCHME_TOOL_NAMES.length, 13);
+  assert.equal(BRANCHME_TOOL_NAMES.includes(RETIRE_BRANCH_TOOL_NAME), true);
+  assert.equal(constants.match(/export const RETIRE_BRANCH_TOOL_NAME\b/gu)?.length, 1);
+  assert.match(tools, /name: RETIRE_BRANCH_TOOL_NAME,/u);
+  assert.match(tools, /await retireBranch\(pi, ctx, params, signal\)/u);
+
+  for (const limit of [GIT_RETIREMENT_MUTATION_TIMEOUT_MS, GIT_RETIREMENT_SUMMARY_LIMIT_CHARS]) {
+    assert.ok(Number.isSafeInteger(limit));
+    assert.ok(limit > 0);
+  }
+
+  const input = types.match(/export interface RetireBranchToolInput \{(?<body>[^}]+)\}/u)?.groups?.body;
+  assert.ok(input);
+  assert.deepEqual(
+    [...input.matchAll(/^\s*(\w+):\s*([^;]+);$/gmu)].map((match) => [match[1], match[2]]),
+    [
+      ["branchName", "string"],
+      ["expectedHead", "string"],
+      ["targetBranch", "string"],
+      ["force", "boolean"],
+    ],
+  );
+
+  const details = types.slice(
+    types.indexOf("export type RetireBranchMode"),
+    types.indexOf("export interface PullRequestDetails"),
+  );
+  assert.match(details, /"merged" \| "forced_unmerged"/u);
+  assert.match(details, /action: "retire_branch";[\s\S]*status: "retired";/u);
+  assert.match(details, /request: RetireBranchToolInput;/u);
+  assert.match(details, /repository:[\s\S]*before:[\s\S]*after:[\s\S]*identityPreserved: true;/u);
+  assert.match(details, /refs:[\s\S]*expectedHeadMatches: true;[\s\S]*retiring: RetireBranchAbsentRefProof;/u);
+  assert.match(details, /interface RetireBranchAbsentRefProof[\s\S]*absent: true;/u);
+  assert.match(details, /ancestry:[\s\S]*retiringIsAncestorOfTarget: boolean;/u);
+  assert.match(details, /worktreeOccupancy:[\s\S]*before:[\s\S]*after:/u);
+  assert.match(details, /localBranchAbsentAfterDeletion: true;/u);
+  assert.match(details, /directRemoteDeletionAttempted: false;/u);
+  assert.doesNotMatch(details, /AbortSignal|GitExecResult|WorktreeEntry\[\]|rawOutput|stdout|stderr/u);
+});
+
 test("public documentation describes implemented behavior", async () => {
   for (const path of ["README.md", "SECURITY.md", "CHANGELOG.md", "docs/STRUCTURE.md"]) {
     const text = await readProjectFile(path);
@@ -141,7 +193,28 @@ test("public documentation describes implemented behavior", async () => {
     );
   }
 
-  const readme = await readProjectFile("README.md");
+  const activeDocs = await Promise.all(
+    [
+      "README.md",
+      "SECURITY.md",
+      "CHANGELOG.md",
+      "docs/STRUCTURE.md",
+      "docs/PROJECT_DEFINITION_BRIEF.md",
+      "docs/SMOKE_TEST.md",
+    ].map(readProjectFile),
+  );
+  const activeDocumentation = activeDocs.join("\n");
+  assert.doesNotMatch(
+    activeDocumentation,
+    /BranchMe (?:never|does not|doesn't)[^.\n]*delete (?:local )?branches/iu,
+    "active documentation still makes a blanket no-local-branch-deletion claim",
+  );
+  assert.match(activeDocumentation, /thirteen (?:agent-callable )?tools/iu);
+  assert.match(activeDocumentation, /git update-ref --no-deref -d/iu);
+  assert.match(activeDocumentation, /branch\.<(?:branchName|name)>\.\*/u);
+  assert.match(activeDocumentation, /remote-tracking refs? (?:are|remain) untouched/iu);
+
+  const readme = activeDocs[0];
   assert.match(readme, /branch_status/);
   assert.match(readme, /change_branch/);
   assert.match(readme, /create_branch/);
@@ -149,6 +222,7 @@ test("public documentation describes implemented behavior", async () => {
   assert.match(readme, /pull_branch/);
   assert.match(readme, /rebase_branch/);
   assert.match(readme, /integrate_branch/);
+  assert.match(readme, /retire_branch/);
   assert.match(readme, /branch_status\.ancestry/);
   assert.match(readme, /already_integrated/);
   assert.match(readme, /fast_forward/);
@@ -159,4 +233,12 @@ test("public documentation describes implemented behavior", async () => {
   assert.match(readme, /pull_request/);
   assert.match(readme, /GITHUB_TOKEN/);
   assert.match(readme, /GitHub Actions example/);
+
+  const security = activeDocs[1];
+  assert.match(security, /expected-old-value/iu);
+  assert.match(security, /complete bounded[^.\n]*worktree inventory/iu);
+  assert.match(security, /(?:force[^.\n]*unmerged|unmerged[^.\n]*force)/iu);
+  assert.match(security, /process-local queue/iu);
+  assert.match(security, /retirement may have completed/iu);
+  assert.match(security, /reference-transaction/u);
 });

@@ -8,6 +8,7 @@ import {
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
   GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
+  GIT_RETIREMENT_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
   INTEGRATE_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
@@ -16,6 +17,7 @@ import {
   PUSH_BRANCH_TOOL_NAME,
   REBASE_BRANCH_TOOL_NAME,
   REMOVE_WORKTREE_TOOL_NAME,
+  RETIRE_BRANCH_TOOL_NAME,
 } from "../constants.ts";
 import {
   changeExistingLocalBranch,
@@ -38,6 +40,7 @@ import {
 } from "../git.ts";
 import { collectGitContext, formatGitContext } from "../git-context.ts";
 import { integrateBranch } from "../git-integration.ts";
+import { retireBranch } from "../git-retirement.ts";
 import {
   createGitHubPullRequest,
   ensureGitHubBranchExists,
@@ -60,6 +63,7 @@ import type {
   PullRequestToolDetails,
   PullRequestToolInput,
   RemoveWorktreeDetails,
+  RetireBranchDetails,
   WorktreeEntry,
 } from "../types.ts";
 
@@ -84,6 +88,19 @@ const IntegrateBranchParametersSchema = Type.Object(
   {
     sourceBranch: Type.String({ minLength: 1, description: "Exact existing local source branch to integrate." }),
     targetBranch: Type.String({ minLength: 1, description: "Exact existing local target branch already checked out in the clean control worktree." }),
+  },
+  { additionalProperties: false },
+);
+
+const RetireBranchParametersSchema = Type.Object(
+  {
+    branchName: Type.String({ minLength: 1, description: "Exact existing local branch to retire." }),
+    expectedHead: Type.String({
+      pattern: "^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",
+      description: "Full 40- or 64-character hexadecimal commit identity expected for branchName.",
+    }),
+    targetBranch: Type.String({ minLength: 1, description: "Exact existing local branch used for ancestry verification." }),
+    force: Type.Boolean({ description: "Explicit authorization for unmerged retirement; false for merged retirement." }),
   },
   { additionalProperties: false },
 );
@@ -299,6 +316,18 @@ export function formatIntegrateBranch(details: IntegrateBranchDetails): string {
     return `integrate_branch fast-forwarded ${target} from ${beforeTarget} to ${afterTarget}, integrating ${source}.`;
   }
   return `integrate_branch created and verified a merge commit ${afterTarget} on ${target} from previous target ${beforeTarget} and source ${source}.`;
+}
+
+export function formatRetireBranch(details: RetireBranchDetails): string {
+  const branch = safeWorktreeFormatValue(details.request.branchName, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const target = safeWorktreeFormatValue(details.request.targetBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const retiredHead = shortCommit(details.verified.refs.before.retiring.head);
+  const targetHead = shortCommit(details.verified.refs.after.target.head);
+  const localOnly = "No remote or remote-tracking branch was deleted.";
+  const text = details.mode === "merged"
+    ? `retire_branch retired merged local branch ${branch} at HEAD ${retiredHead} after verifying ancestry to ${target} at ${targetHead}. ${localOnly}`
+    : `retire_branch force-retired unmerged local branch ${branch} at HEAD ${retiredHead} against ${target} at ${targetHead}. The retired commit may lose its remaining local branch reference and can eventually become unreachable. ${localOnly}`;
+  return text.slice(0, GIT_RETIREMENT_SUMMARY_LIMIT_CHARS);
 }
 
 const PULL_REQUEST_INPUT_FIELDS: PullRequestInputField[] = ["headBranch", "baseBranch", "title", "body", "draft"];
@@ -611,6 +640,30 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const details = await integrateBranch(pi, ctx, params, signal);
       return {
         content: [{ type: "text", text: formatIntegrateBranch(details) }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: RETIRE_BRANCH_TOOL_NAME,
+    label: "Retire Branch",
+    description: "retire_branch deletes one exact unoccupied local branch only when its current commit matches expectedHead and its ancestry to one exact local targetBranch is verified. retire_branch requires force: true for explicitly authorized unmerged retirement, never directly deletes remote or remote-tracking branches, and leaves local branch configuration untouched.",
+    promptSnippet: "retire_branch: delete one exact local branch with an expected-HEAD lease, target ancestry verification, worktree-occupancy rejection, and explicit unmerged force authorization",
+    promptGuidelines: [
+      "Use retire_branch only when the user explicitly intends to delete one exact local branch.",
+      "Before retire_branch, obtain a fresh expected commit and ancestry proof with branch_status unless the exact commit was already supplied.",
+      "Call branch_status and retire_branch sequentially; never place branch_status and retire_branch in the same parallel tool batch.",
+      "Call retire_branch by itself; never run retire_branch beside another Git mutation.",
+      "Use force: true with retire_branch only after explicit user authorization for unmerged data loss.",
+      "Treat remove_worktree and retire_branch as separate sequential operations: removing a linked worktree retains its branch, which may be retired only afterward.",
+      "retire_branch never directly deletes a remote or remote-tracking branch.",
+    ],
+    parameters: RetireBranchParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await retireBranch(pi, ctx, params, signal);
+      return {
+        content: [{ type: "text", text: formatRetireBranch(details) }],
         details,
       };
     },
