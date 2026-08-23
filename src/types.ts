@@ -48,13 +48,12 @@ export interface WorktreeEntry {
   current: boolean;
 }
 
-/** Exact machine-readable identity validated to require no BranchMe display transformation. */
-export type LosslessWorktreeIdentity = string;
-
 export interface VerifiedLinkedWorktreeEntry extends Omit<WorktreeEntry, "path" | "branch"> {
-  path: LosslessWorktreeIdentity;
+  /** Exact machine-readable identity validated to require no BranchMe display transformation. */
+  path: string;
   head: string;
-  branch: LosslessWorktreeIdentity;
+  /** Exact machine-readable identity validated to require no BranchMe display transformation. */
+  branch: string;
   detached: false;
   bare: false;
   locked: false;
@@ -73,8 +72,8 @@ export interface ListWorktreesDetails {
 }
 
 export interface ReadyWorktreeHandoffDetails {
-  cwd: LosslessWorktreeIdentity;
-  branch: LosslessWorktreeIdentity;
+  cwd: string;
+  branch: string;
   head: string;
   ready: true;
   summary: string;
@@ -82,7 +81,7 @@ export interface ReadyWorktreeHandoffDetails {
 
 export interface RetainedBranchHandoffDetails {
   cwd: null;
-  branch: LosslessWorktreeIdentity;
+  branch: string;
   head: string;
   ready: false;
   summary: string;
@@ -100,7 +99,7 @@ export interface CreateWorktreeDetails {
       sourceBranch: string | null;
       sourceDetached: boolean;
       sourceHead: string;
-      canonicalWorktreePath: LosslessWorktreeIdentity;
+      canonicalWorktreePath: string;
       branchExisted: boolean;
       destinationRegistered: false;
     };
@@ -125,7 +124,7 @@ export interface RemoveWorktreeDetails {
     after: {
       worktreePresent: false;
       branchRetained: true;
-      branch: LosslessWorktreeIdentity;
+      branch: string;
       head: string;
     };
   };

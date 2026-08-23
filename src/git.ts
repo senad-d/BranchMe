@@ -395,6 +395,12 @@ interface WorktreeAttribute {
   value: string | null;
 }
 
+interface WorktreeRecordState extends ParsedWorktreeRecord {
+  seen: Set<string>;
+  headSeen: boolean;
+  branchSeen: boolean;
+}
+
 function worktreeParseError(): TypeError {
   return new TypeError("Unable to parse worktrees: malformed git worktree output.");
 }
@@ -425,6 +431,117 @@ function assertUniqueWorktreeAttribute(seen: Set<string>, key: string): void {
   seen.add(key);
 }
 
+function createWorktreeRecordState(rawPath: string): WorktreeRecordState {
+  return {
+    rawPath,
+    head: null,
+    branch: null,
+    detached: false,
+    bare: false,
+    locked: false,
+    lockReason: null,
+    prunable: false,
+    pruneReason: null,
+    seen: new Set<string>(),
+    headSeen: false,
+    branchSeen: false,
+  };
+}
+
+function parseWorktreeHead(state: WorktreeRecordState, attribute: WorktreeAttribute): void {
+  assertUniqueWorktreeAttribute(state.seen, attribute.key);
+  if (attribute.value === null || !/^[0-9a-f]{40,64}$/iu.test(attribute.value)) {
+    throw worktreeParseError();
+  }
+  state.head = attribute.value;
+  state.headSeen = true;
+}
+
+function parseWorktreeBranch(state: WorktreeRecordState, attribute: WorktreeAttribute): void {
+  assertUniqueWorktreeAttribute(state.seen, attribute.key);
+  const prefix = "refs/heads/";
+  if (!attribute.value?.startsWith(prefix)) throw worktreeParseError();
+  const branchName = attribute.value.slice(prefix.length);
+  if (!branchName) throw worktreeParseError();
+  state.branch = branchName;
+  state.branchSeen = true;
+}
+
+function parseDetachedWorktree(state: WorktreeRecordState, attribute: WorktreeAttribute): void {
+  assertUniqueWorktreeAttribute(state.seen, attribute.key);
+  if (attribute.value !== null) throw worktreeParseError();
+  state.detached = true;
+}
+
+function parseBareWorktree(state: WorktreeRecordState, attribute: WorktreeAttribute): void {
+  assertUniqueWorktreeAttribute(state.seen, attribute.key);
+  if (attribute.value !== null) throw worktreeParseError();
+  state.bare = true;
+}
+
+function parseLockedWorktree(state: WorktreeRecordState, attribute: WorktreeAttribute): void {
+  assertUniqueWorktreeAttribute(state.seen, attribute.key);
+  state.locked = true;
+  state.lockReason = attribute.value
+    ? safeWorktreeValue(attribute.value, GIT_WORKTREE_REASON_LIMIT_CHARS)
+    : null;
+}
+
+function parsePrunableWorktree(state: WorktreeRecordState, attribute: WorktreeAttribute): void {
+  assertUniqueWorktreeAttribute(state.seen, attribute.key);
+  state.prunable = true;
+  state.pruneReason = attribute.value
+    ? safeWorktreeValue(attribute.value, GIT_WORKTREE_REASON_LIMIT_CHARS)
+    : null;
+}
+
+function applyWorktreeAttribute(state: WorktreeRecordState, attribute: WorktreeAttribute): void {
+  switch (attribute.key) {
+    case "HEAD":
+      parseWorktreeHead(state, attribute);
+      break;
+    case "branch":
+      parseWorktreeBranch(state, attribute);
+      break;
+    case "detached":
+      parseDetachedWorktree(state, attribute);
+      break;
+    case "bare":
+      parseBareWorktree(state, attribute);
+      break;
+    case "locked":
+      parseLockedWorktree(state, attribute);
+      break;
+    case "prunable":
+      parsePrunableWorktree(state, attribute);
+      break;
+    case "worktree":
+      throw worktreeParseError();
+    default:
+      break;
+  }
+}
+
+function completeWorktreeRecord(state: WorktreeRecordState): ParsedWorktreeRecord {
+  if (state.bare) {
+    if (state.branchSeen || state.detached) throw worktreeParseError();
+  } else if (!state.headSeen || state.branchSeen === state.detached) {
+    throw worktreeParseError();
+  }
+
+  return {
+    rawPath: state.rawPath,
+    head: state.head,
+    branch: state.branch,
+    detached: state.detached,
+    bare: state.bare,
+    locked: state.locked,
+    lockReason: state.lockReason,
+    prunable: state.prunable,
+    pruneReason: state.pruneReason,
+  };
+}
+
 function parseWorktreeRecord(lines: string[]): ParsedWorktreeRecord {
   const worktreeLine = lines[0];
   if (!worktreeLine?.startsWith("worktree ")) throw worktreeParseError();
@@ -432,73 +549,11 @@ function parseWorktreeRecord(lines: string[]): ParsedWorktreeRecord {
   const rawPath = worktreeLine.slice("worktree ".length);
   if (!rawPath || !isAbsolute(rawPath)) throw worktreeParseError();
 
-  const seen = new Set<string>();
-  let head: string | null = null;
-  let headSeen = false;
-  let branch: string | null = null;
-  let branchSeen = false;
-  let detached = false;
-  let bare = false;
-  let locked = false;
-  let lockReason: string | null = null;
-  let prunable = false;
-  let pruneReason: string | null = null;
-
+  const state = createWorktreeRecordState(rawPath);
   for (const line of lines.slice(1)) {
-    const attribute = splitWorktreeAttribute(line);
-    switch (attribute.key) {
-      case "HEAD":
-        assertUniqueWorktreeAttribute(seen, attribute.key);
-        if (attribute.value === null || !/^[0-9a-f]{40,64}$/iu.test(attribute.value)) {
-          throw worktreeParseError();
-        }
-        head = attribute.value;
-        headSeen = true;
-        break;
-      case "branch": {
-        assertUniqueWorktreeAttribute(seen, attribute.key);
-        const prefix = "refs/heads/";
-        if (attribute.value === null || !attribute.value.startsWith(prefix)) throw worktreeParseError();
-        const branchName = attribute.value.slice(prefix.length);
-        if (!branchName) throw worktreeParseError();
-        branch = branchName;
-        branchSeen = true;
-        break;
-      }
-      case "detached":
-        assertUniqueWorktreeAttribute(seen, attribute.key);
-        if (attribute.value !== null) throw worktreeParseError();
-        detached = true;
-        break;
-      case "bare":
-        assertUniqueWorktreeAttribute(seen, attribute.key);
-        if (attribute.value !== null) throw worktreeParseError();
-        bare = true;
-        break;
-      case "locked":
-        assertUniqueWorktreeAttribute(seen, attribute.key);
-        locked = true;
-        lockReason = attribute.value ? safeWorktreeValue(attribute.value, GIT_WORKTREE_REASON_LIMIT_CHARS) : null;
-        break;
-      case "prunable":
-        assertUniqueWorktreeAttribute(seen, attribute.key);
-        prunable = true;
-        pruneReason = attribute.value ? safeWorktreeValue(attribute.value, GIT_WORKTREE_REASON_LIMIT_CHARS) : null;
-        break;
-      case "worktree":
-        throw worktreeParseError();
-      default:
-        break;
-    }
+    applyWorktreeAttribute(state, splitWorktreeAttribute(line));
   }
-
-  if (bare) {
-    if (branchSeen || detached) throw worktreeParseError();
-  } else if (!headSeen || branchSeen === detached) {
-    throw worktreeParseError();
-  }
-
-  return { rawPath, head, branch, detached, bare, locked, lockReason, prunable, pruneReason };
+  return completeWorktreeRecord(state);
 }
 
 function splitWorktreeRecords(output: string): string[][] {
@@ -896,8 +951,7 @@ function requireSourceWorktreeEntry(
     : !record.detached && record.branch === source.currentBranch;
   if (
     record.bare ||
-    record.head === null ||
-    record.head.toLowerCase() !== sourceHead.toLowerCase() ||
+    record.head?.toLowerCase() !== sourceHead.toLowerCase() ||
     !branchMatches
   ) {
     throw new Error("Unable to verify the source branch and HEAD against the worktree inventory.");
@@ -926,8 +980,7 @@ function requireCreatedWorktreeEntry(
   if (
     matched.index === 0 ||
     current ||
-    record.head === null ||
-    record.head.toLowerCase() !== expectedHead.toLowerCase() ||
+    record.head?.toLowerCase() !== expectedHead.toLowerCase() ||
     record.branch !== branchName ||
     record.detached ||
     record.bare ||
