@@ -1,6 +1,6 @@
 # Plan: BranchMe Architecture
 
-> Historical note (updated 2026-06-30): this preparation plan is retained for implementation history, not as active guidance. Current BranchMe behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Implemented behavior differs from the original plan by adding `change_branch`, using hardened repository-root `.env` token fallback, serializing same-repository git mutations, redacting git output, validating PR branch refs, importing `@earendil-works/pi-tui` utilities, and pushing upstream branches with an explicit remote/refspec instead of bare `git push`.
+> Historical note (superseded, updated 2026-08-23): this preparation plan is retained for implementation history, not as active guidance. Current BranchMe behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Implemented behavior now includes twelve tools, targeted `branch_status` ancestry checks, linked-worktree management, and verified local `integrate_branch`. The original blanket prohibition on merge behavior is superseded: BranchMe still does not stage files or create user-authored commits, but explicit integration may let Git create a standard merge commit for divergent histories. Tool-specific statements that `pull_branch` remains fast-forward-only are still current.
 
 ## Task Description
 
@@ -16,7 +16,7 @@ Pi users and CI workflows need a small, automation-friendly extension that can c
 
 ## Solution Approach
 
-BranchMe exposes a help/config slash command and five custom tools. The slash command is informational only. All git and GitHub mutations happen through explicit tool calls with precise schemas and current-repository boundary checks.
+Historically, this plan proposed a help/config slash command and five custom tools. The implemented package exposes an informational slash command and twelve strict tools; see the active documentation.
 
 ## Approved Project Definition
 
@@ -213,7 +213,7 @@ The tool must never accept owner/repo input because the extension is scoped to t
 ## Security Boundaries
 
 - BranchMe runs with the user's local permissions because Pi extensions are not sandboxed.
-- Git mutations are limited to branch creation, checkout, and push.
+- Historical v1 boundary (superseded): Git mutations were limited to branch creation, checkout, and push. The active boundary additionally includes verified worktree, fetch/pull/rebase, and local integration workflows.
 - Working-tree file edits are out of scope.
 - Network access is limited to GitHub REST PR creation.
 - Tokens come from process environment or hardened repository-root `.env` fallback.
@@ -254,7 +254,7 @@ pi --no-extensions -e .
 
 - The later implementation keeps `src/extension.ts` small and delegates to feature modules.
 - The slash command remains informational only.
-- All five tools have precise schemas, descriptions, `promptSnippet`, and tool-specific `promptGuidelines` that name the tool explicitly.
-- No feature creates commits or stages files.
+- Historical count (superseded): the original five planned tools required precise schemas, descriptions, `promptSnippet`, and named tool-specific `promptGuidelines`; the implemented package applies that rule to twelve tools.
+- BranchMe does not stage files or create user-authored commits. Superseding the original blanket no-commit statement, explicit `integrate_branch` may let Git create a standard merge commit.
 - PR creation cannot target a repository supplied by tool arguments.
 - GitHub token values are never surfaced in content, details, or thrown errors.

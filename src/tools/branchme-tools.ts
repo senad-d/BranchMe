@@ -7,7 +7,9 @@ import {
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
+  INTEGRATE_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
@@ -35,6 +37,7 @@ import {
   withRepositoryMutationQueue,
 } from "../git.ts";
 import { collectGitContext, formatGitContext } from "../git-context.ts";
+import { integrateBranch } from "../git-integration.ts";
 import {
   createGitHubPullRequest,
   ensureGitHubBranchExists,
@@ -49,6 +52,7 @@ import type {
   ChangeBranchDetails,
   CreateWorktreeDetails,
   GitContextDetails,
+  IntegrateBranchDetails,
   ListWorktreesDetails,
   PullRequestDetails,
   PullRequestInput,
@@ -60,6 +64,29 @@ import type {
 } from "../types.ts";
 
 const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
+
+const BranchStatusParametersSchema = Type.Object(
+  {
+    ancestry: Type.Optional(
+      Type.Object(
+        {
+          sourceBranch: Type.String({ minLength: 1, description: "Exact existing local source branch to verify." }),
+          targetBranch: Type.String({ minLength: 1, description: "Exact existing local target branch to verify." }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const IntegrateBranchParametersSchema = Type.Object(
+  {
+    sourceBranch: Type.String({ minLength: 1, description: "Exact existing local source branch to integrate." }),
+    targetBranch: Type.String({ minLength: 1, description: "Exact existing local target branch already checked out in the clean control worktree." }),
+  },
+  { additionalProperties: false },
+);
 
 const CreateBranchParametersSchema = Type.Object(
   {
@@ -224,6 +251,56 @@ export function formatRemoveWorktree(details: RemoveWorktreeDetails): string {
   return `Removed linked worktree directory ${path}. Verified it is no longer registered and retained local branch ${branch} at HEAD ${shortCommit(details.handoff.head)}; the removed cwd is not ready for handoff.`;
 }
 
+function integrationConflictOmissionLine(omitted: number): string {
+  return `${omitted} conflict path${omitted === 1 ? "" : "s"} omitted.`;
+}
+
+function formatIntegrationConflict(details: Extract<IntegrateBranchDetails, { status: "conflict" }>): string {
+  const source = safeWorktreeFormatValue(details.request.sourceBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const target = safeWorktreeFormatValue(details.request.targetBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const lines = [
+    `integrate_branch found conflicts while integrating ${source} into ${target}; the merge was automatically aborted and exact restoration was verified at target HEAD ${shortCommit(details.verified.heads.after.targetHead)}.`,
+    "Conflict paths:",
+  ];
+  let omitted = details.conflict.omitted;
+
+  for (const [index, entry] of details.conflict.paths.entries()) {
+    const path = safeWorktreeFormatValue(entry.path, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
+    const line = `- ${path}`;
+    const remaining = details.conflict.paths.length - index - 1;
+    const candidateOmitted = details.conflict.omitted + remaining;
+    const candidate = [
+      ...lines,
+      line,
+      ...(candidateOmitted > 0 ? [integrationConflictOmissionLine(candidateOmitted)] : []),
+    ].join("\n");
+    if (candidate.length > GIT_INTEGRATION_SUMMARY_LIMIT_CHARS) {
+      omitted += details.conflict.paths.length - index;
+      break;
+    }
+    lines.push(line);
+  }
+
+  if (omitted > 0) lines.push(integrationConflictOmissionLine(omitted));
+  return lines.join("\n");
+}
+
+export function formatIntegrateBranch(details: IntegrateBranchDetails): string {
+  if (details.status === "conflict") return formatIntegrationConflict(details);
+
+  const source = safeWorktreeFormatValue(details.request.sourceBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const target = safeWorktreeFormatValue(details.request.targetBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  const beforeTarget = shortCommit(details.verified.heads.before.targetHead);
+  const afterTarget = shortCommit(details.verified.heads.after.targetHead);
+  if (details.status === "already_integrated") {
+    return `integrate_branch verified ${source} was already integrated into ${target}; no merge ran and target HEAD remained ${afterTarget}.`;
+  }
+  if (details.status === "fast_forward") {
+    return `integrate_branch fast-forwarded ${target} from ${beforeTarget} to ${afterTarget}, integrating ${source}.`;
+  }
+  return `integrate_branch created and verified a merge commit ${afterTarget} on ${target} from previous target ${beforeTarget} and source ${source}.`;
+}
+
 const PULL_REQUEST_INPUT_FIELDS: PullRequestInputField[] = ["headBranch", "baseBranch", "title", "body", "draft"];
 
 interface ResolvedPullRequestBranches {
@@ -381,16 +458,18 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: BRANCH_STATUS_TOOL_NAME,
     label: "Branch Status",
-    description: "branch_status explicitly refreshes the current Git repository snapshot, including branch, working tree, unstaged changes, related pull request, and recent commits. branch_status is read-only and never mutates files, Git state, or GitHub state.",
-    promptSnippet: "branch_status: explicitly refresh current-repository branch, working tree, changes, related PR, and recent commits without mutation",
+    description: "branch_status explicitly refreshes the current Git repository snapshot and can optionally verify whether one captured local branch commit is an ancestor of another. branch_status is read-only and never mutates files, Git state, or GitHub state.",
+    promptSnippet: "branch_status: explicitly refresh current-repository Git state and optionally verify targeted local-branch ancestry without mutation",
     promptGuidelines: [
       "Use the automatic Git context for start-of-run questions; call branch_status only for an explicit refresh or after Git state changes during the current run.",
       "Use branch_status as a read-only refresh; branch_status never mutates files, Git state, or GitHub state.",
+      "Use targeted branch_status ancestry verification only after integrate_branch completes; do not issue branch_status in the same parallel tool batch as integrate_branch.",
     ],
-    parameters: EmptyParametersSchema,
-    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+    parameters: BranchStatusParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const details = await collectGitContext(pi, ctx, {
         signal,
+        ancestry: params.ancestry,
         env: options.env,
         fetchImpl: options.fetchImpl,
       });
@@ -509,6 +588,29 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const details = await rebaseCurrentBranch(pi, ctx, signal);
       return {
         content: [{ type: "text", text: `Rebased current branch ${details.currentBranch} onto ${details.upstream}.` }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: INTEGRATE_BRANCH_TOOL_NAME,
+    label: "Integrate Branch",
+    description: "integrate_branch verifies and merges one exact existing local source branch into one exact existing local target branch from the current clean control worktree, returning an already-integrated, fast-forward, merge-commit, or automatically aborted conflict result. integrate_branch never fetches or pushes.",
+    promptSnippet: "integrate_branch: merge an exact local source branch into the checked-out clean local target with verified outcomes and automatic conflict abort",
+    promptGuidelines: [
+      "Use integrate_branch only when the user explicitly wants one exact existing local source branch integrated into one exact existing local target branch.",
+      "Before integrate_branch, require the current clean control worktree to already have targetBranch checked out; integrate_branch never switches branches, stashes, or discards changes.",
+      "Use integrate_branch only after local refs already contain the commits to integrate; integrate_branch never fetches or pushes.",
+      "Call integrate_branch by itself and wait for it to complete; never batch integrate_branch with other Git mutations.",
+      "After integrate_branch completes, run any targeted branch_status ancestry proof separately; never place integrate_branch and branch_status in the same parallel tool batch.",
+      "A conflict result from integrate_branch means the merge was automatically aborted and restoration was verified; semantic conflict analysis belongs to a separate delegated workflow, not integrate_branch.",
+    ],
+    parameters: IntegrateBranchParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await integrateBranch(pi, ctx, params, signal);
+      return {
+        content: [{ type: "text", text: formatIntegrateBranch(details) }],
         details,
       };
     },

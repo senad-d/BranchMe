@@ -31,6 +31,12 @@ Commands only show info; BranchMe tools perform actions.
 7. `push_branch` — push the current branch.
 8. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.
 
+## Branch integration
+
+- `integrate_branch` — integrate an exact local source into an exact local target; the clean control worktree must already have the target checked out.
+- It never fetches or pushes; a conflict is automatically aborted after paths are captured and restoration is verified.
+- BranchMe does not resolve semantic conflicts; handle them in a separate developer workflow.
+
 ## Worktree handoff
 
 - `list_worktrees` — inspect the main and linked worktrees in the current repository.
@@ -47,7 +53,7 @@ Commands only show info; BranchMe tools perform actions.
 - `fetch_branch`, `pull_branch`, and `rebase_branch` require a configured upstream.
 - `pull_branch` and `rebase_branch` require a clean working tree.
 - `rebase_branch` rewrites local commits only when explicitly requested and auto-aborts on failure.
-- BranchMe never stages, creates user-authored commits, force-pushes, or creates merge commits.
+- BranchMe never stages, creates user-authored commits, or force-pushes.
 ```
 
 ## Panel: Tiny mode: clean branch with token
@@ -80,7 +86,30 @@ Width: 40
 │                                      │
 │                                      │
 ├──────────────────────────────────────┤
-│ 1/3 • status • current repository on…│
+│ 1/4 • status • current repository on…│
+╰──────────────────────────────────────╯
+```
+
+## Panel: Narrow mode: Integration selected
+
+Width: 40
+
+```text
+╭ BranchMe ─────────────── Integration ╮
+│current repo only • informational     │
+│ ↑↓ section • q quit • /branchme help │
+├──────────────────────────────────────┤
+│ INTEGRATION                          │
+│  integrate_branch -> exact local sou…│
+│  control target   -> checked out + c…│
+│  remote effects   -> never fetch or …│
+│  conflict         -> automatic verif…│
+│  semantic intent  -> separate develo…│
+│                                      │
+│                                      │
+│                                      │
+├──────────────────────────────────────┤
+│ 3/4 • integration • local refs • cle…│
 ╰──────────────────────────────────────╯
 ```
 
@@ -94,15 +123,15 @@ Width: 80
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │▶  Status            │ STATUS                                                 │
 │   Workflow          │  Current branch:    feature/current                    │
-│   Worktrees         │  GitHub repository: senad-d/branchme                   │
-│                     │  GitHub token:      present                            │
+│   Integration       │  GitHub repository: senad-d/branchme                   │
+│   Worktrees         │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 1/3 • status • current repository only • tools perform actions               │
+│ 1/4 • status • current repository only • tools perform actions               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -115,16 +144,38 @@ Width: 80
 │ ↑↓ section • q quit • /branchme help                                         │
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │   Status            │ WORKFLOW                                               │
-│▶  Workflow          │  branch_status   -> inspect                            │
-│   Worktrees         │  change_branch   -> existing local                     │
-│                     │  fetch_branch    -> upstream remote                    │
-│                     │  pull_branch     -> fast-forward                       │
-│                     │  rebase_branch   -> onto upstream                      │
-│                     │  create_branch   -> from HEAD                          │
-│                     │  push_branch     -> current branch                     │
-│                     │  pull_request    -> after push                         │
+│▶  Workflow          │  branch_status    -> inspect                           │
+│   Integration       │  change_branch    -> existing local                    │
+│   Worktrees         │  fetch_branch     -> upstream remote                   │
+│                     │  pull_branch      -> fast-forward                      │
+│                     │  rebase_branch    -> onto upstream                     │
+│                     │  create_branch    -> from HEAD                         │
+│                     │  push_branch      -> current branch                    │
+│                     │  pull_request     -> after push                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 2/3 • workflow • inspect → change → fetch/pull/rebase → create → push → PR   │
+│ 2/4 • workflow • inspect → change → fetch/pull/rebase → create → push → PR   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+## Panel: Wide mode: Integration selected
+
+Width: 80
+
+```text
+╭ BranchMe ─────────────────────────────────────────────────────── Integration ╮
+│ ↑↓ section • q quit • /branchme help                                         │
+├─────────────────────┬────────────────────────────────────────────────────────┤
+│   Status            │ INTEGRATION                                            │
+│   Workflow          │  integrate_branch -> exact local source -> target      │
+│▶  Integration       │  control target   -> checked out + clean               │
+│   Worktrees         │  remote effects   -> never fetch or push               │
+│                     │  conflict         -> automatic verified abort          │
+│                     │  semantic intent  -> separate developer workflow       │
+│                     │                                                        │
+│                     │                                                        │
+│                     │                                                        │
+├─────────────────────┴────────────────────────────────────────────────────────┤
+│ 3/4 • integration • local refs • clean target • conflicts auto-abort         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -137,16 +188,16 @@ Width: 80
 │ ↑↓ section • q quit • /branchme help                                         │
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │   Status            │ WORKTREES                                              │
-│   Workflow          │  list_worktrees  -> inspect inventory                  │
-│▶  Worktrees         │  create_worktree -> ready handoff.cwd                  │
-│                     │  remove_worktree -> clean linked; branch retained      │
+│   Workflow          │  list_worktrees   -> inspect inventory                 │
+│   Integration       │  create_worktree  -> ready handoff.cwd                 │
+│▶  Worktrees         │  remove_worktree  -> clean linked; branch retained     │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 3/3 • worktrees • create → handoff cwd → next session • remove retains branch│
+│ 4/4 • worktrees • create → handoff cwd → next session • remove retains branch│
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -160,15 +211,15 @@ Width: 112
 ├──────────────────────┬───────────────────────────────────────────────────────────────────────┤
 │▶  Status             │ STATUS                                                                │
 │   Workflow           │  Current branch:    main                                              │
-│   Worktrees          │  GitHub repository: senad-d/BranchMe                                  │
-│                      │  GitHub token:      not set                                           │
+│   Integration        │  GitHub repository: senad-d/BranchMe                                  │
+│   Worktrees          │  GitHub token:      not set                                           │
 │                      │                                                                       │
 │                      │                                                                       │
 │                      │                                                                       │
 │                      │                                                                       │
 │                      │                                                                       │
 ├──────────────────────┴───────────────────────────────────────────────────────────────────────┤
-│ 1/3 • status • current repository only • tools perform actions                               │
+│ 1/4 • status • current repository only • tools perform actions                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -191,7 +242,7 @@ Width: 50
 │                                                │
 │                                                │
 ├────────────────────────────────────────────────┤
-│ 1/3 • warning • Unable to resolve a GitHub rep…│
+│ 1/4 • warning • Unable to resolve a GitHub rep…│
 ╰────────────────────────────────────────────────╯
 ```
 
@@ -205,15 +256,15 @@ Width: 80
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │▶  Status            │ STATUS                                                 │
 │   Workflow          │  Current branch:    main                               │
-│   Worktrees         │  GitHub repository: warning: Repository boundary misma…│
-│                     │  GitHub token:      present                            │
+│   Integration       │  GitHub repository: warning: Repository boundary misma…│
+│   Worktrees         │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 1/3 • warning • Repository boundary mismatch: local origin resolves to senad…│
+│ 1/4 • warning • Repository boundary mismatch: local origin resolves to senad…│
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -227,15 +278,15 @@ Width: 72
 ├───────────────────┬──────────────────────────────────────────────────┤
 │▶  Status          │ STATUS                                           │
 │   Workflow        │  Current branch:    main                         │
-│   Worktrees       │  GitHub repository: senad-d/branchme             │
-│                   │  GitHub token:      warning: Unable to read .env…│
+│   Integration     │  GitHub repository: senad-d/branchme             │
+│   Worktrees       │  GitHub token:      warning: Unable to read .env…│
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
 ├───────────────────┴──────────────────────────────────────────────────┤
-│ 1/3 • warning • Unable to read .env file for GitHub token fallback: …│
+│ 1/4 • warning • Unable to read .env file for GitHub token fallback: …│
 ╰──────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -249,14 +300,14 @@ Width: 72
 ├───────────────────┬──────────────────────────────────────────────────┤
 │▶  Status          │ STATUS                                           │
 │   Workflow        │  Current branch:    feature/super-long-branch-na…│
-│   Worktrees       │  GitHub repository: very-long-owner-name/very-lo…│
-│                   │  GitHub token:      present                      │
+│   Integration     │  GitHub repository: very-long-owner-name/very-lo…│
+│   Worktrees       │  GitHub token:      present                      │
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
 ├───────────────────┴──────────────────────────────────────────────────┤
-│ 1/3 • warning • This deliberately long status note is captured to de…│
+│ 1/4 • warning • This deliberately long status note is captured to de…│
 ╰──────────────────────────────────────────────────────────────────────╯
 ```

@@ -8,6 +8,7 @@ import {
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  INTEGRATE_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
@@ -71,9 +72,16 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
   const tools = registeredTools();
 
   assertValid(tools.get(BRANCH_STATUS_TOOL_NAME), {});
+  assertValid(tools.get(BRANCH_STATUS_TOOL_NAME), {
+    ancestry: { sourceBranch: "feature/runtime-schema", targetBranch: "main" },
+  });
   assertValid(tools.get(CREATE_BRANCH_TOOL_NAME), { branchName: "feature/runtime-schema" });
   assertValid(tools.get(CHANGE_BRANCH_TOOL_NAME), { branchName: "feature/runtime-schema" });
   assertValid(tools.get(FETCH_BRANCH_TOOL_NAME), {});
+  assertValid(tools.get(INTEGRATE_BRANCH_TOOL_NAME), {
+    sourceBranch: "feature/runtime-schema",
+    targetBranch: "main",
+  });
   assertValid(tools.get(PULL_BRANCH_TOOL_NAME), {});
   assertValid(tools.get(REBASE_BRANCH_TOOL_NAME), {});
   assertValid(tools.get(PUSH_BRANCH_TOOL_NAME), {});
@@ -98,11 +106,62 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
   });
 });
 
+test("runtime schema validation enforces strict optional branch_status ancestry", () => {
+  const tool = registeredTools().get(BRANCH_STATUS_TOOL_NAME);
+  const valid = { ancestry: { sourceBranch: "feature/runtime-schema", targetBranch: "main" } };
+
+  assertValid(tool, {});
+  assertValid(tool, valid);
+  assertInvalid(tool, null);
+  assertInvalid(tool, { branchName: "main" });
+  assertInvalid(tool, { ...valid, extra: true });
+  assertInvalid(tool, { ancestry: null });
+  assertInvalid(tool, { ancestry: {} });
+  assertInvalid(tool, { ancestry: { sourceBranch: "feature/runtime-schema" } });
+  assertInvalid(tool, { ancestry: { targetBranch: "main" } });
+  assertInvalid(tool, { ancestry: { ...valid.ancestry, extra: true } });
+  assertInvalid(tool, { ancestry: { ...valid.ancestry, sourceBranch: "" } });
+  assertInvalid(tool, { ancestry: { ...valid.ancestry, targetBranch: "" } });
+});
+
+test("runtime schema validation enforces exact integrate_branch inputs", () => {
+  const tool = registeredTools().get(INTEGRATE_BRANCH_TOOL_NAME);
+  const valid = { sourceBranch: "feature/runtime-schema", targetBranch: "main" };
+
+  assertValid(tool, valid);
+  assertInvalid(tool, null);
+  assertInvalid(tool, {});
+  assertInvalid(tool, { sourceBranch: "feature/runtime-schema" });
+  assertInvalid(tool, { targetBranch: "main" });
+  assertInvalid(tool, { ...valid, sourceBranch: "" });
+  assertInvalid(tool, { ...valid, targetBranch: "" });
+  assertInvalid(tool, { ...valid, sourceBranch: [] });
+  assertInvalid(tool, { ...valid, targetBranch: {} });
+  for (const forbidden of [
+    "path",
+    "repo",
+    "remote",
+    "refspec",
+    "force",
+    "switch",
+    "strategy",
+    "message",
+    "squash",
+    "commit",
+    "continue",
+    "abort",
+    "delete",
+    "push",
+    "fetch",
+    "worktreePath",
+  ]) {
+    assertInvalid(tool, { ...valid, [forbidden]: "forbidden" });
+  }
+});
+
 test("runtime schema validation rejects extra arguments for no-parameter tools", () => {
   const tools = registeredTools();
 
-  assertInvalid(tools.get(BRANCH_STATUS_TOOL_NAME), { branchName: "main" });
-  assertInvalid(tools.get(BRANCH_STATUS_TOOL_NAME), null);
   assertInvalid(tools.get(LIST_WORKTREES_TOOL_NAME), { worktreePath: "/tmp/forbidden" });
   assertInvalid(tools.get(LIST_WORKTREES_TOOL_NAME), null);
   for (const forbidden of ["branchName", "force", "remote", "owner", "repo", "path", "rebase"]) {

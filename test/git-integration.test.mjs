@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { devNull, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import test from "node:test";
+import { integrateBranch } from "../src/git-integration.ts";
 import {
   changeExistingLocalBranch,
   createLocalBranch,
@@ -20,17 +21,22 @@ import {
 } from "../src/git.ts";
 
 function gitEnv() {
-  const env = {
-    ...process.env,
+  const inheritedEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+  );
+  return {
+    ...inheritedEnvironment,
     GIT_AUTHOR_EMAIL: "branchme-test@example.invalid",
     GIT_AUTHOR_NAME: "BranchMe Test",
+    GIT_ATTR_NOSYSTEM: "1",
     GIT_COMMITTER_EMAIL: "branchme-test@example.invalid",
     GIT_COMMITTER_NAME: "BranchMe Test",
+    GIT_CONFIG_COUNT: "0",
+    GIT_CONFIG_GLOBAL: devNull,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: devNull,
     GIT_TERMINAL_PROMPT: "0",
   };
-
-  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) delete env[key];
-  return env;
 }
 
 function execFileResult(command, args, options) {
@@ -121,6 +127,582 @@ async function localRefExists(repoRoot, ref) {
   const result = await execFileResult("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoRoot });
   return result.code === 0;
 }
+
+async function refHead(repoRoot, ref = "HEAD") {
+  return (await runGit(repoRoot, ["rev-parse", "--verify", `${ref}^{commit}`])).stdout.trim();
+}
+
+async function commitFile(repoRoot, path, content, message, force = false) {
+  await writeFile(join(repoRoot, path), content, "utf8");
+  await runGit(repoRoot, ["add", ...(force ? ["--force"] : []), "--", path]);
+  await runGit(repoRoot, ["commit", "-m", message]);
+  return refHead(repoRoot);
+}
+
+async function gitCommandSucceeds(repoRoot, args) {
+  return (await execFileResult("git", args, { cwd: repoRoot })).code === 0;
+}
+
+async function gitStatePathExists(repoRoot, name) {
+  const statePath = (await runGit(
+    repoRoot,
+    ["rev-parse", "--path-format=absolute", "--git-path", name],
+  )).stdout.trim();
+  try {
+    await access(statePath);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function assertNoMergeState(repoRoot) {
+  assert.equal(await gitStatePathExists(repoRoot, "MERGE_HEAD"), false);
+  assert.equal(await gitStatePathExists(repoRoot, "AUTO_MERGE"), false);
+}
+
+async function assertIntegrationFixtureIsolation(repoRoot) {
+  assert.equal((await runGit(repoRoot, ["remote"])).stdout, "");
+  assert.equal((await runGit(repoRoot, ["config", "--local", "--get", "user.name"])).stdout.trim(), "BranchMe Test");
+  assert.equal(
+    (await runGit(repoRoot, ["config", "--local", "--get", "user.email"])).stdout.trim(),
+    "branchme-test@example.invalid",
+  );
+  assert.equal((await runGit(repoRoot, ["config", "--local", "--get", "commit.gpgsign"])).stdout.trim(), "false");
+  const inheritedPolicy = await execFileResult(
+    "git",
+    ["config", "--show-origin", "--get-regexp", "^(core\\.hooksPath|merge\\.|rerere\\.)"],
+    { cwd: repoRoot },
+  );
+  assert.equal(inheritedPolicy.code, 1);
+  assert.equal(inheritedPolicy.stdout, "");
+}
+
+async function withTempGitIntegrationRepo(fn) {
+  return withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    await assertIntegrationFixtureIsolation(repoRoot);
+    const value = await fn(repoRoot, temporaryRoot);
+    assert.equal((await runGit(repoRoot, ["remote"])).stdout, "");
+    return value;
+  });
+}
+
+function integrationMergePolicyArgs(sourceBranch) {
+  return [
+    "-c",
+    "rerere.enabled=false",
+    "merge",
+    "--ff",
+    "--no-edit",
+    "--no-autostash",
+    "--no-rerere-autoupdate",
+    "--no-overwrite-ignore",
+    `refs/heads/${sourceBranch}`,
+  ];
+}
+
+function integrationSubcommand(args) {
+  return args[0] === "-c" ? args[2] : args[0];
+}
+
+function assertSafeIntegrationCalls(calls) {
+  const forbiddenCommands = new Set([
+    "add",
+    "branch",
+    "checkout",
+    "commit",
+    "fetch",
+    "pull",
+    "push",
+    "rebase",
+    "reset",
+    "stash",
+    "switch",
+    "worktree",
+  ]);
+  const forbiddenArguments = new Set([
+    "--allow-unrelated-histories",
+    "--delete",
+    "--force",
+    "--no-verify",
+    "-D",
+    "-d",
+    "-f",
+  ]);
+  assert.deepEqual(
+    calls.filter((call) => forbiddenCommands.has(integrationSubcommand(call.args))).map((call) => call.args),
+    [],
+  );
+  assert.deepEqual(
+    calls.filter((call) => call.args.some((argument) => forbiddenArguments.has(argument))).map((call) => call.args),
+    [],
+  );
+}
+
+function assertIntegrationMergePolicy(calls, sourceBranch) {
+  assert.deepEqual(
+    calls.filter((call) => integrationSubcommand(call.args) === "merge" && call.args[0] === "-c").map((call) => call.args),
+    [integrationMergePolicyArgs(sourceBranch)],
+  );
+  assert.equal(calls.some((call) => call.args.includes("--no-verify")), false);
+}
+
+async function assertSuccessfulIntegrationState(
+  repoRoot,
+  sourceBranch,
+  targetBranch,
+  sourceHead,
+  previousTargetHead,
+  expectedTargetHead,
+) {
+  assert.equal(await currentBranch(repoRoot), targetBranch);
+  assert.equal(await refHead(repoRoot), expectedTargetHead);
+  assert.equal(await refHead(repoRoot, `refs/heads/${sourceBranch}`), sourceHead);
+  assert.equal((await runGit(repoRoot, ["status", "--porcelain=v1", "--untracked-files=normal"])).stdout, "");
+  await assertNoMergeState(repoRoot);
+  assert.equal(
+    await gitCommandSucceeds(repoRoot, ["merge-base", "--is-ancestor", sourceHead, expectedTargetHead]),
+    true,
+  );
+  assert.equal(
+    await gitCommandSucceeds(repoRoot, ["merge-base", "--is-ancestor", previousTargetHead, expectedTargetHead]),
+    true,
+  );
+}
+
+async function assertRestoredIntegrationState(
+  repoRoot,
+  sourceBranch,
+  targetBranch,
+  sourceHead,
+  targetHead,
+) {
+  assert.equal(await currentBranch(repoRoot), targetBranch);
+  assert.equal(await refHead(repoRoot), targetHead);
+  assert.equal(await refHead(repoRoot, `refs/heads/${targetBranch}`), targetHead);
+  assert.equal(await refHead(repoRoot, `refs/heads/${sourceBranch}`), sourceHead);
+  assert.equal((await runGit(repoRoot, ["status", "--porcelain=v1", "--untracked-files=normal"])).stdout, "");
+  await assertNoMergeState(repoRoot);
+}
+
+async function installPreMergeCommitHook(repoRoot, markerPath) {
+  const hookPath = join(repoRoot, ".git", "hooks", "pre-merge-commit");
+  const script =
+    "#!/usr/bin/env node\n" +
+    `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "pre-merge-commit ran\\n", "utf8");\n`;
+  await writeFile(hookPath, script, "utf8");
+  await chmod(hookPath, 0o755);
+}
+
+test("real git integrateBranch returns an independently verified already-integrated result", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/already-integrated";
+    const targetBranch = "main";
+    const sourceHead = await refHead(repoRoot);
+    await runGit(repoRoot, ["branch", sourceBranch]);
+    const targetHead = await commitFile(
+      repoRoot,
+      "target-after-source.txt",
+      "target contains source history\n",
+      "advance target after source",
+    );
+    const pi = makeRealGitPi(repoRoot);
+
+    const details = await integrateBranch(
+      pi,
+      { cwd: repoRoot },
+      { sourceBranch, targetBranch },
+    );
+
+    assert.equal(details.status, "already_integrated");
+    assert.equal(details.mergeExecuted, false);
+    assert.deepEqual(details.verified.heads, {
+      before: { sourceHead, targetHead },
+      after: { sourceHead, targetHead },
+    });
+    assert.equal(details.verified.finalAncestry.sourceIsAncestorOfTarget, true);
+    assert.equal(details.verified.finalAncestry.previousTargetIsAncestorOfTarget, true);
+    await assertSuccessfulIntegrationState(
+      repoRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+      targetHead,
+    );
+    assert.equal(pi.calls.some((call) => integrationSubcommand(call.args) === "merge"), false);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch fast-forwards a clean target with the approved merge policy", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/fast-forward";
+    const targetBranch = "main";
+    const previousTargetHead = await refHead(repoRoot);
+    await runGit(repoRoot, ["switch", "-c", sourceBranch]);
+    const sourceHead = await commitFile(
+      repoRoot,
+      "fast-forward.txt",
+      "committed source content\n",
+      "add fast-forward source",
+    );
+    await runGit(repoRoot, ["switch", targetBranch]);
+    const pi = makeRealGitPi(repoRoot);
+
+    const details = await integrateBranch(
+      pi,
+      { cwd: repoRoot },
+      { sourceBranch, targetBranch },
+    );
+
+    assert.equal(details.status, "fast_forward");
+    assert.equal(details.mergeExecuted, true);
+    assert.deepEqual(details.verified.heads, {
+      before: { sourceHead, targetHead: previousTargetHead },
+      after: { sourceHead, targetHead: sourceHead },
+    });
+    assert.equal(await readFile(join(repoRoot, "fast-forward.txt"), "utf8"), "committed source content\n");
+    await assertSuccessfulIntegrationState(
+      repoRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      previousTargetHead,
+      sourceHead,
+    );
+    assertIntegrationMergePolicy(pi.calls, sourceBranch);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch creates one normal two-parent merge commit and preserves hooks", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot, temporaryRoot) => {
+    const sourceBranch = "feature/divergent";
+    const targetBranch = "main";
+    const hookMarker = join(temporaryRoot, "pre-merge-hook-ran.txt");
+    await runGit(repoRoot, ["switch", "-c", sourceBranch]);
+    const sourceHead = await commitFile(
+      repoRoot,
+      "source-only.txt",
+      "source side\n",
+      "add source side",
+    );
+    await runGit(repoRoot, ["switch", targetBranch]);
+    const previousTargetHead = await commitFile(
+      repoRoot,
+      "target-only.txt",
+      "target side\n",
+      "add target side",
+    );
+    const commitCountBefore = Number.parseInt(
+      (await runGit(repoRoot, ["rev-list", "--count", "--all"])).stdout.trim(),
+      10,
+    );
+    await installPreMergeCommitHook(repoRoot, hookMarker);
+    const pi = makeRealGitPi(repoRoot);
+
+    const details = await integrateBranch(
+      pi,
+      { cwd: repoRoot },
+      { sourceBranch, targetBranch },
+    );
+    const mergeHead = await refHead(repoRoot);
+    const parents = (await runGit(repoRoot, ["rev-list", "--parents", "-n", "1", mergeHead]))
+      .stdout.trim().split(/\s+/u);
+
+    assert.equal(details.status, "merge_commit");
+    assert.equal(details.mergeExecuted, true);
+    assert.notEqual(mergeHead, sourceHead);
+    assert.notEqual(mergeHead, previousTargetHead);
+    assert.deepEqual(parents, [mergeHead, previousTargetHead, sourceHead]);
+    assert.equal(
+      Number.parseInt((await runGit(repoRoot, ["rev-list", "--count", "--all"])).stdout.trim(), 10),
+      commitCountBefore + 1,
+    );
+    assert.equal(await readFile(hookMarker, "utf8"), "pre-merge-commit ran\n");
+    assert.equal(details.verified.heads.before.sourceHead, sourceHead);
+    assert.equal(details.verified.heads.before.targetHead, previousTargetHead);
+    assert.equal(details.verified.heads.after.targetHead, mergeHead);
+    await assertSuccessfulIntegrationState(
+      repoRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      previousTargetHead,
+      mergeHead,
+    );
+    assertIntegrationMergePolicy(pi.calls, sourceBranch);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch captures a content conflict and automatically restores exact state", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/conflict";
+    const targetBranch = "main";
+    await commitFile(repoRoot, "conflict.txt", "shared base\n", "add conflict base");
+    await runGit(repoRoot, ["switch", "-c", sourceBranch]);
+    const sourceHead = await commitFile(
+      repoRoot,
+      "conflict.txt",
+      "source version\n",
+      "change conflict on source",
+    );
+    await runGit(repoRoot, ["switch", targetBranch]);
+    const targetHead = await commitFile(
+      repoRoot,
+      "conflict.txt",
+      "target version\n",
+      "change conflict on target",
+    );
+    const worktreesBefore = (await runGit(repoRoot, ["worktree", "list", "--porcelain", "-z"])).stdout;
+    const commitCountBefore = (await runGit(repoRoot, ["rev-list", "--count", "--all"])).stdout.trim();
+    const pi = makeRealGitPi(repoRoot);
+
+    const details = await integrateBranch(
+      pi,
+      { cwd: repoRoot },
+      { sourceBranch, targetBranch },
+    );
+
+    assert.equal(details.status, "conflict");
+    assert.equal(details.mergeExecuted, true);
+    assert.deepEqual(details.conflict.paths, [{ path: "conflict.txt" }]);
+    assert.equal(details.conflict.omitted, 0);
+    assert.deepEqual(details.conflict.abort, { attempted: true, succeeded: true });
+    assert.equal(details.conflict.restoration.verified, true);
+    assert.equal(details.conflict.restoration.sourceHeadPreserved, true);
+    assert.equal(details.conflict.restoration.targetHeadRestored, true);
+    assert.equal(details.conflict.restoration.operationStateCleared, true);
+    assert.equal(details.conflict.restoration.cleanControlWorktree, true);
+    await assertRestoredIntegrationState(
+      repoRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+    );
+    assert.equal(await readFile(join(repoRoot, "conflict.txt"), "utf8"), "target version\n");
+    assert.equal((await runGit(repoRoot, ["rev-list", "--count", "--all"])).stdout.trim(), commitCountBefore);
+    assert.equal((await runGit(repoRoot, ["worktree", "list", "--porcelain", "-z"])).stdout, worktreesBefore);
+    assert.equal(await localRefExists(repoRoot, `refs/heads/${sourceBranch}`), true);
+    assert.equal(await localRefExists(repoRoot, `refs/heads/${targetBranch}`), true);
+    assert.deepEqual(
+      pi.calls.filter((call) => call.args[0] === "merge" && call.args[1] === "--abort").map((call) => call.args),
+      [["merge", "--abort"]],
+    );
+    assertIntegrationMergePolicy(pi.calls, sourceBranch);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch rejects target mismatch before merge", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/mismatch-source";
+    const targetBranch = "release/mismatch-target";
+    await runGit(repoRoot, ["branch", sourceBranch]);
+    await runGit(repoRoot, ["branch", targetBranch]);
+    const headBefore = await refHead(repoRoot);
+    const pi = makeRealGitPi(repoRoot);
+
+    await assert.rejects(
+      () => integrateBranch(pi, { cwd: repoRoot }, { sourceBranch, targetBranch }),
+      /must already have the requested target branch checked out/i,
+    );
+
+    assert.equal(await currentBranch(repoRoot), "main");
+    assert.equal(await refHead(repoRoot), headBefore);
+    await assertNoMergeState(repoRoot);
+    assert.equal(pi.calls.some((call) => integrationSubcommand(call.args) === "merge"), false);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch rejects a dirty control worktree before merge", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/dirty-control";
+    const targetBranch = "main";
+    await runGit(repoRoot, ["branch", sourceBranch]);
+    const targetHead = await refHead(repoRoot);
+    await writeFile(join(repoRoot, "dirty-control.txt"), "untracked control change\n", "utf8");
+    const pi = makeRealGitPi(repoRoot);
+
+    await assert.rejects(
+      () => integrateBranch(pi, { cwd: repoRoot }, { sourceBranch, targetBranch }),
+      /control worktree must be clean/i,
+    );
+
+    assert.equal(await refHead(repoRoot), targetHead);
+    assert.equal((await runGit(repoRoot, ["status", "--porcelain"])).stdout, "?? dirty-control.txt\n");
+    await assertNoMergeState(repoRoot);
+    assert.equal(pi.calls.some((call) => integrationSubcommand(call.args) === "merge"), false);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch rejects branch-specific target merge options before mutation", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/configured-merge-options";
+    const targetBranch = "main";
+    const targetHead = await refHead(repoRoot);
+    await runGit(repoRoot, ["switch", "-c", sourceBranch]);
+    const sourceHead = await commitFile(
+      repoRoot,
+      "configured-merge-options.txt",
+      "source content\n",
+      "add source for configured merge options",
+    );
+    await runGit(repoRoot, ["switch", targetBranch]);
+    await runGit(repoRoot, ["config", `branch.${targetBranch}.mergeOptions`, "--no-commit"]);
+    const pi = makeRealGitPi(repoRoot);
+
+    await assert.rejects(
+      () => integrateBranch(pi, { cwd: repoRoot }, { sourceBranch, targetBranch }),
+      /branch-specific merge options.*fixed merge policy/iu,
+    );
+
+    await assertRestoredIntegrationState(
+      repoRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+    );
+    assert.equal(pi.calls.some((call) => integrationSubcommand(call.args) === "merge"), false);
+    assert.deepEqual(
+      pi.calls.find((call) => call.args[0] === "config").args,
+      ["config", "--get-all", `branch.${targetBranch}.mergeOptions`],
+    );
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch refuses unrelated histories without leaving merge state", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/unrelated";
+    const targetBranch = "main";
+    const emptyTree = (await runGit(repoRoot, ["hash-object", "-t", "tree", devNull])).stdout.trim();
+    const sourceHead = (await runGit(repoRoot, ["commit-tree", emptyTree, "-m", "unrelated root"])).stdout.trim();
+    await runGit(repoRoot, ["update-ref", `refs/heads/${sourceBranch}`, sourceHead]);
+    const targetHead = await refHead(repoRoot);
+    const commitCountBefore = (await runGit(repoRoot, ["rev-list", "--count", "--all"])).stdout.trim();
+    const pi = makeRealGitPi(repoRoot);
+
+    await assert.rejects(
+      () => integrateBranch(pi, { cwd: repoRoot }, { sourceBranch, targetBranch }),
+      /unrelated histories/i,
+    );
+
+    await assertRestoredIntegrationState(
+      repoRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+    );
+    assert.equal((await runGit(repoRoot, ["rev-list", "--count", "--all"])).stdout.trim(), commitCountBefore);
+    assertIntegrationMergePolicy(pi.calls, sourceBranch);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch preserves an ignored control file that source would overwrite", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/ignored-overwrite";
+    const targetBranch = "main";
+    await commitFile(repoRoot, ".gitignore", "ignored-local.txt\n", "ignore local integration file");
+    await runGit(repoRoot, ["switch", "-c", sourceBranch]);
+    const sourceHead = await commitFile(
+      repoRoot,
+      "ignored-local.txt",
+      "tracked source value\n",
+      "track source version of ignored file",
+      true,
+    );
+    await runGit(repoRoot, ["switch", targetBranch]);
+    const targetHead = await refHead(repoRoot);
+    await writeFile(join(repoRoot, "ignored-local.txt"), "preserve local ignored value\n", "utf8");
+    const pi = makeRealGitPi(repoRoot);
+
+    await assert.rejects(
+      () => integrateBranch(pi, { cwd: repoRoot }, { sourceBranch, targetBranch }),
+      /overwritten by merge|would be overwritten/i,
+    );
+
+    await assertRestoredIntegrationState(
+      repoRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+    );
+    assert.equal(
+      await readFile(join(repoRoot, "ignored-local.txt"), "utf8"),
+      "preserve local ignored value\n",
+    );
+    assert.equal(
+      (await runGit(repoRoot, ["status", "--porcelain=v1", "--ignored=matching"])).stdout,
+      "!! ignored-local.txt\n",
+    );
+    assertIntegrationMergePolicy(pi.calls, sourceBranch);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch leaves a dirty linked source worktree untouched", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot, temporaryRoot) => {
+    const sourceBranch = "feature/linked-source";
+    const targetBranch = "main";
+    const sourceWorktree = join(temporaryRoot, "linked-source");
+    const previousTargetHead = await refHead(repoRoot);
+    await runGit(repoRoot, ["worktree", "add", "-b", sourceBranch, sourceWorktree, "HEAD"]);
+    const sourceHead = await commitFile(
+      sourceWorktree,
+      "linked-source.txt",
+      "committed linked source value\n",
+      "commit linked source",
+    );
+    await writeFile(join(sourceWorktree, "linked-source.txt"), "dirty linked source value\n", "utf8");
+    await writeFile(join(sourceWorktree, "untracked-linked.txt"), "untracked linked value\n", "utf8");
+    const sourceStatusBefore = (
+      await runGit(sourceWorktree, ["status", "--porcelain=v1", "--untracked-files=normal"])
+    ).stdout;
+    const pi = makeRealGitPi(repoRoot, [sourceWorktree]);
+
+    const details = await integrateBranch(
+      pi,
+      { cwd: repoRoot },
+      { sourceBranch, targetBranch },
+    );
+
+    assert.equal(details.status, "fast_forward");
+    await assertSuccessfulIntegrationState(
+      repoRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      previousTargetHead,
+      sourceHead,
+    );
+    assert.equal(await currentBranch(sourceWorktree), sourceBranch);
+    assert.equal(await refHead(sourceWorktree), sourceHead);
+    assert.equal(await readFile(join(sourceWorktree, "linked-source.txt"), "utf8"), "dirty linked source value\n");
+    assert.equal(await readFile(join(sourceWorktree, "untracked-linked.txt"), "utf8"), "untracked linked value\n");
+    assert.equal(
+      (await runGit(sourceWorktree, ["status", "--porcelain=v1", "--untracked-files=normal"])).stdout,
+      sourceStatusBefore,
+    );
+    assert.equal(await readFile(join(repoRoot, "linked-source.txt"), "utf8"), "committed linked source value\n");
+    const worktreeInventory = (await runGit(repoRoot, ["worktree", "list", "--porcelain"])).stdout;
+    assert.match(worktreeInventory, new RegExp(`worktree ${sourceWorktree.replaceAll("\\", "\\\\")}`));
+    assert.match(worktreeInventory, /branch refs\/heads\/feature\/linked-source/u);
+    assert.equal(pi.calls.every((call) => call.options.cwd === repoRoot), true);
+    assertIntegrationMergePolicy(pi.calls, sourceBranch);
+    assertSafeIntegrationCalls(pi.calls);
+  });
+});
 
 test("real git getBranchStatus reports a clean local repository", async () => {
   await withTempGitRepo(async (repoRoot) => {

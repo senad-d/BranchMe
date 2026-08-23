@@ -40,6 +40,12 @@ export function getBranchMeHelpText(): string {
     "7. `push_branch` — push the current branch.",
     "8. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.",
     "",
+    "## Branch integration",
+    "",
+    "- `integrate_branch` — integrate an exact local source into an exact local target; the clean control worktree must already have the target checked out.",
+    "- It never fetches or pushes; a conflict is automatically aborted after paths are captured and restoration is verified.",
+    "- BranchMe does not resolve semantic conflicts; handle them in a separate developer workflow.",
+    "",
     "## Worktree handoff",
     "",
     "- `list_worktrees` — inspect the main and linked worktrees in the current repository.",
@@ -56,7 +62,7 @@ export function getBranchMeHelpText(): string {
     "- `fetch_branch`, `pull_branch`, and `rebase_branch` require a configured upstream.",
     "- `pull_branch` and `rebase_branch` require a clean working tree.",
     "- `rebase_branch` rewrites local commits only when explicitly requested and auto-aborts on failure.",
-    "- BranchMe never stages, creates user-authored commits, force-pushes, or creates merge commits.",
+    "- BranchMe never stages, creates user-authored commits, or force-pushes.",
   ].join("\n");
 }
 

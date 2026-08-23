@@ -24,6 +24,8 @@ import {
 import { redactSecrets } from "./redaction.ts";
 import type {
   AheadBehindCount,
+  BranchAncestryDetails,
+  BranchStatusAncestryQuery,
   BranchStatusDetails,
   ChangeBranchDetails,
   CreateBranchDetails,
@@ -155,6 +157,23 @@ export async function getGitRoot(
   const root = trimOutput(result.stdout);
   if (!root) throw new Error("Not a git repository: git did not return a repository root.");
   return root;
+}
+
+export async function getCanonicalGitWorktreeRoot(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<string> {
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  if (!isAbsolute(repoRoot) || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(repoRoot)) {
+    throw new Error("Unable to verify the active worktree root: Git returned an invalid path.");
+  }
+
+  try {
+    return await realpath(repoRoot);
+  } catch {
+    throw new Error("Unable to verify the active worktree root: the path could not be resolved.");
+  }
 }
 
 export async function getCurrentBranch(
@@ -667,12 +686,16 @@ function safeWorktreeBranchLabel(branchName: string): string {
   return JSON.stringify(safeWorktreeValue(branchName, GIT_CONTEXT_VALUE_LIMIT_CHARS));
 }
 
+export function isLosslessGitMetadata(value: string, limit: number): boolean {
+  return safeWorktreeValue(value, limit) === value;
+}
+
 export function requireLosslessWorktreeIdentity(
   value: string,
   identity: "cwd" | "branch",
 ): string {
   const limit = identity === "cwd" ? GIT_WORKTREE_PATH_LIMIT_CHARS : GIT_CONTEXT_VALUE_LIMIT_CHARS;
-  if (safeWorktreeValue(value, limit) === value) return value;
+  if (isLosslessGitMetadata(value, limit)) return value;
 
   const label = identity === "cwd" ? "canonical worktree path" : "local branch name";
   throw new Error(
@@ -775,13 +798,13 @@ function stripSingleLineTerminator(value: string): string {
   return value;
 }
 
-async function getCommonGitDirectory(
+export async function getCanonicalCommonGitDirectory(
   pi: Pick<ExtensionAPI, "exec">,
-  repoRoot: string,
+  ctx: GitCommandContext,
   signal?: AbortSignal,
 ): Promise<string> {
   const args = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
-  const result = await runGit(pi, { cwd: repoRoot }, args, {
+  const result = await runGit(pi, ctx, args, {
     signal,
     timeout: GIT_STATUS_TIMEOUT_MS,
   });
@@ -791,14 +814,77 @@ async function getCommonGitDirectory(
     !isAbsolute(commonGitDir) ||
     /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(commonGitDir)
   ) {
-    throw new Error("Unable to validate worktree path: Git returned an invalid common directory.");
+    throw new Error("Unable to verify repository identity: Git returned an invalid common directory.");
   }
 
   try {
     return await realpath(commonGitDir);
   } catch {
-    throw new Error("Unable to validate worktree path: Git common directory could not be resolved.");
+    throw new Error("Unable to verify repository identity: the common Git directory could not be resolved.");
   }
+}
+
+export type GitOperationKind = "merge" | "rebase" | "cherry-pick" | "revert" | "sequencer";
+
+export interface GitOperationState {
+  active: GitOperationKind[];
+  mergeHeadPresent: boolean;
+  autoMergePresent: boolean;
+}
+
+const GIT_OPERATION_MARKERS: ReadonlyArray<readonly [path: string, operation: GitOperationKind]> = [
+  ["MERGE_HEAD", "merge"],
+  ["AUTO_MERGE", "merge"],
+  ["rebase-merge", "rebase"],
+  ["rebase-apply", "rebase"],
+  ["CHERRY_PICK_HEAD", "cherry-pick"],
+  ["REVERT_HEAD", "revert"],
+  ["sequencer", "sequencer"],
+];
+
+async function gitOperationMarkerExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (isMissingFilesystemPath(error)) return false;
+    throw new Error("Unable to inspect repository operation state: a Git state path could not be inspected.");
+  }
+}
+
+export async function getGitOperationState(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<GitOperationState> {
+  const args = ["rev-parse", "--path-format=absolute"];
+  for (const [path] of GIT_OPERATION_MARKERS) args.push("--git-path", path);
+  const result = await runGit(pi, ctx, args, {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+  });
+  const paths = stripSingleLineTerminator(result.stdout).split(/\r?\n/u);
+  if (
+    paths.length !== GIT_OPERATION_MARKERS.length ||
+    paths.some((path) => !isAbsolute(path) || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(path))
+  ) {
+    throw new Error("Unable to inspect repository operation state: Git returned invalid state paths.");
+  }
+
+  const active: GitOperationKind[] = [];
+  const presentMarkers: boolean[] = [];
+  for (const [index, path] of paths.entries()) {
+    const present = await gitOperationMarkerExists(path);
+    presentMarkers.push(present);
+    if (!present) continue;
+    const operation = GIT_OPERATION_MARKERS[index][1];
+    if (!active.includes(operation)) active.push(operation);
+  }
+  return {
+    active,
+    mergeHeadPresent: presentMarkers[0] === true,
+    autoMergePresent: presentMarkers[1] === true,
+  };
 }
 
 async function prepareWorktreeCreation(
@@ -820,7 +906,11 @@ async function prepareWorktreeCreation(
     }
   }
 
-  const commonGitDir = await getCommonGitDirectory(pi, inventory.repoRoot, signal);
+  const commonGitDir = await getCanonicalCommonGitDirectory(
+    pi,
+    { cwd: inventory.repoRoot },
+    signal,
+  );
   if (pathIsInsideOrEqual(canonicalPath, commonGitDir)) {
     throw new Error("worktreePath destination cannot be inside the repository common Git directory.");
   }
@@ -1762,6 +1852,64 @@ export async function getLocalBranchCommit(
     throw new Error(`Unable to resolve local branch '${safeGitContextValue(branchName)}' to a commit: ${safeOutput(result.stdout) || "empty output"}`);
   }
   return commit;
+}
+
+export async function requireExistingLocalBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  branchName: string,
+  label: "Source" | "Target",
+  signal?: AbortSignal,
+): Promise<void> {
+  if (await localBranchExists(pi, ctx, branchName, signal)) return;
+  throw new Error(`${label} local branch '${safeGitContextValue(branchName)}' does not exist.`);
+}
+
+export async function isCommitAncestor(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  ancestorCommit: string,
+  descendantCommit: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!/^[0-9a-f]{40,64}$/iu.test(ancestorCommit) || !/^[0-9a-f]{40,64}$/iu.test(descendantCommit)) {
+    throw new Error("Ancestry verification requires two valid full commit identities.");
+  }
+
+  const args = ["merge-base", "--is-ancestor", ancestorCommit, descendantCommit];
+  const result = await runGit(pi, ctx, args, {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  if (result.code !== 0 && result.code !== 1) throw new Error(formatGitFailure(args, result));
+  return result.code === 0;
+}
+
+export async function getLocalBranchAncestry(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  query: BranchStatusAncestryQuery,
+  signal?: AbortSignal,
+): Promise<BranchAncestryDetails> {
+  validateBranchNameInput(query.sourceBranch, "Source branch");
+  validateBranchNameInput(query.targetBranch, "Target branch");
+  await validateBranchName(pi, ctx, query.sourceBranch, signal);
+  await validateBranchName(pi, ctx, query.targetBranch, signal);
+  await requireExistingLocalBranch(pi, ctx, query.sourceBranch, "Source", signal);
+  await requireExistingLocalBranch(pi, ctx, query.targetBranch, "Target", signal);
+
+  const sourceHead = await getLocalBranchCommit(pi, ctx, query.sourceBranch, signal);
+  const targetHead = await getLocalBranchCommit(pi, ctx, query.targetBranch, signal);
+  const isAncestor = await isCommitAncestor(pi, ctx, sourceHead, targetHead, signal);
+
+  return {
+    sourceBranch: query.sourceBranch,
+    targetBranch: query.targetBranch,
+    sourceHead,
+    targetHead,
+    isAncestor,
+  };
 }
 
 export async function createLocalBranch(

@@ -31,6 +31,17 @@ const panelCases = [
     },
   },
   {
+    title: "Narrow mode: Integration selected",
+    width: 40,
+    selectedSection: "integration",
+    data: {
+      currentBranch: "feature/current",
+      detached: false,
+      githubRepository: "senad-d/branchme",
+      tokenSource: "GITHUB_TOKEN",
+    },
+  },
+  {
     title: "Wide mode: Status selected",
     width: 80,
     selectedSection: "status",
@@ -45,6 +56,17 @@ const panelCases = [
     title: "Wide mode: Workflow selected",
     width: 80,
     selectedSection: "workflow",
+    data: {
+      currentBranch: "feature/current",
+      detached: false,
+      githubRepository: "senad-d/branchme",
+      tokenSource: "GITHUB_TOKEN",
+    },
+  },
+  {
+    title: "Wide mode: Integration selected",
+    width: 80,
+    selectedSection: "integration",
     data: {
       currentBranch: "feature/current",
       detached: false,

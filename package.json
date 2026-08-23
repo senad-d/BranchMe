@@ -1,8 +1,8 @@
 {
   "name": "@senad-d/branchme",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
-  "description": "Pi extension for verified current-repository Git branch, worktree, push, and pull request workflows.",
+  "description": "Pi extension for verified current-repository Git branch, worktree, integration, push, and pull request workflows.",
   "license": "MIT",
   "author": "Senad Dizdarević <112484166+senad-d@users.noreply.github.com>",
   "repository": {

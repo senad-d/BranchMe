@@ -15,7 +15,17 @@ const smokeTimeoutMs = 20_000;
 const runtimeVerifierCommandName = "branchmeverify";
 const runtimeVerifierMarker = "BRANCHME_RUNTIME_VERIFY:";
 const expectedBranchMeTools = [
-  { name: "branch_status", properties: [], required: [] },
+  {
+    name: "branch_status",
+    properties: ["ancestry"],
+    required: [],
+    objects: {
+      ancestry: {
+        properties: ["sourceBranch", "targetBranch"],
+        required: ["sourceBranch", "targetBranch"],
+      },
+    },
+  },
   { name: "change_branch", properties: ["branchName"], required: ["branchName"] },
   { name: "create_branch", properties: ["branchName"], required: ["branchName"] },
   { name: "fetch_branch", properties: [], required: [] },
@@ -23,6 +33,7 @@ const expectedBranchMeTools = [
   { name: "rebase_branch", properties: [], required: [] },
   { name: "push_branch", properties: [], required: [] },
   { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title"], required: [] },
+  { name: "integrate_branch", properties: ["sourceBranch", "targetBranch"], required: ["sourceBranch", "targetBranch"] },
   { name: "list_worktrees", properties: [], required: [] },
   {
     name: "create_worktree",
@@ -110,6 +121,19 @@ function schemaEnumValues(schema, propertyName) {
   return Array.isArray(values) ? [...values] : [];
 }
 
+function verifyObjectSchema(schema, propertyName, expected) {
+  const summary = schemaSummary(schema?.properties?.[propertyName]);
+  const failures = [];
+  if (!summary.strict) failures.push(propertyName + " object does not set additionalProperties: false");
+  if (!stringListEquals(summary.properties, sortedStrings(expected.properties))) {
+    failures.push(propertyName + " object properties were " + (summary.properties.join(",") || "<none>"));
+  }
+  if (!stringListEquals(summary.required, expected.required)) {
+    failures.push(propertyName + " object required fields were " + (summary.required.join(",") || "<none>"));
+  }
+  return { ...summary, failures };
+}
+
 function hasExtensionSourceMetadata(sourceInfo) {
   return Boolean(
     sourceInfo &&
@@ -147,6 +171,12 @@ function verifyTool(tool, expected, activeTools, toolSnippets) {
       failures.push(expected.name + " schema enum " + propertyName + " was " + (actualValues.join(",") || "<none>"));
     }
   }
+  const objects = {};
+  for (const [propertyName, expectedObject] of Object.entries(expected.objects ?? {})) {
+    const verification = verifyObjectSchema(tool.parameters, propertyName, expectedObject);
+    objects[propertyName] = verification;
+    failures.push(...verification.failures.map((failure) => expected.name + " " + failure));
+  }
   if (!descriptionMentionsName) failures.push(expected.name + " description does not name the tool");
   if (!promptSnippetMentionsName) failures.push(expected.name + " prompt snippet is missing or does not name the tool");
   if (guidelines.length === 0) failures.push(expected.name + " has no prompt guidelines");
@@ -163,6 +193,7 @@ function verifyTool(tool, expected, activeTools, toolSnippets) {
     strictSchema: schema.strict,
     properties: schema.properties,
     required: schema.required,
+    objects,
     promptGuidelines: guidelines.length,
     descriptionMentionsName,
     promptSnippetMentionsName,
@@ -187,6 +218,13 @@ export default function branchMeRuntimeVerifier(pi) {
       const byName = new Map(allTools.map((tool) => [tool.name, tool]));
       const failures = [];
       const tools = [];
+
+      if (expectedTools.length !== 12) failures.push("runtime verifier did not expect exactly twelve BranchMe tools");
+      for (const forbiddenName of ["continue_merge", "abort_merge"]) {
+        if (byName.has(forbiddenName) || activeTools.has(forbiddenName)) {
+          failures.push(forbiddenName + " must not be registered or active");
+        }
+      }
 
       for (const expected of expectedTools) {
         const matching = allTools.filter((tool) => tool.name === expected.name);

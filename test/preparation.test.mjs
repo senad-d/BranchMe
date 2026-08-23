@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import {
+  BRANCHME_TOOL_NAMES,
+  GIT_INTEGRATION_CONFLICT_ENTRY_LIMIT,
+  GIT_INTEGRATION_CONFLICT_PATH_LIMIT_CHARS,
+  GIT_INTEGRATION_CONFLICT_RAW_OUTPUT_LIMIT_BYTES,
+  GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
+  GIT_INTEGRATION_TIMEOUT_MS,
+  INTEGRATE_BRANCH_TOOL_NAME,
+} from "../src/constants.ts";
 
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -11,6 +20,7 @@ async function readProjectFile(path) {
 test("package metadata identifies BranchMe", async () => {
   assert.equal(packageJson.name, "@senad-d/branchme");
   assert.match(packageJson.description, /branch/i);
+  assert.match(packageJson.description, /integration/i);
   assert.equal(packageJson.repository.url, "git+https://github.com/senad-d/branchme.git");
   assert.equal(packageJson.bugs.url, "https://github.com/senad-d/branchme/issues");
   assert.equal(packageJson.homepage, "https://github.com/senad-d/branchme#readme");
@@ -49,7 +59,7 @@ test("packaged project brief describes current worktree behavior", async () => {
   const projectBrief = await readProjectFile("docs/PROJECT_DEFINITION_BRIEF.md");
 
   assert.ok(packageJson.files.includes("docs/**/*.md"));
-  assert.match(projectBrief, /eleven strict agent-callable tools/i);
+  assert.match(projectBrief, /twelve strict agent-callable tools/i);
   for (const toolName of ["list_worktrees", "create_worktree", "remove_worktree"]) {
     assert.match(projectBrief, new RegExp(`\\b${toolName}\\b`, "u"));
   }
@@ -83,11 +93,52 @@ test("source tree registers BranchMe behavior and no template leftovers", async 
   assert.doesNotMatch(constants, /pi-extension-template/);
 });
 
+test("branch integration contracts and runtime registration stay atomic", async () => {
+  const constants = await readProjectFile("src/constants.ts");
+  const types = await readProjectFile("src/types.ts");
+  const tools = await readProjectFile("src/tools/branchme-tools.ts");
+
+  assert.equal(INTEGRATE_BRANCH_TOOL_NAME, "integrate_branch");
+  assert.equal(BRANCHME_TOOL_NAMES.includes(INTEGRATE_BRANCH_TOOL_NAME), true);
+  assert.equal(BRANCHME_TOOL_NAMES.filter((name) => name === INTEGRATE_BRANCH_TOOL_NAME).length, 1);
+  assert.equal(constants.match(/export const INTEGRATE_BRANCH_TOOL_NAME\b/gu)?.length, 1);
+  assert.match(tools, /\bINTEGRATE_BRANCH_TOOL_NAME\b/u);
+  assert.doesNotMatch(tools, /\bcontinue_merge\b|\babort_merge\b/u);
+
+  for (const limit of [
+    GIT_INTEGRATION_TIMEOUT_MS,
+    GIT_INTEGRATION_CONFLICT_RAW_OUTPUT_LIMIT_BYTES,
+    GIT_INTEGRATION_CONFLICT_ENTRY_LIMIT,
+    GIT_INTEGRATION_CONFLICT_PATH_LIMIT_CHARS,
+    GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
+  ]) {
+    assert.ok(Number.isSafeInteger(limit));
+    assert.ok(limit > 0);
+  }
+
+  assert.match(types, /interface BranchStatusAncestryQuery[\s\S]*sourceBranch: string;[\s\S]*targetBranch: string;/u);
+  assert.match(types, /interface BranchAncestryDetails[\s\S]*sourceHead: string;[\s\S]*targetHead: string;[\s\S]*isAncestor: boolean;/u);
+  assert.match(types, /interface IntegrateBranchToolInput[\s\S]*sourceBranch: string;[\s\S]*targetBranch: string;/u);
+  assert.match(types, /status: "already_integrated";/u);
+  assert.match(types, /status: "fast_forward";/u);
+  assert.match(types, /status: "merge_commit";/u);
+  assert.match(types, /status: "conflict";/u);
+  assert.match(types, /before: IntegrateBranchHeads;[\s\S]*after: IntegrateBranchHeads;/u);
+  assert.match(types, /paths: IntegrateBranchConflictPathEntry\[\];[\s\S]*omitted: number;/u);
+  assert.match(types, /abort:[\s\S]*succeeded: true;[\s\S]*restoration:[\s\S]*verified: true;/u);
+});
+
 test("public documentation describes implemented behavior", async () => {
   for (const path of ["README.md", "SECURITY.md", "CHANGELOG.md", "docs/STRUCTURE.md"]) {
     const text = await readProjectFile(path);
     assert.doesNotMatch(text, /feature implementation is pending/i, `${path} still says implementation is pending`);
     assert.doesNotMatch(text, /planned \/branchme command and tools/i, `${path} still describes tools as planned`);
+    assert.match(text, /integrate_branch/u, `${path} should document integrate_branch`);
+    assert.doesNotMatch(
+      text,
+      /BranchMe (?:never|does not|doesn't)[^.\n]*create merge commits/iu,
+      `${path} still claims BranchMe cannot create merge commits`,
+    );
   }
 
   const readme = await readProjectFile("README.md");
@@ -97,6 +148,13 @@ test("public documentation describes implemented behavior", async () => {
   assert.match(readme, /fetch_branch/);
   assert.match(readme, /pull_branch/);
   assert.match(readme, /rebase_branch/);
+  assert.match(readme, /integrate_branch/);
+  assert.match(readme, /branch_status\.ancestry/);
+  assert.match(readme, /already_integrated/);
+  assert.match(readme, /fast_forward/);
+  assert.match(readme, /merge_commit/);
+  assert.match(readme, /continue_merge/);
+  assert.match(readme, /rerere\.enabled=false/);
   assert.match(readme, /push_branch/);
   assert.match(readme, /pull_request/);
   assert.match(readme, /GITHUB_TOKEN/);

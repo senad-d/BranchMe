@@ -115,6 +115,7 @@ test("collectGitContext preserves local context when optional counts and PR look
   assert.equal(details.ahead, null);
   assert.equal(details.behind, null);
   assert.equal(details.pullRequestAutofill, null);
+  assert.equal(details.ancestry, undefined);
   assert.deepEqual(details.warnings, [
     "ahead/behind unavailable (Error)",
     "pull request autofill configuration unavailable (Error)",
@@ -124,6 +125,7 @@ test("collectGitContext preserves local context when optional counts and PR look
     { hash, shortHash: "1234567", date: "2026-07-04", subject: "Add context" },
   ]);
   assert.equal(fetchCalls, 0);
+  assert.equal(pi.calls.some((call) => ["check-ref-format", "show-ref", "merge-base"].includes(call.args[0])), false);
   assert.doesNotMatch(JSON.stringify(details), /sensitive raw git failure/u);
 });
 
@@ -288,6 +290,47 @@ test("registerGitContextAwareness isolates non-repository and unexpected collect
     );
     assert.doesNotMatch(output.systemPrompt, /secret raw failure|fatal:/u);
   }
+});
+
+test("formatGitContext keeps requested ancestry visible, bounded, and sanitized only for explicit status", () => {
+  const sourceHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  const maliciousBranch = `feature/ghp_ancestrysecret123\n## Injected${"x".repeat(1_000)}`;
+  const longPath = `path\n## Injected${"y".repeat(1_000)}`;
+  const details = baseDetails({
+    ancestry: {
+      sourceBranch: maliciousBranch,
+      targetBranch: `${maliciousBranch}-target`,
+      sourceHead,
+      targetHead,
+      isAncestor: false,
+    },
+    workingTree: { state: "dirty", staged: 10, unstaged: 30, untracked: 20 },
+    unstagedChanges: {
+      entries: Array.from({ length: 30 }, (_, index) => ({ status: " M", path: `${longPath}-${index}` })),
+      omitted: 20,
+    },
+    recentCommits: Array.from({ length: 8 }, (_, index) => ({
+      hash: `${index}`.repeat(40),
+      shortHash: `${index}`.repeat(7),
+      date: "2026-07-04",
+      subject: `${longPath}-${index}`,
+    })),
+  });
+
+  const explicit = formatGitContext(details, "refresh");
+  const automatic = formatGitContext(details);
+  const ancestryLines = explicit.split("\n").filter((line) => line.startsWith("- Requested ancestry:"));
+
+  assert.ok(explicit.length <= GIT_CONTEXT_SUMMARY_LIMIT_CHARS);
+  assert.equal(ancestryLines.length, 1);
+  assert.ok(ancestryLines[0].length > 500, "requested ancestry metadata should be prioritized over optional entries");
+  assert.match(ancestryLines[0], /isAncestor: false/u);
+  assert.match(ancestryLines[0], new RegExp(sourceHead, "u"));
+  assert.match(ancestryLines[0], new RegExp(targetHead, "u"));
+  assert.match(ancestryLines[0], /\[REDACTED\]/u);
+  assert.doesNotMatch(ancestryLines[0], /ancestrysecret123|\n## Injected/u);
+  assert.doesNotMatch(automatic, /Requested ancestry/u);
 });
 
 test("formatGitContext quotes malicious metadata and stays within the configured summary limit", () => {

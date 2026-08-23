@@ -20,6 +20,20 @@ export interface WorkingTreeDetails {
   untracked: number;
 }
 
+export interface BranchStatusAncestryQuery {
+  sourceBranch: string;
+  targetBranch: string;
+}
+
+export interface BranchStatusToolInput {
+  ancestry?: BranchStatusAncestryQuery;
+}
+
+export interface IntegrateBranchToolInput {
+  sourceBranch: string;
+  targetBranch: string;
+}
+
 export type CreateWorktreeMode = "new" | "existing";
 
 export type ListWorktreesToolInput = Record<string, never>;
@@ -165,6 +179,12 @@ export type RelatedPullRequest =
   | { status: "none" }
   | { status: "unavailable"; reason: string };
 
+export interface BranchAncestryDetails extends BranchStatusAncestryQuery {
+  sourceHead: string;
+  targetHead: string;
+  isAncestor: boolean;
+}
+
 export interface BranchStatusDetails {
   repoRoot: string;
   currentBranch: string | null;
@@ -173,6 +193,7 @@ export interface BranchStatusDetails {
   hasChanges: boolean;
   ahead: number | null;
   behind: number | null;
+  ancestry?: BranchAncestryDetails;
   warnings?: string[];
   githubRepository?: GitHubRepository;
 }
@@ -238,6 +259,100 @@ export interface PushBranchDetails {
   refspec: string;
   output: string;
 }
+
+export type IntegrateBranchStatus = "already_integrated" | "fast_forward" | "merge_commit" | "conflict";
+
+export interface IntegrateBranchHeads {
+  sourceHead: string;
+  targetHead: string;
+}
+
+export interface IntegrateBranchRepositoryVerification {
+  worktreeRoot: string;
+  canonicalCommonGitDirectory: string;
+  identityPreserved: true;
+}
+
+export interface IntegrateBranchControlWorktreeVerification {
+  targetBranch: string;
+  currentBranchPreserved: true;
+  cleanBefore: true;
+  cleanAfter: true;
+  operationStateAbsentBefore: true;
+  operationStateAbsentAfter: true;
+}
+
+export interface IntegrateBranchFinalAncestryProof {
+  sourceHead: string;
+  previousTargetHead: string;
+  targetHead: string;
+  sourceIsAncestorOfTarget: boolean;
+  previousTargetIsAncestorOfTarget: boolean;
+}
+
+export interface IntegrateBranchVerification {
+  repository: IntegrateBranchRepositoryVerification;
+  controlWorktree: IntegrateBranchControlWorktreeVerification;
+  heads: {
+    before: IntegrateBranchHeads;
+    after: IntegrateBranchHeads;
+  };
+  finalAncestry: IntegrateBranchFinalAncestryProof;
+}
+
+export interface IntegrateBranchDetailsBase {
+  action: "integrate_branch";
+  request: IntegrateBranchToolInput;
+  verified: IntegrateBranchVerification;
+}
+
+export interface IntegrateBranchAlreadyIntegratedDetails extends IntegrateBranchDetailsBase {
+  status: "already_integrated";
+  mergeExecuted: false;
+}
+
+export interface IntegrateBranchFastForwardDetails extends IntegrateBranchDetailsBase {
+  status: "fast_forward";
+  mergeExecuted: true;
+}
+
+export interface IntegrateBranchMergeCommitDetails extends IntegrateBranchDetailsBase {
+  status: "merge_commit";
+  mergeExecuted: true;
+}
+
+export interface IntegrateBranchConflictPathEntry {
+  /** Exact repository-relative identity; human-readable renderers must sanitize a separate display copy. */
+  path: string;
+}
+
+export interface IntegrateBranchConflictDetails extends IntegrateBranchDetailsBase {
+  status: "conflict";
+  mergeExecuted: true;
+  conflict: {
+    paths: IntegrateBranchConflictPathEntry[];
+    omitted: number;
+    abort: {
+      attempted: true;
+      succeeded: true;
+    };
+    restoration: {
+      verified: true;
+      repositoryIdentityPreserved: true;
+      controlWorktreeBranchPreserved: true;
+      sourceHeadPreserved: true;
+      targetHeadRestored: true;
+      operationStateCleared: true;
+      cleanControlWorktree: true;
+    };
+  };
+}
+
+export type IntegrateBranchDetails =
+  | IntegrateBranchAlreadyIntegratedDetails
+  | IntegrateBranchFastForwardDetails
+  | IntegrateBranchMergeCommitDetails
+  | IntegrateBranchConflictDetails;
 
 export interface PullRequestDetails {
   repository: GitHubRepository;

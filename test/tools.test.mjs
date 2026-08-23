@@ -13,7 +13,9 @@ import {
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
   GIT_CONTEXT_SUMMARY_LIMIT_CHARS,
+  GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
+  INTEGRATE_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
@@ -23,6 +25,7 @@ import {
 } from "../src/constants.ts";
 import {
   formatCreateWorktree,
+  formatIntegrateBranch,
   formatListWorktrees,
   formatRemoveWorktree,
   registerBranchMeTools,
@@ -37,6 +40,7 @@ const EXPECTED_BRANCHME_TOOL_NAMES = [
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  INTEGRATE_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
@@ -143,6 +147,20 @@ const recentLogArgs = [
   "--format=%x00%H%x1f%h%x1f%ad%x1f%s",
   "HEAD",
 ];
+const integrationOperationMarkers = [
+  "MERGE_HEAD",
+  "AUTO_MERGE",
+  "rebase-merge",
+  "rebase-apply",
+  "CHERRY_PICK_HEAD",
+  "REVERT_HEAD",
+  "sequencer",
+];
+const integrationOperationStateArgs = [
+  "rev-parse",
+  "--path-format=absolute",
+  ...integrationOperationMarkers.flatMap((path) => ["--git-path", path]),
+];
 
 function recentLogRecord(hash, shortHash, date, subject) {
   return `\0${hash}\u001f${shortHash}\u001f${date}\u001f${subject}\n`;
@@ -150,6 +168,66 @@ function recentLogRecord(hash, shortHash, date, subject) {
 
 function worktreePorcelainRecord(...lines) {
   return `${lines.join("\0")}\0\0`;
+}
+
+function integrationDetails(status) {
+  const sourceHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  const resultingTargetHead = status === "already_integrated" || status === "conflict"
+    ? targetHead
+    : status === "fast_forward"
+      ? sourceHead
+      : "c".repeat(40);
+  const details = {
+    action: INTEGRATE_BRANCH_TOOL_NAME,
+    status,
+    mergeExecuted: status !== "already_integrated",
+    request: { sourceBranch: "feature/source", targetBranch: "main" },
+    verified: {
+      repository: {
+        worktreeRoot: "/repo",
+        canonicalCommonGitDirectory: "/repo/.git",
+        identityPreserved: true,
+      },
+      controlWorktree: {
+        targetBranch: "main",
+        currentBranchPreserved: true,
+        cleanBefore: true,
+        cleanAfter: true,
+        operationStateAbsentBefore: true,
+        operationStateAbsentAfter: true,
+      },
+      heads: {
+        before: { sourceHead, targetHead },
+        after: { sourceHead, targetHead: resultingTargetHead },
+      },
+      finalAncestry: {
+        sourceHead,
+        previousTargetHead: targetHead,
+        targetHead: resultingTargetHead,
+        sourceIsAncestorOfTarget: true,
+        previousTargetIsAncestorOfTarget: true,
+      },
+    },
+  };
+  if (status !== "conflict") return details;
+  return {
+    ...details,
+    conflict: {
+      paths: [{ path: "src/conflict.ts" }],
+      omitted: 0,
+      abort: { attempted: true, succeeded: true },
+      restoration: {
+        verified: true,
+        repositoryIdentityPreserved: true,
+        controlWorktreeBranchPreserved: true,
+        sourceHeadPreserved: true,
+        targetHeadRestored: true,
+        operationStateCleared: true,
+        cleanControlWorktree: true,
+      },
+    },
+  };
 }
 
 test("branchMeExtension registers exactly the BranchMe command and prompt-ready tool set", () => {
@@ -160,6 +238,7 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
+  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 12);
   assert.deepEqual([...BRANCHME_TOOL_NAMES].sort(), [...EXPECTED_BRANCHME_TOOL_NAMES].sort());
   assert.equal(pi.tools.length, EXPECTED_BRANCHME_TOOL_NAMES.length);
   assert.equal(new Set(pi.tools.map((tool) => tool.name)).size, EXPECTED_BRANCHME_TOOL_NAMES.length);
@@ -186,6 +265,163 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
   assert.equal(typeof pi.events[0].handler, "function");
   assert.equal(pi.commands.some((command) => /template/i.test(command.name)), false);
   assert.equal(pi.tools.some((tool) => /template|greet|hello/i.test(tool.name)), false);
+  assert.equal(pi.tools.some((tool) => /continue_merge|abort_merge|ancestry/i.test(tool.name)), false);
+});
+
+test("integrate_branch exposes a strict schema and explicit sequencing guidance", () => {
+  const pi = makePi();
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, INTEGRATE_BRANCH_TOOL_NAME);
+
+  assert.deepEqual(tool.parameters.required, ["sourceBranch", "targetBranch"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["sourceBranch", "targetBranch"]);
+  assert.equal(tool.parameters.additionalProperties, false);
+  for (const unsupported of [
+    "path",
+    "repo",
+    "remote",
+    "refspec",
+    "force",
+    "switch",
+    "strategy",
+    "message",
+    "squash",
+    "commit",
+    "continue",
+    "abort",
+    "delete",
+    "push",
+    "fetch",
+    "worktreePath",
+  ]) {
+    assert.equal(unsupported in tool.parameters.properties, false);
+  }
+
+  assert.ok(tool.description.includes(INTEGRATE_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptSnippet.includes(INTEGRATE_BRANCH_TOOL_NAME));
+  assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(INTEGRATE_BRANCH_TOOL_NAME)));
+  const guidance = tool.promptGuidelines.join(" ");
+  assert.match(guidance, /user explicitly wants/iu);
+  assert.match(guidance, /current clean control worktree.*targetBranch checked out/iu);
+  assert.match(guidance, /local refs already contain.*never fetches or pushes/iu);
+  assert.match(guidance, /never batch integrate_branch with other Git mutations/iu);
+  assert.match(guidance, /branch_status ancestry proof separately.*same parallel tool batch/iu);
+  assert.match(guidance, /automatically aborted.*separate delegated workflow/iu);
+});
+
+test("integrate_branch formats all verified outcomes with bounded sanitized content", () => {
+  const alreadyIntegrated = formatIntegrateBranch(integrationDetails("already_integrated"));
+  const fastForward = formatIntegrateBranch(integrationDetails("fast_forward"));
+  const mergeCommit = formatIntegrateBranch(integrationDetails("merge_commit"));
+  const conflictDetails = integrationDetails("conflict");
+  conflictDetails.request.sourceBranch = "feature/ghp_toolintegrationbranchsecret123\u200b";
+  conflictDetails.conflict.paths = Array.from(
+    { length: 100 },
+    (_value, index) => ({ path: `src/${"x".repeat(700)}-${index}-ghp_toolintegrationpathsecret123\u200b.ts` }),
+  );
+  conflictDetails.conflict.omitted = 3;
+  const conflict = formatIntegrateBranch(conflictDetails);
+
+  assert.match(alreadyIntegrated, /already integrated.*no merge ran/iu);
+  assert.match(fastForward, /fast-forwarded/iu);
+  assert.match(mergeCommit, /created and verified a merge commit/iu);
+  assert.match(conflict, /automatically aborted.*exact restoration was verified/iu);
+  assert.match(conflict, /conflict paths omitted/iu);
+  assert.ok(conflict.length <= GIT_INTEGRATION_SUMMARY_LIMIT_CHARS);
+  assert.match(conflict, /\[REDACTED\]/u);
+  assert.doesNotMatch(conflict, /toolintegration(?:branch|path)secret/u);
+  assert.doesNotMatch(conflict, /\u200b/u);
+});
+
+test("integrate_branch returns complete helper details and forwards the caller signal", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-tool-integrate-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const sourceBranch = "feature/source";
+  const targetBranch = "main";
+  const sourceHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const operationPaths = integrationOperationMarkers.map((path) => join(operationStateRoot, path));
+    const pi = makePi({
+      ["rev-parse\0--show-toplevel"]: Array.from(
+        { length: 3 },
+        () => ({ stdout: `${worktreeRoot}\n` }),
+      ),
+      ["rev-parse\0--path-format=absolute\0--git-common-dir"]: Array.from(
+        { length: 2 },
+        () => ({ stdout: `${commonGitDirectory}\n` }),
+      ),
+      [`show-ref\0--verify\0--quiet\0refs/heads/${sourceBranch}`]: { code: 0 },
+      [`show-ref\0--verify\0--quiet\0refs/heads/${targetBranch}`]: { code: 0 },
+      [`rev-parse\0--verify\0refs/heads/${sourceBranch}^{commit}`]: Array.from(
+        { length: 2 },
+        () => ({ stdout: `${sourceHead}\n` }),
+      ),
+      [`rev-parse\0--verify\0refs/heads/${targetBranch}^{commit}`]: Array.from(
+        { length: 2 },
+        () => ({ stdout: `${targetHead}\n` }),
+      ),
+      ["symbolic-ref\0--quiet\0--short\0HEAD"]: Array.from(
+        { length: 2 },
+        () => ({ stdout: `${targetBranch}\n` }),
+      ),
+      [integrationOperationStateArgs.join("\0")]: Array.from(
+        { length: 2 },
+        () => ({ stdout: `${operationPaths.join("\n")}\n` }),
+      ),
+      [detailedStatusArgs.join("\0")]: [{ stdout: "" }, { stdout: "" }],
+      [`merge-base\0--is-ancestor\0${sourceHead}\0${targetHead}`]: [
+        { code: 0 },
+        { code: 0 },
+      ],
+      [`merge-base\0--is-ancestor\0${targetHead}\0${targetHead}`]: { code: 0 },
+    });
+    registerBranchMeTools(pi);
+    const tool = toolByName(pi, INTEGRATE_BRANCH_TOOL_NAME);
+    const controller = new AbortController();
+
+    const output = await tool.execute(
+      "call-integrate-no-op",
+      { sourceBranch, targetBranch },
+      controller.signal,
+      undefined,
+      { ...ctx, cwd: worktreeRoot },
+    );
+
+    assert.equal(output.details.status, "already_integrated");
+    assert.deepEqual(output.details.verified.heads, {
+      before: { sourceHead, targetHead },
+      after: { sourceHead, targetHead },
+    });
+    assert.match(output.content[0].text, /already integrated.*no merge ran/iu);
+    assert.ok(pi.calls.length > 0);
+    assert.ok(pi.calls.every((call) => call.options.signal === controller.signal));
+    assert.equal(pi.calls.some((call) => call.args.includes("merge")), false);
+
+    const invalidPi = makePi({
+      ["rev-parse\0--show-toplevel"]: { stdout: `${worktreeRoot}\n` },
+    });
+    registerBranchMeTools(invalidPi);
+    const invalidTool = toolByName(invalidPi, INTEGRATE_BRANCH_TOOL_NAME);
+    await assert.rejects(
+      () => invalidTool.execute(
+        "call-integrate-invalid",
+        { sourceBranch: targetBranch, targetBranch },
+        controller.signal,
+        undefined,
+        { ...ctx, cwd: worktreeRoot },
+      ),
+      /must be distinct/iu,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("worktree tools expose strict schemas and named handoff-oriented prompt guidance", () => {
@@ -451,11 +687,19 @@ test("branch_status has strict schema, refresh guidance, and shared current Git 
   registerBranchMeTools(pi, { env: {} });
   const tool = toolByName(pi, BRANCH_STATUS_TOOL_NAME);
 
-  assert.deepEqual(tool.parameters.properties, {});
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["ancestry"]);
+  assert.equal(tool.parameters.required, undefined);
+  assert.deepEqual(tool.parameters.properties.ancestry.required, ["sourceBranch", "targetBranch"]);
+  assert.deepEqual(
+    Object.keys(tool.parameters.properties.ancestry.properties),
+    ["sourceBranch", "targetBranch"],
+  );
+  assert.equal(tool.parameters.properties.ancestry.additionalProperties, false);
   assert.equal(tool.parameters.additionalProperties, false);
   assert.match(tool.promptSnippet, /refresh/i);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(BRANCH_STATUS_TOOL_NAME)));
   assert.match(tool.promptGuidelines.join(" "), /automatic Git context/i);
+  assert.match(tool.promptGuidelines.join(" "), /after integrate_branch completes.*same parallel tool batch/iu);
   assert.doesNotMatch(tool.promptGuidelines.join(" "), /before change_branch|before create_branch|before push_branch|before pull_request/i);
 
   const output = await tool.execute("call-1", {}, undefined, undefined, ctx);
@@ -468,6 +712,7 @@ test("branch_status has strict schema, refresh guidance, and shared current Git 
   assert.equal(output.details.ahead, 0);
   assert.equal(output.details.behind, 0);
   assert.equal(output.details.pullRequestAutofill, false);
+  assert.equal(output.details.ancestry, undefined);
   assert.deepEqual(output.details.githubRepository, { owner: "senad-d", repo: "branchme" });
   assert.deepEqual(output.details.workingTree, { state: "dirty", staged: 0, unstaged: 1, untracked: 1 });
   assert.deepEqual(output.details.unstagedChanges.entries, [
@@ -486,6 +731,95 @@ test("branch_status has strict schema, refresh guidance, and shared current Git 
 
   const mutatingCommands = pi.calls.filter((call) => ["switch", "push", "commit", "add"].includes(call.args[0]));
   assert.deepEqual(mutatingCommands, []);
+  assert.equal(pi.calls.some((call) => ["check-ref-format", "show-ref", "merge-base"].includes(call.args[0])), false);
+});
+
+test("branch_status returns targeted ancestry from captured local branch commits", async () => {
+  const sourceBranch = "feature/integrated";
+  const targetBranch = "main";
+  const sourceHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  const controller = new AbortController();
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    [`check-ref-format\0--branch\0${sourceBranch}`]: { stdout: `${sourceBranch}\n` },
+    [`check-ref-format\0--branch\0${targetBranch}`]: { stdout: `${targetBranch}\n` },
+    [`show-ref\0--verify\0--quiet\0refs/heads/${sourceBranch}`]: { code: 0 },
+    [`show-ref\0--verify\0--quiet\0refs/heads/${targetBranch}`]: { code: 0 },
+    [`rev-parse\0--verify\0refs/heads/${sourceBranch}^{commit}`]: { stdout: `${sourceHead}\n` },
+    [`rev-parse\0--verify\0refs/heads/${targetBranch}^{commit}`]: { stdout: `${targetHead}\n` },
+    [`merge-base\0--is-ancestor\0${sourceHead}\0${targetHead}`]: { code: 0 },
+    ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: `${targetBranch}\n` },
+    ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { code: 1 },
+    [detailedStatusArgs.join("\0")]: { stdout: "" },
+    [recentLogArgs.join("\0")]: { stdout: "" },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+  });
+  registerBranchMeTools(pi, { env: {} });
+  const tool = toolByName(pi, BRANCH_STATUS_TOOL_NAME);
+
+  const output = await tool.execute(
+    "call-status-ancestry",
+    { ancestry: { sourceBranch, targetBranch } },
+    controller.signal,
+    undefined,
+    ctx,
+  );
+
+  assert.deepEqual(output.details.ancestry, {
+    sourceBranch,
+    targetBranch,
+    sourceHead,
+    targetHead,
+    isAncestor: true,
+  });
+  assert.match(output.content[0].text, /- Requested ancestry:.*isAncestor: true/u);
+  assert.match(output.content[0].text, new RegExp(sourceHead, "u"));
+  assert.match(output.content[0].text, new RegExp(targetHead, "u"));
+  assert.ok(output.content[0].text.length <= GIT_CONTEXT_SUMMARY_LIMIT_CHARS);
+  assert.deepEqual(
+    pi.calls.find((call) => call.args[0] === "merge-base").args,
+    ["merge-base", "--is-ancestor", sourceHead, targetHead],
+  );
+  const ancestryCalls = pi.calls.filter((call) =>
+    ["check-ref-format", "show-ref", "merge-base"].includes(call.args[0]) ||
+    (call.args[0] === "rev-parse" && call.args[2]?.startsWith("refs/heads/")));
+  assert.ok(ancestryCalls.every((call) => call.options.signal === controller.signal));
+  assert.equal(pi.calls.some((call) => ["merge", "switch", "commit", "push", "reset"].includes(call.args[0])), false);
+});
+
+test("branch_status rejects invalid ancestry names and missing local refs", async () => {
+  const invalidPi = makePi({ ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" } });
+  registerBranchMeTools(invalidPi, { env: {} });
+  const invalidTool = toolByName(invalidPi, BRANCH_STATUS_TOOL_NAME);
+  await assert.rejects(
+    () => invalidTool.execute(
+      "call-status-invalid-ancestry",
+      { ancestry: { sourceBranch: "bad branch", targetBranch: "main" } },
+      undefined,
+      undefined,
+      ctx,
+    ),
+    /Source branch.*whitespace/iu,
+  );
+
+  const missingPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/missing"]: { code: 1 },
+  });
+  registerBranchMeTools(missingPi, { env: {} });
+  const missingTool = toolByName(missingPi, BRANCH_STATUS_TOOL_NAME);
+  await assert.rejects(
+    () => missingTool.execute(
+      "call-status-missing-ancestry",
+      { ancestry: { sourceBranch: "feature/missing", targetBranch: "main" } },
+      undefined,
+      undefined,
+      ctx,
+    ),
+    /Source local branch.*does not exist/iu,
+  );
+  assert.equal(missingPi.calls.some((call) => call.args[0] === "merge-base"), false);
 });
 
 test("branch_status recollects fresh state through bounded read-only Git and GitHub requests", async () => {

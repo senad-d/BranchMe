@@ -149,6 +149,13 @@ test("/branchme help returns concise workflow and requirements through UI modes"
   assert.match(ctx.notifications[0].message, /rebase_branch/);
   assert.match(ctx.notifications[0].message, /push_branch/);
   assert.match(ctx.notifications[0].message, /pull_request/);
+  assert.match(ctx.notifications[0].message, /integrate_branch/);
+  assert.match(ctx.notifications[0].message, /exact local source.*exact local target/);
+  assert.match(ctx.notifications[0].message, /clean control worktree.*target checked out/);
+  assert.match(ctx.notifications[0].message, /never fetches or pushes/);
+  assert.match(ctx.notifications[0].message, /conflict is automatically aborted.*restoration is verified/);
+  assert.match(ctx.notifications[0].message, /does not resolve semantic conflicts/);
+  assert.doesNotMatch(ctx.notifications[0].message, /continue_merge/);
   assert.match(ctx.notifications[0].message, /list_worktrees/);
   assert.match(ctx.notifications[0].message, /create_worktree/);
   assert.match(ctx.notifications[0].message, /remove_worktree/);
@@ -479,10 +486,12 @@ test("BranchMe panel handles navigation keys through Pi key matching", () => {
   panel.handleInput("\t");
   assert.match(panel.render(80).join("\n"), /WORKFLOW/);
   panel.handleInput("\t");
+  assert.match(panel.render(80).join("\n"), /INTEGRATION/);
+  panel.handleInput("\t");
   assert.match(panel.render(80).join("\n"), /WORKTREES/);
   panel.handleInput("\r");
 
-  assert.equal(renders.length, 4);
+  assert.equal(renders.length, 5);
   assert.equal(closed, 1);
 });
 
@@ -501,9 +510,38 @@ test("BranchMe wide panel shows only the selected right-side section", () => {
   assert.match(visibleText, /branch_status\s+-> inspect/);
   assert.match(visibleText, /fetch_branch\s+-> upstream remote/);
   assert.match(visibleText, /rebase_branch\s+-> onto upstream/);
+  assert.doesNotMatch(visibleText, /integrate_branch/);
   assert.doesNotMatch(visibleText, /1 branch_status/);
   assert.doesNotMatch(visibleText, /STATUS/);
   assert.doesNotMatch(visibleText, /SAFETY/);
+  assert.equal(visibleText.split("\n").length <= 16, true);
+});
+
+test("BranchMe wide panel presents integration as an informational local-only workflow", () => {
+  const data = {
+    currentBranch: "main",
+    detached: false,
+    githubRepository: "senad-d/BranchMe",
+    tokenSource: null,
+  };
+
+  for (const width of [24, 40]) {
+    const narrowLines = renderBranchMePanelLines(data, width, undefined, "integration");
+    const narrowText = narrowLines.join("\n");
+    assert.match(narrowText, /INTEGRATION/);
+    assert.match(narrowText, /integrate_branch/);
+    assert.ok(narrowLines.every((line) => visibleWidth(line) <= width));
+    assert.equal(narrowLines.length <= 16, true);
+  }
+
+  const visibleText = renderBranchMePanelLines(data, 80, undefined, "integration").join("\n");
+  assert.match(visibleText, /INTEGRATION/);
+  assert.match(visibleText, /integrate_branch\s+-> exact local source -> target/);
+  assert.match(visibleText, /control target\s+-> checked out \+ clean/);
+  assert.match(visibleText, /remote effects\s+-> never fetch or push/);
+  assert.match(visibleText, /conflict\s+-> automatic verified abort/);
+  assert.match(visibleText, /semantic intent\s+-> separate developer workflow/);
+  assert.doesNotMatch(visibleText, /continue_merge/);
   assert.equal(visibleText.split("\n").length <= 16, true);
 });
 

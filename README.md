@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  Current-repository branch, worktree, and pull request tools for <a href="https://pi.dev">pi</a>.
-  <br />Inspect branch state, manage verified linked worktrees, update branches, push, and open GitHub PRs from pi prompts.
+  Current-repository branch, worktree, integration, and pull request tools for <a href="https://pi.dev">pi</a>.
+  <br />Inspect branch state, manage verified linked worktrees, update or integrate branches, push, and open GitHub PRs from pi prompts.
 </p>
 
 ---
 
-BranchMe is a Pi extension for safe branch and worktree workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and eleven agent-callable tools that refresh state, manage branches, inspect/create/remove linked worktrees, push the current branch, and create GitHub pull requests.
+BranchMe is a Pi extension for safe branch and worktree workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and twelve agent-callable tools that refresh state, manage and integrate local branches, inspect/create/remove linked worktrees, push the current branch, and create GitHub pull requests.
 
 <table align="center">
   <tr>
@@ -33,11 +33,11 @@ BranchMe is a Pi extension for safe branch and worktree workflow automation. Bef
 - **Repository-scoped:** Git and GitHub operations resolve from the checkout where pi is running. Linked worktree directories may be outside that checkout, but must be verified members of the same repository.
 - **Explicit history rewrites:** `rebase_branch` runs only when explicitly requested, requires a clean current branch with an upstream, disables autostash and multi-ref updates, and automatically attempts to abort on failure.
 - **Verified worktree handoff:** `create_worktree` verifies path, branch, `HEAD`, and cleanliness before returning an absolute `handoff.cwd`; starting another Pi session or subagent there remains the caller's responsibility.
-- **Commit-safe:** context collection is read-only, and BranchMe never stages files, creates user-authored commits, generates commit messages, force-pushes, creates merge commits, resets, or edits files directly.
+- **Commit-safe:** context collection is read-only, and BranchMe never stages files, creates user-authored commits, accepts or generates commit messages, force-pushes, resets, or edits files directly. An explicit `integrate_branch` call may let Git create its standard merge commit for divergent local histories.
 - **Strict tools:** tool schemas reject extra properties such as `force`, `stash`, `discard`, `owner`, `repo`, `path`, or `baseRef`; worktree tools accept only their documented fields.
 - **PR-ready:** create GitHub pull requests from existing local branches after verifying the `headBranch` matches GitHub and the base is visible. PR fields can stay explicit, or configured autofill can derive omitted fields from the current branch, default branch, and commit subjects.
 
-> **Security:** pi packages run with your full system permissions. BranchMe runs local `git` commands, may create or remove verified linked-worktree directories outside the active checkout, may make an automatic authenticated GitHub request to find a related open pull request, can update branches and remotes, and can create GitHub pull requests. Read [`SECURITY.md`](SECURITY.md).
+> **Security:** pi packages run with your full system permissions. BranchMe runs local `git` commands, may create or remove verified linked-worktree directories outside the active checkout, may integrate local history, may make an automatic authenticated GitHub request to find a related open pull request, can update branches and remotes, and can create GitHub pull requests. Repository-configured hooks, merge drivers, filters, and signing policy remain active during integration and may run commands or contact networks outside BranchMe's direct argv guarantees. Read [`SECURITY.md`](SECURITY.md).
 
 ## Table of Contents
 
@@ -223,7 +223,7 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 
 | Tool | Schema | Behavior |
 | --- | --- | --- |
-| `branch_status` | `{}` | Explicitly refreshes the same bounded context used at agent start: repo root in structured details, branch/detached state, upstream and ahead/behind counts, working-tree counts and unstaged/untracked paths, related open PR, and recent commits. It is read-only. |
+| `branch_status` | `{ "ancestry"?: { "sourceBranch": string, "targetBranch": string } }` | Explicitly refreshes the same bounded context used at agent start. An optional strict ancestry query captures both exact local branch HEADs and reports whether the source commit is an ancestor of the target commit. It is read-only; automatic Git context does not run ancestry queries. |
 | `list_worktrees` | `{}` | Runs a bounded, read-only inventory of the current repository's main and linked worktrees, including path, branch/detached state, `HEAD`, current/main, locked, prunable, and omitted-entry details. Automatic Git context does not include this inventory. |
 | `create_worktree` | `{ "worktreePath": string, "branchName": string, "branchMode": "new" \| "existing" }` | Creates and verifies a linked worktree at an explicitly approved absolute path. `new` creates a local branch from current `HEAD`; `existing` requires an existing local branch not checked out elsewhere. It returns a ready handoff with the exact canonical absolute cwd and local branch identity. |
 | `remove_worktree` | `{ "worktreePath": string }` | Force-free removal of an explicitly selected, verified clean linked worktree. It rejects the main/current, detached, locked, prunable/missing, dirty, ignored-file-containing, or foreign worktree and verifies that the local branch remains at the same commit. |
@@ -231,11 +231,12 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | `fetch_branch` | `{}` | Requires a current branch with a configured upstream and runs `git fetch --no-tags --no-recurse-submodules <upstream-remote> <upstream-branch-ref>:<remote-tracking-ref>`; only that tracking ref is refreshed without changing local branches or working-tree files. |
 | `pull_branch` | `{}` | Requires a clean current branch with a configured upstream and runs `git pull --ff-only --no-rebase --no-autostash <upstream-remote> <upstream-branch-ref>`; divergence fails without rebasing or creating a merge commit. |
 | `rebase_branch` | `{}` | Requires a clean current branch with a configured upstream and runs `git rebase --no-autostash --no-update-refs <upstream>`; it rewrites local commits and automatically attempts `git rebase --abort` on failure. |
+| `integrate_branch` | `{ "sourceBranch": string, "targetBranch": string }` | Integrates one exact existing local source branch into one distinct existing local target branch. The clean active control worktree must already have the target checked out. It returns `already_integrated`, `fast_forward`, `merge_commit`, or a `conflict` only after automatic abort and verified restoration. It never fetches or pushes. |
 | `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
 | `push_branch` | `{}` | Pushes the current branch to its configured upstream remote with an explicit `HEAD:<upstream-branch-ref>` refspec, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
 | `pull_request` | `{ "headBranch"?: string, "baseBranch"?: string, "title"?: string, "body"?: string, "draft"?: boolean }` | Preflights GitHub branch visibility and verifies the GitHub `headBranch` commit matches the local branch, then creates a pull request in the resolved current repository. Omitted fields require `BRANCHME_PR_AUTOFILL=true`; branch refs must be distinct, exist locally, and cannot use `owner:branch`. |
 
-All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `fetch_branch`, `pull_branch`, and `rebase_branch` have strict empty schemas and never accept a branch, remote, refspec, force, autostash, or arbitrary rebase target. `create_worktree` requires exactly `worktreePath`, `branchName`, and `branchMode`; `remove_worktree` requires exactly `worktreePath`. No worktree tool accepts force, move, prune, repair, lock, unlock, detached, orphan, remote, refspec, or arbitrary start-point controls. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`.
+All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `fetch_branch`, `pull_branch`, and `rebase_branch` have strict empty schemas and never accept a branch, remote, refspec, force, autostash, or arbitrary rebase target. `integrate_branch` requires exactly `sourceBranch` and `targetBranch`; it accepts no repository, path, remote, strategy, message, squash, signing, commit, continuation, abort, force, fetch, push, deletion, or worktree controls. `create_worktree` requires exactly `worktreePath`, `branchName`, and `branchMode`; `remove_worktree` requires exactly `worktreePath`. No worktree tool accepts force, move, prune, repair, lock, unlock, detached, orphan, remote, refspec, or arbitrary start-point controls. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`. `continue_merge` and `abort_merge` are not available.
 
 ---
 
@@ -254,7 +255,7 @@ Before each agent run, BranchMe appends an **Automatic Git Context** snapshot to
 
 Collection defaults are a 5-second timeout per local Git command, a 4-second related-PR lookup timeout, at most 512 characters per metadata value, and at most 4,000 characters for the rendered snapshot. GitHub response bodies are limited to 64 KiB. The formatter can further shorten values or omit entries to stay within the total limit.
 
-The snapshot is fresh at agent start but is not live. A fetch, branch switch, pull, rebase, commit, file change, push, or other mutation later in the same run can make it stale. `branch_status` performs an explicit current-state refresh through the same shared collector and remains read-only; it does not mutate files, Git state, or GitHub state.
+The snapshot is fresh at agent start but is not live. A fetch, branch switch, pull, rebase, integration, commit, file change, push, or other mutation later in the same run can make it stale. `branch_status` performs an explicit current-state refresh through the same shared collector and remains read-only; it does not mutate files, Git state, or GitHub state. Its optional `ancestry` object requires exact `sourceBranch` and `targetBranch` fields together, captures both local branch commit IDs, and reports `isAncestor`. This targeted proof is explicit only: automatic Git context remains unchanged. Run it after `integrate_branch` completes, never in the same parallel tool batch.
 
 Related-PR metadata does not come from Git alone. When repository, branch, and credentials resolve, automatic collection and explicit `branch_status` may make an authenticated `GET /repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}&per_page=1` request. Without a token there is no unauthenticated fallback or GitHub request; the PR field is reported as unavailable while local Git context remains usable.
 
@@ -271,6 +272,37 @@ Push the current branch with push_branch.
 After push_branch completes, create a draft pull request from feature/docs-refresh to main titled "Refresh docs" with this body: "...".
 If pull request field autofill is enabled, after push_branch completes create a pull request and fill any details I did not provide.
 ```
+
+### Verified local branch integration
+
+`integrate_branch` requires explicit intent and exactly two distinct existing local branch names: `sourceBranch` and `targetBranch`. The active Pi worktree is the control worktree; it must be clean, have no merge/rebase/cherry-pick/revert/sequencer operation in progress, and already have `targetBranch` checked out. BranchMe never switches to the target or infers one. A source checked out in another dirty linked worktree is allowed because integration reads only its committed local ref. Remote-only refs, commit IDs, paths, repositories, remotes, and owner-prefixed refs are rejected.
+
+For a source not already reachable from the target, BranchMe runs this fixed normal-merge policy from the verified worktree root:
+
+```text
+git -c rerere.enabled=false merge --ff --no-edit --no-autostash --no-rerere-autoupdate --no-overwrite-ignore refs/heads/<sourceBranch>
+```
+
+This policy permits a fast-forward or lets Git create a standard two-parent merge commit for divergent histories. BranchMe does not create user-authored commits, accept a merge message, or expose strategy, squash, unrelated-history, signing, force, or commit controls. Before mutation, it rejects a non-empty `branch.<targetBranch>.mergeOptions` setting because those branch-specific defaults could silently change the fixed policy. Autostash is disabled, rerere is disabled so recorded resolutions are not applied or updated, and ignored files may not be overwritten. Repository-configured hooks, custom merge drivers, clean/smudge filters, and signing policy remain active; those Git extension points may execute arbitrary local commands or network operations under the user's identity.
+
+The structured status is one of:
+
+- `already_integrated`: no merge ran and both branch refs remained stable;
+- `fast_forward`: the target advanced exactly to the captured source commit;
+- `merge_commit`: Git created an exact normal two-parent merge whose parents are the captured prior target and source;
+- `conflict`: bounded, exact repository-relative conflict paths were captured, `git merge --abort` succeeded, and repository identity, current target, exact source/target refs, clean state, and absence of operation state were verified.
+
+All outcomes include captured before/after source and target commit IDs plus final source and prior-target ancestry proof. Failed non-conflict merges remain errors after cleanup. BranchMe uses no reset-based rollback; if abort or postcondition checks are inconclusive, or a ref moves unexpectedly, it reports that integration may have completed and tells the caller to inspect the repository before retrying.
+
+The same-repository mutation queue covers preflight, merge, cleanup, and verification, but it exists only inside the current BranchMe process. It does not lock another Pi session or an external Git process. `integrate_branch` itself does not fetch, pull, push, delete branches, remove worktrees, start agents, ask questions, continue a merge, or resolve semantic conflicts. A Mission or other orchestrator may explicitly call it; after a verified `conflict`, that separate workflow decides whether to delegate analysis to an integration agent or ask the developer about semantic intent.
+
+For an independent read-only proof after integration, call:
+
+```json
+{ "ancestry": { "sourceBranch": "feature/example", "targetBranch": "main" } }
+```
+
+with `branch_status` only after `integrate_branch` has returned. Do not batch the calls.
 
 ### Linked worktree verification and handoff
 
@@ -318,6 +350,7 @@ BranchMe operates only on the repository where pi is running:
 - `fetch_branch` requires a configured upstream, uses an explicit source-to-remote-tracking refspec with tags and submodule recursion disabled, and does not change local branches or working-tree files.
 - `pull_branch` requires a clean worktree and configured upstream, updates only the current branch with `git pull --ff-only --no-rebase --no-autostash`, and has no branch, remote, force, or rebase input.
 - `rebase_branch` requires a clean worktree and configured upstream, rewrites only the current branch onto the locally available upstream with autostash and multi-ref updates disabled, and automatically attempts to abort on failure.
+- `integrate_branch` merges one captured local source ref into the already-current clean local target with the fixed policy documented above. It verifies repository identity, refs, ancestry, clean state, and cleanup without fetching or pushing.
 - `create_branch` creates from the current `HEAD` only and has no `baseRef` input.
 - `list_worktrees` is an explicit, read-only repository inventory; it is intentionally absent from automatic active-worktree context.
 - `create_worktree` may create a linked checkout outside the active checkout only after canonical path and current-repository boundary checks; dependent worktree calls must wait for its verified handoff.
@@ -326,7 +359,7 @@ BranchMe operates only on the repository where pi is running:
 - `pull_request` creates PRs only for the resolved current GitHub repository, requires resolved `headBranch` and `baseBranch` values to be distinct and exist locally, requires the GitHub `headBranch` commit to match the local branch, queues behind in-flight same-repository git mutation windows when possible, and rejects `owner:branch` head refs. Missing PR fields fail unless `BRANCHME_PR_AUTOFILL=true`.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
-BranchMe intentionally does **not** stage files, create user-authored commits, force checkout, stash changes, discard changes, force-push, create merge commits, edit files directly, copy ignored/untracked files between worktrees, delete branches during worktree removal, or generate commit messages. Rebase-driven commit rewriting occurs only through explicit `rebase_branch` calls.
+BranchMe intentionally does **not** stage files, create user-authored commits, accept or generate commit messages, force checkout, stash changes, discard changes, force-push, reset, edit files directly, copy ignored/untracked files between worktrees, or delete branches during worktree removal. Rebase-driven rewriting occurs only through explicit `rebase_branch`; a Git-generated standard merge commit is possible only through explicit `integrate_branch` for divergent histories.
 
 ---
 
@@ -376,10 +409,14 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | Existing worktree branch is occupied | Choose another existing local branch or remove its other linked checkout after cleaning it; BranchMe does not force multiple checkouts. |
 | Worktree removal rejected | Use `list_worktrees`, select a non-main/non-current linked worktree, and remove or preserve staged, unstaged, untracked, unmerged, and ignored files outside the checkout. Locked, detached, prunable/missing, bare, and foreign paths are not removable. |
 | Linked-worktree agent cannot find credentials | Pass credentials through the process environment. BranchMe does not copy repository-root `.env` or other ignored/untracked files. |
-| Dirty worktree before branch switch, pull, or rebase | Commit, stash, or discard changes outside BranchMe before using `change_branch`, `pull_branch`, or `rebase_branch`. |
+| Dirty worktree before branch switch, pull, rebase, or integration | Commit, stash, or discard changes outside BranchMe before using `change_branch`, `pull_branch`, `rebase_branch`, or a target control worktree for `integrate_branch`. |
 | Fetch, pull, or rebase has no upstream | Configure the current branch upstream outside BranchMe, then retry the tool. |
 | Pull is not a fast-forward | Run `fetch_branch`, wait for it to complete, then explicitly run `rebase_branch` if rewriting local commits is intended; otherwise reconcile outside BranchMe. |
 | Rebase fails or conflicts | `rebase_branch` automatically attempts `git rebase --abort`. Inspect repository state before continuing if automatic cleanup also fails. |
+| Integration target mismatch or missing local branch | Check out the exact local `targetBranch` in the active control worktree and ensure both distinct branch refs already exist locally; `integrate_branch` never switches, fetches, or accepts remote-only refs. |
+| Integration rejects branch-specific merge options | Clear `branch.<targetBranch>.mergeOptions` outside BranchMe before retrying; options such as `--no-commit`, `--squash`, `--no-verify`, or a custom strategy would change the fixed policy. |
+| Integration reports `conflict` | The initial merge was automatically aborted and exact restoration was verified. Use the returned conflict paths for separate analysis; BranchMe has no `continue_merge` tool and does not resolve semantic conflicts. |
+| Integration is uncertain or cleanup fails | Inspect branch refs, `HEAD`, worktree status, and Git operation state manually before retrying. BranchMe does not use reset-based rollback. |
 | Push fails | Confirm the current branch is correct and your normal Git remote credentials can push. |
 | Related PR is unavailable | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi if related-PR context is wanted. Without a token, BranchMe keeps local context and intentionally makes no unauthenticated GitHub request. |
 | PR auth fails | Set `GITHUB_TOKEN` or `GH_TOKEN` before starting pi, or copy `.env.example` to `.env` and fill in one token. |
@@ -388,7 +425,7 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | PR branch does not exist locally | Create or fetch/check out the local `headBranch` and `baseBranch` branches first; BranchMe does not use remote-only or cross-repository PR refs. |
 | PR branch is not visible or is stale on GitHub | Run `push_branch`, wait for it to complete, then retry `pull_request`; do not batch `push_branch` and `pull_request` in the same assistant tool call. |
 | Repository mismatch | Make `origin` and `GITHUB_REPOSITORY` refer to the same `owner/repo`. |
-| Need a commit | Use BranchMe or normal git commands; BranchMe never commits. |
+| Need a user-authored commit | Use CommitMe or normal Git commands. BranchMe does not stage files, accept commit messages, or create user-authored commits; only `integrate_branch` may let Git create a standard merge commit. |
 | Other extensions interfere | Test with `pi --no-extensions -e .`. |
 
 ---
@@ -403,7 +440,7 @@ npm run check:pack
 printf '/branchme help\n/quit\n' | pi --no-extensions -e .
 ```
 
-Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, isolated real-Git worktree lifecycle tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all eleven BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
+Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, isolated real-Git worktree and branch-integration lifecycle tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all twelve BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata, including `integrate_branch` and targeted `branch_status.ancestry`, with no merge-continuation tool. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
 
 Refresh TUI captures intentionally with:
 

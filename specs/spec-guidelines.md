@@ -1,6 +1,6 @@
 # Plan: BranchMe Implementation Guidelines
 
-> Historical note (updated 2026-06-30): this preparation guideline is retained for context, but current behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Current implementation includes `change_branch`, hardened repository-root `.env` token fallback, repository-scoped mutation serialization, explicit upstream push refspecs, PR branch-ref validation, and Pi TUI width/key utilities.
+> Historical note (superseded, updated 2026-08-23): this preparation guideline is retained for context, but current behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Current implementation has twelve tools, including verified local `integrate_branch` and optional targeted `branch_status` ancestry verification. The original blanket rule against all merge behavior is superseded: BranchMe still has no staging or user-authored commit tool, while explicit integration may let Git create its standard merge commit.
 
 ## Task Description
 
@@ -55,6 +55,7 @@ Use `StringEnum` from `@earendil-works/pi-ai` for string enum schemas if enum fi
 - `pull_branch`: fast-forward the clean current branch from its configured upstream.
 - `rebase_branch`: explicitly rebase the clean current branch onto its configured upstream.
 - `push_branch`: push/publish the current branch.
+- `integrate_branch`: integrate one exact local source into the already-current clean local target with verified outcomes and automatic conflict abort/restoration.
 - `pull_request`: create a GitHub pull request in the current repository.
 
 ### Prompt Metadata Style
@@ -99,7 +100,7 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
 - `pull_branch` must remain fast-forward-only and must not rebase or create merge commits.
 - `rebase_branch` must require explicit user intent, a clean current branch, and a configured upstream; disable autostash and multi-ref updates, and attempt to abort on failure.
 - `push_branch` must push the current branch only and use an explicit upstream remote/refspec instead of bare `git push`.
-- Do not implement commit, staging, stash, reset, merge, arbitrary-target rebase, or file-editing behavior.
+- Historical v1 rule (superseded for merge only): do not implement user-authored commit, staging, stash, reset, arbitrary-target rebase, or file-editing behavior. The active design permits only the fixed, verified `integrate_branch` merge boundary and still exposes no merge message, continuation, semantic resolution, or reset rollback.
 
 ## GitHub Guidelines
 
@@ -163,7 +164,7 @@ Avoid vague wording like `Use this tool when...` because Pi appends guidelines w
   - GitHub network access
   - token environment variables
   - no telemetry
-  - no commit/staging behavior
+  - no user-authored commit/staging behavior; Git-generated merge commits are limited to explicit `integrate_branch`
 - CHANGELOG.md should track implementation milestones.
 - docs/STRUCTURE.md should describe actual module boundaries.
 - Specs are historical or future-work context once implementation lands; current behavior lives in README, SECURITY, and docs/STRUCTURE.
@@ -210,6 +211,6 @@ Do not use `pi -e .` unless deliberately testing interaction with other configur
 ## Acceptance Criteria
 
 - Future implementation follows current-repository-only behavior.
-- Future implementation keeps BranchMe smaller than CommitMe and avoids commit functionality.
+- The implementation keeps BranchMe smaller than CommitMe and avoids user-authored commit functionality; `integrate_branch` may only permit Git's standard merge commit under the active verified boundary.
 - Future implementation documents every security-sensitive behavior.
 - Future implementation can run in GitHub Actions with `GITHUB_TOKEN` or `GH_TOKEN`.

@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  integrateBranch,
+  prepareBranchIntegration,
+  resolveIntegrationWorktreeRoot,
+} from "../src/git-integration.ts";
+import {
   changeExistingLocalBranch,
   createLocalBranch,
   createWorktree,
@@ -11,6 +16,7 @@ import {
   formatGitFailure,
   getBranchStatus,
   getGitRoot,
+  getLocalBranchAncestry,
   getPullRequestCommitSubjects,
   getRecentCommits,
   getWorkingTreeStatus,
@@ -74,6 +80,20 @@ const recentLogArgs = [
   "--date=short",
   "--format=%x00%H%x1f%h%x1f%ad%x1f%s",
   "HEAD",
+];
+const integrationOperationMarkers = [
+  "MERGE_HEAD",
+  "AUTO_MERGE",
+  "rebase-merge",
+  "rebase-apply",
+  "CHERRY_PICK_HEAD",
+  "REVERT_HEAD",
+  "sequencer",
+];
+const integrationOperationStateArgs = [
+  "rev-parse",
+  "--path-format=absolute",
+  ...integrationOperationMarkers.flatMap((path) => ["--git-path", path]),
 ];
 
 function recentLogRecord(hash, shortHash, date, subject) {
@@ -187,6 +207,231 @@ function makeWorktreeRemovalPi(options) {
   };
 }
 
+function makeIntegrationPreflightPi(options) {
+  const calls = [];
+  return {
+    calls,
+    async exec(command, args, execOptions) {
+      assert.equal(command, "git");
+      assert.ok(Array.isArray(args));
+      calls.push({ args: [...args], options: execOptions });
+      const key = args.join("\0");
+      if (key === "rev-parse\0--show-toplevel") {
+        return result({ stdout: `${options.reportedWorktreeRoot ?? options.worktreeRoot}\n` });
+      }
+      if (key === "rev-parse\0--path-format=absolute\0--git-common-dir") {
+        return result({ stdout: `${options.reportedCommonGitDirectory ?? options.commonGitDirectory}\n` });
+      }
+      if (key === `check-ref-format\0--branch\0${options.sourceBranch}`) {
+        return result(options.sourceNameResult ?? { stdout: `${options.sourceBranch}\n` });
+      }
+      if (key === `check-ref-format\0--branch\0${options.targetBranch}`) {
+        return result(options.targetNameResult ?? { stdout: `${options.targetBranch}\n` });
+      }
+      if (key === `show-ref\0--verify\0--quiet\0refs/heads/${options.sourceBranch}`) {
+        return result({ code: options.sourceExists === false ? 1 : 0 });
+      }
+      if (key === `show-ref\0--verify\0--quiet\0refs/heads/${options.targetBranch}`) {
+        return result({ code: options.targetExists === false ? 1 : 0 });
+      }
+      if (key === `rev-parse\0--verify\0refs/heads/${options.sourceBranch}^{commit}`) {
+        return result({ stdout: `${options.sourceHead}\n` });
+      }
+      if (key === `rev-parse\0--verify\0refs/heads/${options.targetBranch}^{commit}`) {
+        return result({ stdout: `${options.targetHead}\n` });
+      }
+      if (key === "symbolic-ref\0--quiet\0--short\0HEAD") {
+        return options.detached
+          ? result({ code: 1, stderr: "fatal: ref HEAD is not symbolic\n" })
+          : result({ stdout: `${options.currentBranch ?? options.targetBranch}\n` });
+      }
+      if (key === "rev-parse\0--verify\0HEAD") {
+        return result({ stdout: `${options.targetHead}\n` });
+      }
+      if (key === integrationOperationStateArgs.join("\0")) {
+        const paths = integrationOperationMarkers.map((path) => join(options.operationStateRoot, path));
+        return result({ stdout: `${paths.join("\n")}\n` });
+      }
+      if (key === detailedStatusArgs.join("\0")) {
+        return result({ stdout: options.statusOutput ?? "" });
+      }
+      if (key === `merge-base\0--is-ancestor\0${options.sourceHead}\0${options.targetHead}`) {
+        return result({ code: options.alreadyIntegrated ? 0 : 1 });
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    },
+  };
+}
+
+function makeIntegrateBranchPi(options) {
+  const calls = [];
+  let phase = "preflight";
+  let sourceRef = options.sourceHead;
+  let targetRef = options.targetHead;
+  const mergePolicyArgs = [
+    "-c",
+    "rerere.enabled=false",
+    "merge",
+    "--ff",
+    "--no-edit",
+    "--no-autostash",
+    "--no-rerere-autoupdate",
+    "--no-overwrite-ignore",
+    `refs/heads/${options.sourceBranch}`,
+  ];
+
+  return {
+    calls,
+    get sourceRef() {
+      return sourceRef;
+    },
+    get targetRef() {
+      return targetRef;
+    },
+    async exec(command, args, execOptions) {
+      assert.equal(command, "git");
+      assert.ok(Array.isArray(args));
+      assert.equal(typeof execOptions.cwd, "string");
+      calls.push({ args: [...args], options: execOptions });
+      const key = args.join("\0");
+
+      if (key === "rev-parse\0--show-toplevel") {
+        return result({ stdout: `${options.worktreeRoot}\n` });
+      }
+      if (key === "rev-parse\0--path-format=absolute\0--git-common-dir") {
+        const commonDirectory = phase === "preflight"
+          ? options.commonGitDirectory
+          : options.commonGitDirectoryAfter ?? options.commonGitDirectory;
+        return result({ stdout: `${commonDirectory}\n` });
+      }
+      if (key === `check-ref-format\0--branch\0${options.sourceBranch}`) {
+        return result({ stdout: `${options.sourceBranch}\n` });
+      }
+      if (key === `check-ref-format\0--branch\0${options.targetBranch}`) {
+        return result({ stdout: `${options.targetBranch}\n` });
+      }
+      if (key === `show-ref\0--verify\0--quiet\0refs/heads/${options.sourceBranch}`) {
+        return result({ code: 0 });
+      }
+      if (key === `show-ref\0--verify\0--quiet\0refs/heads/${options.targetBranch}`) {
+        return result({ code: 0 });
+      }
+      if (key === `rev-parse\0--verify\0refs/heads/${options.sourceBranch}^{commit}`) {
+        return result({ stdout: `${sourceRef}\n` });
+      }
+      if (key === `rev-parse\0--verify\0refs/heads/${options.targetBranch}^{commit}`) {
+        return result({ stdout: `${targetRef}\n` });
+      }
+      if (key === "symbolic-ref\0--quiet\0--short\0HEAD") {
+        return result({ stdout: `${phase === "preflight" ? options.targetBranch : options.currentBranchAfter ?? options.targetBranch}\n` });
+      }
+      if (key === "rev-parse\0--verify\0HEAD") {
+        return result({ stdout: `${targetRef}\n` });
+      }
+      if (key === integrationOperationStateArgs.join("\0")) {
+        const paths = integrationOperationMarkers.map((path) => join(options.operationStateRoot, path));
+        return result({ stdout: `${paths.join("\n")}\n` });
+      }
+      if (key === detailedStatusArgs.join("\0")) {
+        const statusOutput = phase === "failed" ? options.failedStatusOutput ?? "UU conflict.txt\0" : "";
+        return result({ stdout: statusOutput });
+      }
+      if (key === `config\0--get-all\0branch.${options.targetBranch}.mergeOptions`) {
+        return options.targetMergeOptions === undefined
+          ? result({ code: 1 })
+          : result({ stdout: `${options.targetMergeOptions}\n` });
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        const ancestor = args[2];
+        const descendant = args[3];
+        if (sameTestCommit(ancestor, options.sourceHead) && sameTestCommit(descendant, options.targetHead)) {
+          return result({ code: options.alreadyIntegrated ? 0 : 1 });
+        }
+        if (sameTestCommit(ancestor, options.sourceHead) && sameTestCommit(descendant, targetRef)) {
+          return result({ code: options.sourceAncestorAfter === false ? 1 : 0 });
+        }
+        if (sameTestCommit(ancestor, options.targetHead) && sameTestCommit(descendant, targetRef)) {
+          return result({ code: options.previousTargetAncestorAfter === false ? 1 : 0 });
+        }
+        throw new Error(`Unexpected ancestry query: ${args.join(" ")}`);
+      }
+      if (key === mergePolicyArgs.join("\0")) {
+        phase = options.mergeResult?.code === 0 && !options.mergeThrows ? "merged" : "failed";
+        targetRef = options.targetHeadAfterMerge ?? targetRef;
+        sourceRef = options.sourceHeadAfterMerge ?? sourceRef;
+        if (options.mergeLeavesState) {
+          await writeFile(join(options.operationStateRoot, "MERGE_HEAD"), `${options.sourceHead}\n`);
+        }
+        options.abortCallerOnMerge?.abort();
+        if (options.mergeThrows) throw options.mergeThrows;
+        return result(options.mergeResult ?? { code: 0 });
+      }
+      if (key === "diff\0--name-only\0--diff-filter=U\0-z\0--") {
+        if (options.conflictRawOutput !== undefined) {
+          return result({ stdout: options.conflictRawOutput });
+        }
+        const conflictPaths = options.conflictPaths ?? [];
+        return result({ stdout: conflictPaths.length > 0 ? `${conflictPaths.join("\0")}\0` : "" });
+      }
+      if (key === "merge\0--abort") {
+        const abortResult = result(options.abortResult ?? { code: 0 });
+        if (abortResult.code === 0 && !abortResult.killed) {
+          await rm(join(options.operationStateRoot, "MERGE_HEAD"), { force: true });
+          targetRef = options.targetHead;
+          phase = "restored";
+        }
+        return abortResult;
+      }
+      if (key === ["rev-list", "--parents", "-n", "1", targetRef].join("\0")) {
+        const parentOutput = options.parentOutput ?? `${targetRef} ${options.targetHead} ${options.sourceHead}\n`;
+        return result({ stdout: parentOutput });
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    },
+  };
+}
+
+function sameTestCommit(left, right) {
+  return left?.toLowerCase() === right?.toLowerCase();
+}
+
+function assertNoUnsafeIntegrationCommands(calls) {
+  const forbidden = new Set([
+    "switch",
+    "checkout",
+    "fetch",
+    "pull",
+    "rebase",
+    "push",
+    "stash",
+    "reset",
+    "add",
+    "commit",
+    "branch",
+    "worktree",
+  ]);
+  assert.deepEqual(calls.filter((call) => forbidden.has(call.args[0])).map((call) => call.args), []);
+  assert.equal(calls.some((call) => call.args.includes("--no-verify")), false);
+}
+
+function assertNoIntegrationMutationCommands(calls) {
+  const forbidden = new Set([
+    "switch",
+    "checkout",
+    "fetch",
+    "pull",
+    "merge",
+    "rebase",
+    "push",
+    "stash",
+    "reset",
+    "add",
+    "commit",
+    "worktree",
+  ]);
+  assert.deepEqual(calls.filter((call) => forbidden.has(call.args[0])).map((call) => call.args), []);
+}
+
 function assertNoUnsafeWorktreeRemovalCommands(calls) {
   const unsafe = calls.filter((call) =>
     call.args.includes("--force") ||
@@ -247,6 +492,822 @@ test("getBranchStatus reads current git state with argv-style commands", async (
       ["rev-list", "--left-right", "--count", "HEAD...@{u}"],
     ],
   );
+});
+
+test("getLocalBranchAncestry validates local refs and checks captured commit identities", async () => {
+  const sourceBranch = "feature/source";
+  const targetBranch = "main";
+  const sourceHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  const controller = new AbortController();
+  const pi = makePi({
+    [`check-ref-format\0--branch\0${sourceBranch}`]: { stdout: `${sourceBranch}\n` },
+    [`check-ref-format\0--branch\0${targetBranch}`]: { stdout: `${targetBranch}\n` },
+    [`show-ref\0--verify\0--quiet\0refs/heads/${sourceBranch}`]: { code: 0 },
+    [`show-ref\0--verify\0--quiet\0refs/heads/${targetBranch}`]: { code: 0 },
+    [`rev-parse\0--verify\0refs/heads/${sourceBranch}^{commit}`]: { stdout: `${sourceHead}\n` },
+    [`rev-parse\0--verify\0refs/heads/${targetBranch}^{commit}`]: { stdout: `${targetHead}\n` },
+    [`merge-base\0--is-ancestor\0${sourceHead}\0${targetHead}`]: { code: 0 },
+  });
+
+  const details = await getLocalBranchAncestry(
+    pi,
+    ctx,
+    { sourceBranch, targetBranch },
+    controller.signal,
+  );
+
+  assert.deepEqual(details, { sourceBranch, targetBranch, sourceHead, targetHead, isAncestor: true });
+  assert.deepEqual(pi.calls.at(-1).args, ["merge-base", "--is-ancestor", sourceHead, targetHead]);
+  assert.ok(pi.calls.every((call) => call.options.signal === controller.signal));
+  assert.equal(pi.calls.some((call) => ["merge", "switch", "checkout", "reset", "commit"].includes(call.args[0])), false);
+});
+
+test("getLocalBranchAncestry returns false only for merge-base exit one", async () => {
+  const sourceBranch = "feature/source";
+  const targetBranch = "main";
+  const sourceHead = "c".repeat(40);
+  const targetHead = "d".repeat(40);
+  const baseRoutes = {
+    [`check-ref-format\0--branch\0${sourceBranch}`]: { stdout: `${sourceBranch}\n` },
+    [`check-ref-format\0--branch\0${targetBranch}`]: { stdout: `${targetBranch}\n` },
+    [`show-ref\0--verify\0--quiet\0refs/heads/${sourceBranch}`]: { code: 0 },
+    [`show-ref\0--verify\0--quiet\0refs/heads/${targetBranch}`]: { code: 0 },
+    [`rev-parse\0--verify\0refs/heads/${sourceBranch}^{commit}`]: { stdout: `${sourceHead}\n` },
+    [`rev-parse\0--verify\0refs/heads/${targetBranch}^{commit}`]: { stdout: `${targetHead}\n` },
+  };
+  const falsePi = makePi({
+    ...baseRoutes,
+    [`merge-base\0--is-ancestor\0${sourceHead}\0${targetHead}`]: { code: 1 },
+  });
+  const errorPi = makePi({
+    ...baseRoutes,
+    [`merge-base\0--is-ancestor\0${sourceHead}\0${targetHead}`]: { code: 2, stderr: "fatal: malformed graph\n" },
+  });
+  const killedPi = makePi({
+    ...baseRoutes,
+    [`merge-base\0--is-ancestor\0${sourceHead}\0${targetHead}`]: { code: 1, killed: true },
+  });
+
+  assert.equal(
+    (await getLocalBranchAncestry(falsePi, ctx, { sourceBranch, targetBranch })).isAncestor,
+    false,
+  );
+  await assert.rejects(
+    () => getLocalBranchAncestry(errorPi, ctx, { sourceBranch, targetBranch }),
+    /merge-base.*failed.*malformed graph/iu,
+  );
+  await assert.rejects(
+    () => getLocalBranchAncestry(killedPi, ctx, { sourceBranch, targetBranch }),
+    /merge-base.*failed.*killed/iu,
+  );
+});
+
+test("getLocalBranchAncestry rejects invalid names, missing refs, and malformed commit identities", async () => {
+  const invalidPi = makePi({});
+  await assert.rejects(
+    () => getLocalBranchAncestry(invalidPi, ctx, { sourceBranch: "bad branch", targetBranch: "main" }),
+    /Source branch.*whitespace/iu,
+  );
+  assert.deepEqual(invalidPi.calls, []);
+
+  const missingPi = makePi({
+    ["check-ref-format\0--branch\0feature/missing"]: { stdout: "feature/missing\n" },
+    ["check-ref-format\0--branch\0main"]: { stdout: "main\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/missing"]: { code: 1 },
+  });
+  await assert.rejects(
+    () => getLocalBranchAncestry(
+      missingPi,
+      ctx,
+      { sourceBranch: "feature/missing", targetBranch: "main" },
+    ),
+    /Source local branch.*does not exist/iu,
+  );
+
+  const malformedPi = makePi({
+    ["check-ref-format\0--branch\0feature/source"]: { stdout: "feature/source\n" },
+    ["check-ref-format\0--branch\0main"]: { stdout: "main\n" },
+    ["show-ref\0--verify\0--quiet\0refs/heads/feature/source"]: { code: 0 },
+    ["show-ref\0--verify\0--quiet\0refs/heads/main"]: { code: 0 },
+    ["rev-parse\0--verify\0refs/heads/feature/source^{commit}"]: { stdout: "not-a-commit\n" },
+  });
+  await assert.rejects(
+    () => getLocalBranchAncestry(
+      malformedPi,
+      ctx,
+      { sourceBranch: "feature/source", targetBranch: "main" },
+    ),
+    /Unable to resolve local branch.*to a commit/iu,
+  );
+});
+
+test("prepareBranchIntegration returns exact verified preflight state without inspecting source worktrees", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integration-preflight-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const reportedWorktreeRoot = join(tempRoot, "control-link");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const reportedCommonGitDirectory = join(tempRoot, "common-git-link");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const sourceBranch = "feature/source";
+  const targetBranch = "main";
+  const sourceHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  const controller = new AbortController();
+
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+  await symlink(worktreeRoot, reportedWorktreeRoot);
+  await symlink(commonGitDirectory, reportedCommonGitDirectory);
+
+  try {
+    const pi = makeIntegrationPreflightPi({
+      worktreeRoot,
+      reportedWorktreeRoot,
+      commonGitDirectory,
+      reportedCommonGitDirectory,
+      operationStateRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+      alreadyIntegrated: true,
+    });
+
+    assert.equal(
+      await resolveIntegrationWorktreeRoot(pi, { cwd: reportedWorktreeRoot }, controller.signal),
+      await realpath(worktreeRoot),
+    );
+    const prepared = await prepareBranchIntegration(
+      pi,
+      { cwd: reportedWorktreeRoot },
+      { sourceBranch, targetBranch },
+      controller.signal,
+    );
+
+    assert.deepEqual(prepared, {
+      worktreeRoot: await realpath(worktreeRoot),
+      canonicalCommonGitDirectory: await realpath(commonGitDirectory),
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+      sourceAlreadyIntegrated: true,
+    });
+    assert.ok(pi.calls.every((call) => call.options.signal === controller.signal));
+    assert.equal(pi.calls.some((call) => call.args[0] === "worktree"), false);
+    const canonicalWorktreeRoot = await realpath(worktreeRoot);
+    assert.equal(
+      pi.calls
+        .filter((call) => call.args[0] === "status")
+        .every((call) => call.options.cwd === canonicalWorktreeRoot),
+      true,
+    );
+    assertNoIntegrationMutationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("prepareBranchIntegration rejects invalid, identical, missing, and malformed local branches", async () => {
+  const invalidPi = makePi({});
+  await assert.rejects(
+    () => prepareBranchIntegration(
+      invalidPi,
+      ctx,
+      { sourceBranch: "bad branch", targetBranch: "main" },
+    ),
+    /Source branch.*whitespace/iu,
+  );
+  assert.deepEqual(invalidPi.calls, []);
+
+  const identicalPi = makePi({});
+  await assert.rejects(
+    () => prepareBranchIntegration(
+      identicalPi,
+      ctx,
+      { sourceBranch: "main", targetBranch: "main" },
+    ),
+    /must be distinct local branches/iu,
+  );
+  assert.deepEqual(identicalPi.calls, []);
+
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integration-preflight-branches-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const sourceBranch = "feature/source";
+  const targetBranch = "main";
+  const sourceHead = "c".repeat(40);
+  const targetHead = "d".repeat(40);
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const baseOptions = {
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+    };
+    const invalidRefPi = makeIntegrationPreflightPi({
+      ...baseOptions,
+      sourceNameResult: { code: 1, stderr: "fatal: invalid branch name\n" },
+    });
+    await assert.rejects(
+      () => prepareBranchIntegration(invalidRefPi, { cwd: worktreeRoot }, { sourceBranch, targetBranch }),
+      /Invalid branch name/iu,
+    );
+
+    for (const scenario of [
+      { sourceExists: false, expected: /Source local branch.*does not exist/iu },
+      { targetExists: false, expected: /Target local branch.*does not exist/iu },
+    ]) {
+      const pi = makeIntegrationPreflightPi({ ...baseOptions, ...scenario });
+      await assert.rejects(
+        () => prepareBranchIntegration(pi, { cwd: worktreeRoot }, { sourceBranch, targetBranch }),
+        scenario.expected,
+      );
+      assertNoIntegrationMutationCommands(pi.calls);
+    }
+
+    const malformedPi = makeIntegrationPreflightPi({ ...baseOptions, sourceHead: "not-a-commit" });
+    await assert.rejects(
+      () => prepareBranchIntegration(
+        malformedPi,
+        { cwd: worktreeRoot },
+        { sourceBranch, targetBranch },
+      ),
+      /Unable to resolve local branch.*to a commit/iu,
+    );
+    assertNoIntegrationMutationCommands(malformedPi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("prepareBranchIntegration rejects detached, wrong-target, and dirty control worktrees", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integration-preflight-control-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const sourceBranch = "feature/source";
+  const targetBranch = "main";
+  const sourceHead = "e".repeat(40);
+  const targetHead = "f".repeat(40);
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const baseOptions = {
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch,
+      targetBranch,
+      sourceHead,
+      targetHead,
+    };
+    const scenarios = [
+      { name: "detached", options: { detached: true }, expected: /HEAD is detached/iu },
+      {
+        name: "wrong target",
+        options: { currentBranch: "feature/other" },
+        expected: /requested target branch checked out/iu,
+      },
+      {
+        name: "dirty control",
+        options: { statusOutput: "M  staged.ts\0 M unstaged.ts\0?? untracked.ts\0UU conflict.ts\0" },
+        expected: /no staged, unstaged, untracked, or unmerged changes/iu,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const pi = makeIntegrationPreflightPi({ ...baseOptions, ...scenario.options });
+      await assert.rejects(
+        () => prepareBranchIntegration(pi, { cwd: worktreeRoot }, { sourceBranch, targetBranch }),
+        scenario.expected,
+        scenario.name,
+      );
+      assertNoIntegrationMutationCommands(pi.calls);
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("prepareBranchIntegration rejects existing merge, rebase, cherry-pick, revert, and sequencer states", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integration-preflight-operations-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const sourceBranch = "feature/source";
+  const targetBranch = "main";
+  const sourceHead = "1".repeat(40);
+  const targetHead = "2".repeat(40);
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+
+  try {
+    const scenarios = [
+      { marker: "MERGE_HEAD", operation: "merge" },
+      { marker: "rebase-merge", operation: "rebase" },
+      { marker: "CHERRY_PICK_HEAD", operation: "cherry-pick" },
+      { marker: "REVERT_HEAD", operation: "revert" },
+      { marker: "sequencer", operation: "sequencer" },
+    ];
+    for (const [index, scenario] of scenarios.entries()) {
+      const operationStateRoot = join(tempRoot, `operation-state-${index}`);
+      await mkdir(operationStateRoot);
+      await writeFile(join(operationStateRoot, scenario.marker), "active\n");
+      const pi = makeIntegrationPreflightPi({
+        worktreeRoot,
+        commonGitDirectory,
+        operationStateRoot,
+        sourceBranch,
+        targetBranch,
+        sourceHead,
+        targetHead,
+        statusOutput: "",
+      });
+
+      await assert.rejects(
+        () => prepareBranchIntegration(pi, { cwd: worktreeRoot }, { sourceBranch, targetBranch }),
+        new RegExp(`existing ${scenario.operation}`, "iu"),
+        scenario.operation,
+      );
+      assert.equal(pi.calls.some((call) => call.args[0] === "status"), false);
+      assertNoIntegrationMutationCommands(pi.calls);
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("integrateBranch returns a verified already-integrated no-op without running merge", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-no-op-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const sourceHead = "3".repeat(40);
+  const targetHead = "4".repeat(40);
+  const controller = new AbortController();
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const pi = makeIntegrateBranchPi({
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch: "feature/source",
+      targetBranch: "main",
+      sourceHead,
+      targetHead,
+      alreadyIntegrated: true,
+    });
+    const details = await integrateBranch(
+      pi,
+      { cwd: worktreeRoot },
+      { sourceBranch: "feature/source", targetBranch: "main" },
+      controller.signal,
+    );
+
+    assert.equal(details.status, "already_integrated");
+    assert.equal(details.mergeExecuted, false);
+    assert.deepEqual(details.verified.heads, {
+      before: { sourceHead, targetHead },
+      after: { sourceHead, targetHead },
+    });
+    assert.deepEqual(details.verified.finalAncestry, {
+      sourceHead,
+      previousTargetHead: targetHead,
+      targetHead,
+      sourceIsAncestorOfTarget: true,
+      previousTargetIsAncestorOfTarget: true,
+    });
+    assert.equal(pi.calls.some((call) => call.args.includes("rerere.enabled=false")), false);
+    assert.ok(pi.calls.every((call) => call.options.signal === controller.signal));
+    assertNoUnsafeIntegrationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("integrateBranch rejects target branch merge options before mutation", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-merge-options-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const controller = new AbortController();
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const pi = makeIntegrateBranchPi({
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch: "feature/source",
+      targetBranch: "main",
+      sourceHead: "5".repeat(40),
+      targetHead: "6".repeat(40),
+      targetMergeOptions: "--no-commit",
+    });
+
+    await assert.rejects(
+      () => integrateBranch(
+        pi,
+        { cwd: worktreeRoot },
+        { sourceBranch: "feature/source", targetBranch: "main" },
+        controller.signal,
+      ),
+      /branch-specific merge options.*fixed merge policy/iu,
+    );
+
+    const configCall = pi.calls.find((call) => call.args[0] === "config");
+    assert.deepEqual(configCall.args, ["config", "--get-all", "branch.main.mergeOptions"]);
+    assert.equal(configCall.options.signal, controller.signal);
+    assert.equal(pi.calls.some((call) => call.args.includes("rerere.enabled=false")), false);
+    assertNoUnsafeIntegrationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("integrateBranch verifies fast-forward and exact two-parent merge-commit outcomes", async (t) => {
+  const scenarios = [
+    {
+      name: "fast-forward",
+      sourceHead: "5".repeat(40),
+      targetHead: "6".repeat(40),
+      targetHeadAfterMerge: "5".repeat(40),
+      expectedStatus: "fast_forward",
+    },
+    {
+      name: "merge commit",
+      sourceHead: "7".repeat(40),
+      targetHead: "8".repeat(40),
+      targetHeadAfterMerge: "9".repeat(40),
+      expectedStatus: "merge_commit",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-success-"));
+      const worktreeRoot = join(tempRoot, "control");
+      const commonGitDirectory = join(tempRoot, "common-git");
+      const operationStateRoot = join(tempRoot, "operation-state");
+      const controller = new AbortController();
+      await mkdir(worktreeRoot);
+      await mkdir(commonGitDirectory);
+      await mkdir(operationStateRoot);
+
+      try {
+        const pi = makeIntegrateBranchPi({
+          worktreeRoot,
+          commonGitDirectory,
+          operationStateRoot,
+          sourceBranch: "feature/source",
+          targetBranch: "main",
+          sourceHead: scenario.sourceHead,
+          targetHead: scenario.targetHead,
+          targetHeadAfterMerge: scenario.targetHeadAfterMerge,
+          mergeResult: { code: 0, stdout: "merge output that is not returned\n" },
+        });
+        const details = await integrateBranch(
+          pi,
+          { cwd: worktreeRoot },
+          { sourceBranch: "feature/source", targetBranch: "main" },
+          controller.signal,
+        );
+
+        assert.equal(details.status, scenario.expectedStatus);
+        assert.equal(details.mergeExecuted, true);
+        assert.deepEqual(details.verified.heads, {
+          before: { sourceHead: scenario.sourceHead, targetHead: scenario.targetHead },
+          after: { sourceHead: scenario.sourceHead, targetHead: scenario.targetHeadAfterMerge },
+        });
+        assert.equal(details.verified.finalAncestry.sourceIsAncestorOfTarget, true);
+        assert.equal(details.verified.finalAncestry.previousTargetIsAncestorOfTarget, true);
+        const mergeIndex = pi.calls.findIndex((call) => call.args.join("\0") === [
+          "-c",
+          "rerere.enabled=false",
+          "merge",
+          "--ff",
+          "--no-edit",
+          "--no-autostash",
+          "--no-rerere-autoupdate",
+          "--no-overwrite-ignore",
+          "refs/heads/feature/source",
+        ].join("\0"));
+        assert.ok(mergeIndex > -1);
+        assert.equal(pi.calls[mergeIndex].options.signal, controller.signal);
+        assert.ok(pi.calls.slice(mergeIndex + 1).every((call) => call.options.signal === undefined));
+        assert.ok(pi.calls.slice(mergeIndex).every((call) => call.options.timeout > 0));
+        assertNoUnsafeIntegrationCommands(pi.calls);
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("integrateBranch captures bounded exact conflict paths before abort and returns only after restoration", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-conflict-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const sourceHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  const conflictPaths = Array.from({ length: 101 }, (_value, index) => `src/conflict-${index}.ts`);
+  const controller = new AbortController();
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const pi = makeIntegrateBranchPi({
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch: "feature/source",
+      targetBranch: "main",
+      sourceHead,
+      targetHead,
+      mergeResult: { code: 1, stderr: "CONFLICT (content): Merge conflict\n" },
+      mergeLeavesState: true,
+      conflictPaths,
+    });
+    const details = await integrateBranch(
+      pi,
+      { cwd: worktreeRoot },
+      { sourceBranch: "feature/source", targetBranch: "main" },
+      controller.signal,
+    );
+
+    assert.equal(details.status, "conflict");
+    assert.deepEqual(details.conflict.paths, conflictPaths.slice(0, 100).map((path) => ({ path })));
+    assert.equal(details.conflict.omitted, 1);
+    assert.deepEqual(details.conflict.abort, { attempted: true, succeeded: true });
+    assert.equal(details.conflict.restoration.verified, true);
+    assert.deepEqual(details.verified.heads, {
+      before: { sourceHead, targetHead },
+      after: { sourceHead, targetHead },
+    });
+    const diffIndex = pi.calls.findIndex((call) => call.args[0] === "diff");
+    const abortIndex = pi.calls.findIndex((call) => call.args.join("\0") === "merge\0--abort");
+    assert.ok(diffIndex > -1, "conflict paths must be captured");
+    assert.ok(abortIndex > diffIndex, "conflict paths must be captured before abort");
+    const mergeIndex = pi.calls.findIndex((call) => call.args.includes("rerere.enabled=false"));
+    assert.equal(pi.calls[mergeIndex].options.signal, controller.signal);
+    assert.ok(pi.calls.slice(mergeIndex + 1).every((call) => call.options.signal === undefined));
+    assert.equal(pi.sourceRef, sourceHead);
+    assert.equal(pi.targetRef, targetHead);
+    assertNoUnsafeIntegrationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("integrateBranch aborts and restores failed non-conflict and killed merges but preserves their errors", async (t) => {
+  const scenarios = [
+    {
+      name: "non-conflict failure",
+      mergeResult: { code: 128, stderr: "Committer identity unknown\n" },
+      expected: /Committer identity unknown/iu,
+    },
+    {
+      name: "killed merge",
+      mergeResult: { code: 1, killed: true, stderr: "merge timed out\n" },
+      expected: /failed.*killed.*merge timed out/iu,
+      abortCaller: true,
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.name, async () => {
+      const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-failed-"));
+      const worktreeRoot = join(tempRoot, "control");
+      const commonGitDirectory = join(tempRoot, "common-git");
+      const operationStateRoot = join(tempRoot, "operation-state");
+      const sourceHead = `${index + 1}`.repeat(40);
+      const targetHead = `${index + 3}`.repeat(40);
+      const controller = new AbortController();
+      await mkdir(worktreeRoot);
+      await mkdir(commonGitDirectory);
+      await mkdir(operationStateRoot);
+
+      try {
+        const pi = makeIntegrateBranchPi({
+          worktreeRoot,
+          commonGitDirectory,
+          operationStateRoot,
+          sourceBranch: "feature/source",
+          targetBranch: "main",
+          sourceHead,
+          targetHead,
+          mergeResult: scenario.mergeResult,
+          mergeLeavesState: true,
+          conflictPaths: [],
+          abortCallerOnMerge: scenario.abortCaller ? controller : undefined,
+        });
+        await assert.rejects(
+          () => integrateBranch(
+            pi,
+            { cwd: worktreeRoot },
+            { sourceBranch: "feature/source", targetBranch: "main" },
+            controller.signal,
+          ),
+          scenario.expected,
+        );
+
+        assert.equal(pi.calls.some((call) => call.args.join("\0") === "merge\0--abort"), true);
+        const mergeIndex = pi.calls.findIndex((call) => call.args.includes("rerere.enabled=false"));
+        assert.ok(pi.calls.slice(mergeIndex + 1).every((call) => call.options.signal === undefined));
+        assert.equal(controller.signal.aborted, scenario.abortCaller === true);
+        assert.equal(pi.sourceRef, sourceHead);
+        assert.equal(pi.targetRef, targetHead);
+        assertNoUnsafeIntegrationCommands(pi.calls);
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("integrateBranch fails closed when abort fails and never reports a restored conflict", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-abort-failure-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const pi = makeIntegrateBranchPi({
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch: "feature/source",
+      targetBranch: "main",
+      sourceHead: "c".repeat(40),
+      targetHead: "d".repeat(40),
+      mergeResult: { code: 1, stderr: "merge conflict\n" },
+      mergeLeavesState: true,
+      conflictPaths: ["src/conflict.ts"],
+      abortResult: { code: 1, stderr: "abort failed\n" },
+    });
+
+    await assert.rejects(
+      () => integrateBranch(
+        pi,
+        { cwd: worktreeRoot },
+        { sourceBranch: "feature/source", targetBranch: "main" },
+      ),
+      /postconditions are uncertain.*merge --abort did not succeed.*inspect the repository/is,
+    );
+    assert.equal(pi.calls.filter((call) => call.args.join("\0") === "merge\0--abort").length, 1);
+    assertNoUnsafeIntegrationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("integrateBranch reports a nonzero merge that moved target without merge state as uncertain and never resets", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-moved-target-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const movedTargetHead = "e".repeat(40);
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const pi = makeIntegrateBranchPi({
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch: "feature/source",
+      targetBranch: "main",
+      sourceHead: "f".repeat(40),
+      targetHead: "1".repeat(40),
+      targetHeadAfterMerge: movedTargetHead,
+      mergeResult: { code: 1, stderr: "hook failed after ref update\n" },
+      failedStatusOutput: "",
+      conflictPaths: [],
+    });
+
+    await assert.rejects(
+      () => integrateBranch(
+        pi,
+        { cwd: worktreeRoot },
+        { sourceBranch: "feature/source", targetBranch: "main" },
+      ),
+      /postconditions are uncertain.*target ref did not have the required commit.*may have completed/is,
+    );
+    assert.equal(pi.calls.some((call) => call.args.join("\0") === "merge\0--abort"), false);
+    assert.equal(pi.calls.some((call) => call.args[0] === "reset"), false);
+    assertNoUnsafeIntegrationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("integrateBranch rejects unexpected merge parents after successful divergent integration", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-parents-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const sourceHead = "2".repeat(40);
+  const targetHead = "3".repeat(40);
+  const mergedHead = "4".repeat(40);
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const pi = makeIntegrateBranchPi({
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch: "feature/source",
+      targetBranch: "main",
+      sourceHead,
+      targetHead,
+      targetHeadAfterMerge: mergedHead,
+      mergeResult: { code: 0 },
+      parentOutput: `${mergedHead} ${sourceHead} ${targetHead}\n`,
+    });
+
+    await assert.rejects(
+      () => integrateBranch(
+        pi,
+        { cwd: worktreeRoot },
+        { sourceBranch: "feature/source", targetBranch: "main" },
+      ),
+      /not an exact two-parent merge.*may have completed/is,
+    );
+    assertNoUnsafeIntegrationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("integrateBranch aborts and fails closed when a conflict path cannot be returned losslessly", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-integrate-lossless-path-"));
+  const worktreeRoot = join(tempRoot, "control");
+  const commonGitDirectory = join(tempRoot, "common-git");
+  const operationStateRoot = join(tempRoot, "operation-state");
+  const sourceHead = "5".repeat(40);
+  const targetHead = "6".repeat(40);
+  await mkdir(worktreeRoot);
+  await mkdir(commonGitDirectory);
+  await mkdir(operationStateRoot);
+
+  try {
+    const pi = makeIntegrateBranchPi({
+      worktreeRoot,
+      commonGitDirectory,
+      operationStateRoot,
+      sourceBranch: "feature/source",
+      targetBranch: "main",
+      sourceHead,
+      targetHead,
+      mergeResult: { code: 1, stderr: "merge conflict\n" },
+      mergeLeavesState: true,
+      conflictPaths: ["src/ghp_conflictsecret123.ts"],
+    });
+
+    await assert.rejects(
+      () => integrateBranch(
+        pi,
+        { cwd: worktreeRoot },
+        { sourceBranch: "feature/source", targetBranch: "main" },
+      ),
+      (error) => {
+        assert.match(error.message, /restored.*conflict paths could not be classified safely/is);
+        assert.doesNotMatch(error.message, /conflictsecret/u);
+        return true;
+      },
+    );
+    assert.equal(pi.calls.some((call) => call.args.join("\0") === "merge\0--abort"), true);
+    assert.equal(pi.sourceRef, sourceHead);
+    assert.equal(pi.targetRef, targetHead);
+    assertNoUnsafeIntegrationCommands(pi.calls);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("getGitRoot trims trailing whitespace from git output", async () => {

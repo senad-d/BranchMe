@@ -24,14 +24,14 @@ type PanelCell =
       preserveLeading?: boolean;
     };
 
-export type BranchMePanelSection = "status" | "workflow" | "worktrees";
+export type BranchMePanelSection = "status" | "workflow" | "integration" | "worktrees";
 
 const NARROW_MIN_WIDTH = 24;
 const WIDE_MIN_WIDTH = 72;
 const MAX_PANEL_WIDTH = 96;
 const MAX_PANEL_HEIGHT = 16;
 const BODY_HEIGHT = 9;
-const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow", "worktrees"];
+const PANEL_SECTIONS: BranchMePanelSection[] = ["status", "workflow", "integration", "worktrees"];
 const ANSI_RESET = "\u001b[0m";
 
 function truncateVisible(value: string, width: number, ellipsis = "…", pad = false): string {
@@ -144,7 +144,7 @@ function statusDetailRow(label: string, value: string): PanelCell {
 }
 
 function workflowDetailRow(tool: string, description: string): PanelCell {
-  return layoutCell(`  ${tool.padEnd(16, " ")}-> ${sanitize(description)}`);
+  return layoutCell(`  ${tool.padEnd(17, " ")}-> ${sanitize(description)}`);
 }
 
 function sectionTitle(section: BranchMePanelSection): string {
@@ -153,6 +153,8 @@ function sectionTitle(section: BranchMePanelSection): string {
       return "STATUS";
     case "workflow":
       return "WORKFLOW";
+    case "integration":
+      return "INTEGRATION";
     case "worktrees":
       return "WORKTREES";
   }
@@ -180,6 +182,8 @@ function sectionFooter(section: BranchMePanelSection, data: BranchMePanelData): 
       return "status • current repository only • tools perform actions";
     case "workflow":
       return "workflow • inspect → change → fetch/pull/rebase → create → push → PR";
+    case "integration":
+      return "integration • local refs • clean target • conflicts auto-abort";
     case "worktrees":
       return "worktrees • create → handoff cwd → next session • remove retains branch";
   }
@@ -207,6 +211,15 @@ function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): Pa
         workflowDetailRow("create_branch", "from HEAD"),
         workflowDetailRow("push_branch", "current branch"),
         workflowDetailRow("pull_request", "after push"),
+      ];
+    case "integration":
+      return [
+        heading("INTEGRATION"),
+        workflowDetailRow("integrate_branch", "exact local source -> target"),
+        workflowDetailRow("control target", "checked out + clean"),
+        workflowDetailRow("remote effects", "never fetch or push"),
+        workflowDetailRow("conflict", "automatic verified abort"),
+        workflowDetailRow("semantic intent", "separate developer workflow"),
       ];
     case "worktrees":
       return [
