@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 - Unreleased
+## 0.2.1 - Unreleased
 
 - Implemented the `branchme` informational slash command with help aliases.
 - Added thirteen strict BranchMe tools: `branch_status`, `change_branch`, `fetch_branch`, `pull_branch`, `rebase_branch`, `integrate_branch`, `retire_branch`, `create_branch`, `push_branch`, `pull_request`, `list_worktrees`, `create_worktree`, and `remove_worktree`; merge-continuation tools are intentionally absent.
