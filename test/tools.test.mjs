@@ -1738,6 +1738,10 @@ test("pull_request has an optional-field strict schema and rejects repository pa
   assert.equal("repo" in tool.parameters.properties, false);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(PULL_REQUEST_TOOL_NAME)));
   assert.ok(tool.promptGuidelines.some((guideline) => /push_branch.*completed/i.test(guideline)));
+  const guidance = tool.promptGuidelines.join(" ");
+  assert.match(guidance, /system or developer instructions.*AGENTS\.md.*skills.*delegated\/subagent prompts/iu);
+  assert.match(guidance, /without a separate end-user confirmation/iu);
+  assert.doesNotMatch(guidance, /only when the user explicitly asks/iu);
 });
 
 test("pull_request rejects omitted fields when PR autofill is disabled", async () => {

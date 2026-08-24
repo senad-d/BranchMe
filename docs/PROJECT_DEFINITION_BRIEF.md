@@ -181,3 +181,4 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.2.0` p
 - `push_branch` uses `origin` only when the current branch has no configured upstream.
 - `pull_request` infers owner/repository from the current checkout or matching `GITHUB_REPOSITORY`, never accepts owner/repository tool inputs, and requires local branch refs with the head matching GitHub.
 - Pull request fields remain explicit unless `BRANCHME_PR_AUTOFILL=true`; explicit values always take precedence.
+- `pull_request` is available to autonomous and delegated workflows without separate end-user confirmation. PR creation may be directed by user, system, or developer prompts, `AGENTS.md`, skills, automation, or delegated/subagent prompts.

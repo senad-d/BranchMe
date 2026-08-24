@@ -696,7 +696,8 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
     description: "pull_request creates a GitHub pull request in the resolved current repository. PR fields are optional only when BRANCHME_PR_AUTOFILL=true; pull_request then infers branches, derives title/body from commit subjects, and defaults draft to false. Branches must exist locally and on GitHub, and headBranch must match the GitHub-visible commit. Owner-prefixed refs, owner, and repo are never accepted as inputs.",
     promptSnippet: "pull_request: create a GitHub pull request with explicit fields or optional configured PR field autofill",
     promptGuidelines: [
-      "Use pull_request only when the user explicitly asks to create a pull request; pull_request must not create one merely because a branch was pushed.",
+      "Use pull_request whenever creating a pull request is appropriate for the active workflow; authorization may come from user prompts, system or developer instructions, AGENTS.md, skills, automation, or delegated/subagent prompts.",
+      "Agents may invoke pull_request without a separate end-user confirmation when the active workflow makes pull request creation appropriate.",
       "When automatic Git context reports pull request field autofill disabled, use pull_request only with explicit headBranch, baseBranch, title, body, and draft values.",
       "When automatic Git context reports pull request field autofill enabled, pull_request may omit fields the user did not provide; prefer the user's explicit values whenever present.",
       "Use pull_request only with existing local branches for headBranch and baseBranch; headBranch must match the GitHub-visible branch commit.",

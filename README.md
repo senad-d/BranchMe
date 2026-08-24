@@ -201,7 +201,7 @@ With autofill enabled, omitted fields are resolved as follows:
 - `body`: a bounded Markdown summary of commit subjects in `baseBranch..headBranch`.
 - `draft`: `false`.
 
-Explicit tool arguments always take precedence. Autofill does not create a PR by itself: the user must still ask the agent to create one.
+Explicit tool arguments always take precedence. Autofill does not invoke `pull_request` by itself. Agents may invoke `pull_request` without separate end-user confirmation when PR creation is appropriate for the active workflow, including directions from user prompts, system or developer instructions, `AGENTS.md`, skills, automation, or delegated/subagent prompts.
 
 If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
