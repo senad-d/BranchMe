@@ -13,6 +13,7 @@ import {
   createLocalBranch,
   createWorktree,
   fetchCurrentBranch,
+  fetchRemoteBranch,
   formatGitFailure,
   getBranchStatus,
   getGitRoot,
@@ -575,6 +576,7 @@ test("getLocalBranchAncestry rejects invalid names, missing refs, and malformed 
     ["check-ref-format\0--branch\0feature/missing"]: { stdout: "feature/missing\n" },
     ["check-ref-format\0--branch\0main"]: { stdout: "main\n" },
     ["show-ref\0--verify\0--quiet\0refs/heads/feature/missing"]: { code: 1 },
+    ["show-ref\0--verify\0--quiet\0refs/remotes/feature/missing"]: { code: 1 },
   });
   await assert.rejects(
     () => getLocalBranchAncestry(
@@ -582,7 +584,7 @@ test("getLocalBranchAncestry rejects invalid names, missing refs, and malformed 
       ctx,
       { sourceBranch: "feature/missing", targetBranch: "main" },
     ),
-    /Source local branch.*does not exist/iu,
+    /Source local branch or remote-tracking ref.*does not exist/iu,
   );
 
   const malformedPi = makePi({
@@ -599,6 +601,31 @@ test("getLocalBranchAncestry rejects invalid names, missing refs, and malformed 
       { sourceBranch: "feature/source", targetBranch: "main" },
     ),
     /Unable to resolve local branch.*to a commit/iu,
+  );
+});
+
+test("getLocalBranchAncestry accepts a remote-tracking ref as ancestry target without mutating it", async () => {
+  const sourceBranch = "feat/14-bootstrap-monorepo";
+  const targetBranch = "origin/main";
+  const sourceHead = "e".repeat(40);
+  const targetHead = "f".repeat(40);
+  const pi = makePi({
+    [`check-ref-format\0--branch\0${sourceBranch}`]: { stdout: `${sourceBranch}\n` },
+    [`check-ref-format\0--branch\0${targetBranch}`]: { stdout: `${targetBranch}\n` },
+    [`show-ref\0--verify\0--quiet\0refs/heads/${sourceBranch}`]: { code: 0 },
+    [`rev-parse\0--verify\0refs/heads/${sourceBranch}^{commit}`]: { stdout: `${sourceHead}\n` },
+    [`show-ref\0--verify\0--quiet\0refs/heads/${targetBranch}`]: { code: 1 },
+    [`show-ref\0--verify\0--quiet\0refs/remotes/${targetBranch}`]: { code: 0 },
+    [`rev-parse\0--verify\0refs/remotes/${targetBranch}^{commit}`]: { stdout: `${targetHead}\n` },
+    [`merge-base\0--is-ancestor\0${sourceHead}\0${targetHead}`]: { code: 0 },
+  });
+
+  const details = await getLocalBranchAncestry(pi, ctx, { sourceBranch, targetBranch });
+
+  assert.deepEqual(details, { sourceBranch, targetBranch, sourceHead, targetHead, isAncestor: true });
+  assert.equal(
+    pi.calls.some((call) => ["switch", "checkout", "reset", "merge", "commit", "update-ref"].includes(call.args[0])),
+    false,
   );
 });
 
@@ -2255,6 +2282,16 @@ test("createWorktree rejects incompatible branch modes before git worktree add",
   }
 });
 
+test("createWorktree rejects baseRef with branchMode 'existing' before any git command", async () => {
+  const pi = makePi({});
+
+  await assert.rejects(
+    () => createWorktree(pi, ctx, "/tmp/branchme-base-ref-existing", "feature/existing", "existing", undefined, "origin/main"),
+    /baseRef is only supported with branchMode 'new'/iu,
+  );
+  assert.deepEqual(pi.calls, []);
+});
+
 test("createWorktree requires a valid current HEAD before creating a new branch", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "branchme-worktree-create-head-"));
   const repoRoot = join(tempRoot, "repo");
@@ -3231,6 +3268,61 @@ test("fetchCurrentBranch rejects upstream refs that do not match the configured 
 
   await assert.rejects(() => fetchCurrentBranch(pi, ctx), /upstream does not match its remote/i);
   assert.equal(pi.calls.some((call) => call.args[0] === "fetch"), false);
+});
+
+test("fetchRemoteBranch fetches an explicit remote branch without reading the current branch or its upstream", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0main"]: { stdout: "main\n" },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+    ["fetch\0--no-tags\0--no-recurse-submodules\0origin\0refs/heads/main:refs/remotes/origin/main"]: { stderr: "From github.com:senad-d/branchme\n" },
+  });
+
+  const details = await fetchRemoteBranch(pi, ctx, "origin", "main");
+
+  assert.deepEqual(details, {
+    repoRoot: "/repo",
+    remote: "origin",
+    branch: "main",
+    remoteRef: "refs/heads/main",
+    remoteTrackingRef: "refs/remotes/origin/main",
+    refspec: "refs/heads/main:refs/remotes/origin/main",
+    output: "From github.com:senad-d/branchme",
+  });
+  assert.deepEqual(pi.calls.at(-1).args, [
+    "fetch",
+    "--no-tags",
+    "--no-recurse-submodules",
+    "origin",
+    "refs/heads/main:refs/remotes/origin/main",
+  ]);
+  assert.equal(pi.calls.at(-1).options.timeout, 120_000);
+  assert.equal(
+    pi.calls.some((call) => call.args[0] === "symbolic-ref" || call.args[0] === "config"),
+    false,
+    "targeted fetch must not read the current branch or its upstream configuration",
+  );
+});
+
+test("fetchRemoteBranch rejects unsafe remotes and unconfigured remotes before fetching", async () => {
+  const unsafePi = makePi({});
+  await assert.rejects(
+    () => fetchRemoteBranch(unsafePi, ctx, "https://github.com/senad-d/branchme.git", "main"),
+    /remote cannot be a URL or user-prefixed target/i,
+  );
+  await assert.rejects(() => fetchRemoteBranch(unsafePi, ctx, "-origin", "main"), /remote cannot start with '-'/i);
+  assert.deepEqual(unsafePi.calls, []);
+
+  const unconfiguredPi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["check-ref-format\0--branch\0main"]: { stdout: "main\n" },
+    ["remote\0get-url\0upstream"]: { code: 2, stderr: "error: No such remote 'upstream'\n" },
+  });
+  await assert.rejects(
+    () => fetchRemoteBranch(unconfiguredPi, ctx, "upstream", "main"),
+    /remote 'upstream' is not a configured Git remote/i,
+  );
+  assert.equal(unconfiguredPi.calls.some((call) => call.args[0] === "fetch"), false);
 });
 
 test("pullCurrentBranch fast-forwards the clean current branch from its configured upstream", async () => {

@@ -2,6 +2,9 @@
 
 ## 0.2.1 - Unreleased
 
+- Allowed `branch_status` ancestry endpoints to be remote-tracking refs such as `origin/main` in addition to exact local branches; local branches take precedence and remote-tracking refs stay read-only comparison targets.
+- Added optional `remote`/`branch` parameters to `fetch_branch` for a targeted fetch of one exact remote branch into its remote-tracking ref (default remote `origin`; `remote` requires `branch`) without touching local branches, the working tree, or the current branch's upstream configuration; the no-argument behavior is unchanged.
+- Added an optional read-only `baseRef` parameter to `create_worktree` for `branchMode: "new"`, starting the new branch from an exact local branch, remote-tracking ref, or full commit regardless of the current checkout's branch, dirt, or staleness; the default from-`HEAD` behavior is unchanged.
 - Implemented the `branchme` informational slash command with help aliases.
 - Added thirteen strict BranchMe tools: `branch_status`, `change_branch`, `fetch_branch`, `pull_branch`, `rebase_branch`, `integrate_branch`, `retire_branch`, `create_branch`, `push_branch`, `pull_request`, `list_worktrees`, `create_worktree`, and `remove_worktree`; merge-continuation tools are intentionally absent.
 - Added argv-style git helpers for repository status, branch validation/creation/switching, clean-worktree preflight, upstream detection, configured-upstream fetch, fast-forward-only current-branch pull, current-branch rebase with automatic abort on failure, verified local branch integration, current-branch push/publish, and bounded NUL-delimited worktree discovery.

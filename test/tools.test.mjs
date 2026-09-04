@@ -688,7 +688,7 @@ test("worktree tools expose strict schemas and named handoff-oriented prompt gui
   assert.equal(listTool.parameters.additionalProperties, false);
 
   assert.deepEqual(createTool.parameters.required, ["worktreePath", "branchName", "branchMode"]);
-  assert.deepEqual(Object.keys(createTool.parameters.properties), ["worktreePath", "branchName", "branchMode"]);
+  assert.deepEqual(Object.keys(createTool.parameters.properties), ["worktreePath", "branchName", "branchMode", "baseRef"]);
   assert.deepEqual(createTool.parameters.properties.branchMode.enum, ["new", "existing"]);
   assert.equal(createTool.parameters.additionalProperties, false);
 
@@ -696,12 +696,15 @@ test("worktree tools expose strict schemas and named handoff-oriented prompt gui
   assert.deepEqual(Object.keys(removeTool.parameters.properties), ["worktreePath"]);
   assert.equal(removeTool.parameters.additionalProperties, false);
 
-  const unsupported = ["force", "baseRef", "remote", "detach", "orphan", "move", "prune", "repair", "lock", "unlock"];
+  const unsupported = ["force", "remote", "detach", "orphan", "move", "prune", "repair", "lock", "unlock"];
   for (const field of unsupported) {
     assert.equal(field in listTool.parameters.properties, false);
     assert.equal(field in createTool.parameters.properties, false);
     assert.equal(field in removeTool.parameters.properties, false);
   }
+  assert.equal("baseRef" in listTool.parameters.properties, false);
+  assert.equal("baseRef" in removeTool.parameters.properties, false);
+  assert.equal(createTool.parameters.required.includes("baseRef"), false);
 
   for (const tool of [listTool, createTool, removeTool]) {
     assert.ok(tool.description.includes(tool.name));
@@ -1058,6 +1061,7 @@ test("branch_status rejects invalid ancestry names and missing local refs", asyn
   const missingPi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["show-ref\0--verify\0--quiet\0refs/heads/feature/missing"]: { code: 1 },
+    ["show-ref\0--verify\0--quiet\0refs/remotes/feature/missing"]: { code: 1 },
   });
   registerBranchMeTools(missingPi, { env: {} });
   const missingTool = toolByName(missingPi, BRANCH_STATUS_TOOL_NAME);
@@ -1069,7 +1073,7 @@ test("branch_status rejects invalid ancestry names and missing local refs", asyn
       undefined,
       ctx,
     ),
-    /Source local branch.*does not exist/iu,
+    /Source local branch or remote-tracking ref.*does not exist/iu,
   );
   assert.equal(missingPi.calls.some((call) => call.args[0] === "merge-base"), false);
 });
@@ -1291,7 +1295,7 @@ test("change_branch rejects missing local branches", async () => {
   assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
 });
 
-test("fetch_branch has a strict empty schema and fetches the configured upstream remote", async () => {
+test("fetch_branch has a strict optional schema and fetches the configured upstream remote by default", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
@@ -1303,7 +1307,8 @@ test("fetch_branch has a strict empty schema and fetches the configured upstream
   registerBranchMeTools(pi);
   const tool = toolByName(pi, FETCH_BRANCH_TOOL_NAME);
 
-  assert.deepEqual(tool.parameters.properties, {});
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["remote", "branch"]);
+  assert.equal(tool.parameters.required, undefined);
   assert.equal(tool.parameters.additionalProperties, false);
   assert.ok(tool.description.includes(FETCH_BRANCH_TOOL_NAME));
   assert.ok(tool.promptSnippet.includes(FETCH_BRANCH_TOOL_NAME));
@@ -1330,6 +1335,46 @@ test("fetch_branch has a strict empty schema and fetches the configured upstream
     "refs/heads/main:refs/remotes/origin/main",
   ]);
   assert.equal(pi.calls.some((call) => ["switch", "rebase", "merge", "push"].includes(call.args[0])), false);
+});
+
+test("fetch_branch fetches an explicit remote branch without touching the current branch and rejects remote without branch", async () => {
+  const pi = makePi({
+    ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
+    ["remote\0get-url\0origin"]: { stdout: "https://github.com/senad-d/branchme.git\n" },
+    ["fetch\0--no-tags\0--no-recurse-submodules\0origin\0refs/heads/main:refs/remotes/origin/main"]: { stderr: "From github.com:senad-d/branchme\n" },
+  });
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, FETCH_BRANCH_TOOL_NAME);
+
+  const output = await tool.execute("call-fetch-target", { remote: "origin", branch: "main" }, undefined, undefined, ctx);
+
+  assert.deepEqual(output.details, {
+    repoRoot: "/repo",
+    remote: "origin",
+    branch: "main",
+    remoteRef: "refs/heads/main",
+    remoteTrackingRef: "refs/remotes/origin/main",
+    refspec: "refs/heads/main:refs/remotes/origin/main",
+    output: "From github.com:senad-d/branchme",
+  });
+  assert.equal(
+    output.content[0].text,
+    "Fetched origin/main into remote-tracking ref refs/remotes/origin/main without changing local branches.",
+  );
+  assert.equal(
+    pi.calls.some((call) => call.args[0] === "symbolic-ref" || call.args[0] === "config"),
+    false,
+    "targeted fetch_branch must not read the current branch or its upstream configuration",
+  );
+
+  const remoteOnlyPi = makePi({});
+  registerBranchMeTools(remoteOnlyPi);
+  const remoteOnlyTool = toolByName(remoteOnlyPi, FETCH_BRANCH_TOOL_NAME);
+  await assert.rejects(
+    () => remoteOnlyTool.execute("call-fetch-remote-only", { remote: "origin" }, undefined, undefined, ctx),
+    /fetch_branch remote requires branch/iu,
+  );
+  assert.deepEqual(remoteOnlyPi.calls, []);
 });
 
 test("pull_branch has a strict empty schema and fast-forwards the clean current branch", async () => {

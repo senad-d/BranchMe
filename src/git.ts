@@ -33,6 +33,7 @@ import type {
   CreateWorktreeMode,
   CurrentBranchInfo,
   FetchBranchDetails,
+  FetchRemoteBranchDetails,
   GitExecResult,
   GitFileChange,
   GitFileChangeSummary,
@@ -1185,6 +1186,39 @@ function worktreeCreationFailure(
   );
 }
 
+async function resolveWorktreeBaseCommit(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  baseRef: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  // baseRef is a read-only start point: it is resolved to a commit before mutation and
+  // is never checked out, reset, or otherwise modified.
+  if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(baseRef)) {
+    const result = await runGit(pi, ctx, ["rev-parse", "--verify", `${baseRef}^{commit}`], {
+      signal,
+      timeout: GIT_STATUS_TIMEOUT_MS,
+      allowFailure: true,
+    });
+    const commit = trimOutput(result.stdout);
+    if (result.code !== 0 || !/^[0-9a-f]{40,64}$/iu.test(commit)) {
+      throw new Error(`baseRef ${safeWorktreeBranchLabel(baseRef)} does not resolve to an existing commit.`);
+    }
+    return commit;
+  }
+
+  await validateBranchName(pi, ctx, baseRef, signal);
+  if (await localBranchExists(pi, ctx, baseRef, signal)) {
+    return getLocalBranchCommit(pi, ctx, baseRef, signal);
+  }
+  if (await remoteTrackingRefExists(pi, ctx, baseRef, signal)) {
+    return getRemoteTrackingRefCommit(pi, ctx, baseRef, signal);
+  }
+  throw new Error(
+    `baseRef ${safeWorktreeBranchLabel(baseRef)} does not name an existing local branch, remote-tracking ref, or full commit.`,
+  );
+}
+
 export async function createWorktree(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
@@ -1192,8 +1226,15 @@ export async function createWorktree(
   branchName: string,
   branchMode: CreateWorktreeMode,
   signal?: AbortSignal,
+  baseRef?: string,
 ): Promise<CreateWorktreeDetails> {
   validateCreateWorktreeMode(branchMode);
+  if (baseRef !== undefined) {
+    if (branchMode !== "new") {
+      throw new Error("baseRef is only supported with branchMode 'new'; an existing local branch keeps its own commit.");
+    }
+    validateBranchNameInput(baseRef, "baseRef");
+  }
   const requestedWorktreePath = validateWorktreePathInput(worktreePath);
   const repoRoot = await getGitRoot(pi, ctx, signal);
   const rootCtx = { cwd: repoRoot };
@@ -1222,11 +1263,14 @@ export async function createWorktree(
       throw new Error(`Local branch ${safeWorktreeBranchLabel(branchName)} is already checked out in a worktree.`);
     }
 
+    const baseCommit = baseRef === undefined
+      ? null
+      : await resolveWorktreeBaseCommit(pi, rootCtx, baseRef, signal);
     const expectedHead = branchMode === "new"
-      ? sourceHead
+      ? baseCommit ?? sourceHead
       : await getLocalBranchCommit(pi, rootCtx, branchName, signal);
     const args = branchMode === "new"
-      ? ["worktree", "add", "-b", branchName, prepared.canonicalPath, "HEAD"]
+      ? ["worktree", "add", "-b", branchName, prepared.canonicalPath, baseCommit ?? "HEAD"]
       : ["worktree", "add", prepared.canonicalPath, branchName];
 
     try {
@@ -1263,6 +1307,9 @@ export async function createWorktree(
           worktreePath: safeWorktreeValue(requestedWorktreePath, GIT_WORKTREE_PATH_LIMIT_CHARS),
           branchName: handoffBranch,
           branchMode,
+          ...(baseRef === undefined
+            ? {}
+            : { baseRef: safeWorktreeValue(baseRef, GIT_CONTEXT_VALUE_LIMIT_CHARS) }),
         },
         verified: {
           before: {
@@ -1994,6 +2041,24 @@ export async function inspectDirectLocalBranchRef(
   };
 }
 
+async function getVerifiedRefCommit(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  revision: string,
+  describedRef: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const result = await runGit(pi, ctx, ["rev-parse", "--verify", `${revision}^{commit}`], {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+  });
+  const commit = trimOutput(result.stdout);
+  if (!/^[0-9a-f]{40,64}$/iu.test(commit)) {
+    throw new Error(`Unable to resolve ${describedRef} to a commit: ${safeOutput(result.stdout) || "empty output"}`);
+  }
+  return commit;
+}
+
 export async function getLocalBranchCommit(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
@@ -2001,15 +2066,31 @@ export async function getLocalBranchCommit(
   signal?: AbortSignal,
 ): Promise<string> {
   validateBranchNameInput(branchName);
-  const result = await runGit(pi, ctx, ["rev-parse", "--verify", `refs/heads/${branchName}^{commit}`], {
+  return getVerifiedRefCommit(pi, ctx, `refs/heads/${branchName}`, `local branch '${safeGitContextValue(branchName)}'`, signal);
+}
+
+export async function remoteTrackingRefExists(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  refName: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const result = await runGit(pi, ctx, ["show-ref", "--verify", "--quiet", `refs/remotes/${refName}`], {
     signal,
     timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
   });
-  const commit = trimOutput(result.stdout);
-  if (!/^[0-9a-f]{40,64}$/iu.test(commit)) {
-    throw new Error(`Unable to resolve local branch '${safeGitContextValue(branchName)}' to a commit: ${safeOutput(result.stdout) || "empty output"}`);
-  }
-  return commit;
+  return result.code === 0;
+}
+
+export async function getRemoteTrackingRefCommit(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  refName: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  validateBranchNameInput(refName, "Remote-tracking ref");
+  return getVerifiedRefCommit(pi, ctx, `refs/remotes/${refName}`, `remote-tracking ref '${safeGitContextValue(refName)}'`, signal);
 }
 
 export async function requireExistingLocalBranch(
@@ -2044,6 +2125,24 @@ export async function isCommitAncestor(
   return result.code === 0;
 }
 
+async function resolveAncestryRefCommit(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  refName: string,
+  label: "Source" | "Target",
+  signal?: AbortSignal,
+): Promise<string> {
+  // Read-only comparison endpoints: local branches keep precedence, remote-tracking refs
+  // (for example origin/main) are accepted as read baselines and are never mutated.
+  if (await localBranchExists(pi, ctx, refName, signal)) {
+    return getLocalBranchCommit(pi, ctx, refName, signal);
+  }
+  if (await remoteTrackingRefExists(pi, ctx, refName, signal)) {
+    return getRemoteTrackingRefCommit(pi, ctx, refName, signal);
+  }
+  throw new Error(`${label} local branch or remote-tracking ref '${safeGitContextValue(refName)}' does not exist.`);
+}
+
 export async function getLocalBranchAncestry(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
@@ -2054,11 +2153,9 @@ export async function getLocalBranchAncestry(
   validateBranchNameInput(query.targetBranch, "Target branch");
   await validateBranchName(pi, ctx, query.sourceBranch, signal);
   await validateBranchName(pi, ctx, query.targetBranch, signal);
-  await requireExistingLocalBranch(pi, ctx, query.sourceBranch, "Source", signal);
-  await requireExistingLocalBranch(pi, ctx, query.targetBranch, "Target", signal);
 
-  const sourceHead = await getLocalBranchCommit(pi, ctx, query.sourceBranch, signal);
-  const targetHead = await getLocalBranchCommit(pi, ctx, query.targetBranch, signal);
+  const sourceHead = await resolveAncestryRefCommit(pi, ctx, query.sourceBranch, "Source", signal);
+  const targetHead = await resolveAncestryRefCommit(pi, ctx, query.targetBranch, "Target", signal);
   const isAncestor = await isCommitAncestor(pi, ctx, sourceHead, targetHead, signal);
 
   return {
@@ -2174,6 +2271,74 @@ export async function fetchCurrentBranch(
       upstream: safeDetail(target.upstream),
       remote: safeDetail(target.remote),
       remoteRef: safeDetail(target.remoteRef),
+      remoteTrackingRef: safeDetail(trackingRef),
+      refspec: safeDetail(refspec),
+      output: safeOutput(result.stdout || result.stderr),
+    };
+  });
+}
+
+function validateRequestedRemoteName(remote: string): void {
+  if (!remote || /[\u0000-\u001f\u007f]/u.test(remote) || /\s/u.test(remote)) {
+    throw new Error("Unable to fetch: remote cannot be blank or contain whitespace or control characters.");
+  }
+  if (remote === ".") throw new Error("Unable to fetch: remote must name a configured Git remote, not '.'.");
+  if (remote.startsWith("-")) throw new Error("Unable to fetch: remote cannot start with '-'.");
+  if (remote.includes(":") || remote.includes("@")) {
+    throw new Error("Unable to fetch: remote cannot be a URL or user-prefixed target.");
+  }
+}
+
+async function requireConfiguredRemote(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  remote: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const result = await runGit(pi, ctx, ["remote", "get-url", remote], {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  if (result.code !== 0) {
+    throw new Error(`Unable to fetch: remote '${safeGitContextValue(remote)}' is not a configured Git remote.`);
+  }
+}
+
+export async function fetchRemoteBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  remote: string,
+  branch: string,
+  signal?: AbortSignal,
+): Promise<FetchRemoteBranchDetails> {
+  validateRequestedRemoteName(remote);
+  validateBranchNameInput(branch, "branch");
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  const rootCtx = { cwd: repoRoot };
+
+  return withRepositoryMutationQueue(repoRoot, async () => {
+    await validateBranchName(pi, rootCtx, branch, signal);
+    await requireConfiguredRemote(pi, rootCtx, remote, signal);
+
+    const remoteRef = `refs/heads/${branch}`;
+    const trackingRef = `refs/remotes/${remote}/${branch}`;
+    const refspec = `${remoteRef}:${trackingRef}`;
+    const result = await runGit(
+      pi,
+      rootCtx,
+      ["fetch", "--no-tags", "--no-recurse-submodules", remote, refspec],
+      {
+        signal,
+        timeout: GIT_FETCH_TIMEOUT_MS,
+      },
+    );
+
+    return {
+      repoRoot,
+      remote: safeDetail(remote),
+      branch: safeDetail(branch),
+      remoteRef: safeDetail(remoteRef),
       remoteTrackingRef: safeDetail(trackingRef),
       refspec: safeDetail(refspec),
       output: safeOutput(result.stdout || result.stderr),

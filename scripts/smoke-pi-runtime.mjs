@@ -28,7 +28,7 @@ const expectedBranchMeTools = [
   },
   { name: "change_branch", properties: ["branchName"], required: ["branchName"] },
   { name: "create_branch", properties: ["branchName"], required: ["branchName"] },
-  { name: "fetch_branch", properties: [], required: [] },
+  { name: "fetch_branch", properties: ["branch", "remote"], required: [] },
   { name: "pull_branch", properties: [], required: [] },
   { name: "rebase_branch", properties: [], required: [] },
   { name: "push_branch", properties: [], required: [] },
@@ -42,7 +42,7 @@ const expectedBranchMeTools = [
   { name: "list_worktrees", properties: [], required: [] },
   {
     name: "create_worktree",
-    properties: ["branchMode", "branchName", "worktreePath"],
+    properties: ["baseRef", "branchMode", "branchName", "worktreePath"],
     required: ["worktreePath", "branchName", "branchMode"],
     enums: { branchMode: ["new", "existing"] },
   },

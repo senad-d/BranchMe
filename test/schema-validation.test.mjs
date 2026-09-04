@@ -79,6 +79,8 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
   assertValid(tools.get(CREATE_BRANCH_TOOL_NAME), { branchName: "feature/runtime-schema" });
   assertValid(tools.get(CHANGE_BRANCH_TOOL_NAME), { branchName: "feature/runtime-schema" });
   assertValid(tools.get(FETCH_BRANCH_TOOL_NAME), {});
+  assertValid(tools.get(FETCH_BRANCH_TOOL_NAME), { branch: "main" });
+  assertValid(tools.get(FETCH_BRANCH_TOOL_NAME), { remote: "origin", branch: "main" });
   assertValid(tools.get(INTEGRATE_BRANCH_TOOL_NAME), {
     sourceBranch: "feature/runtime-schema",
     targetBranch: "main",
@@ -108,6 +110,12 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
     worktreePath: "/tmp/branchme-runtime-schema-existing",
     branchName: "feature/runtime-schema-existing",
     branchMode: "existing",
+  });
+  assertValid(tools.get(CREATE_WORKTREE_TOOL_NAME), {
+    worktreePath: "/tmp/branchme-runtime-schema-base-ref",
+    branchName: "feature/runtime-schema-base-ref",
+    branchMode: "new",
+    baseRef: "origin/main",
   });
   assertValid(tools.get(REMOVE_WORKTREE_TOOL_NAME), { worktreePath: "/tmp/branchme-runtime-schema" });
   assertValid(tools.get(PULL_REQUEST_TOOL_NAME), {
@@ -224,10 +232,25 @@ test("runtime schema validation rejects extra arguments for no-parameter tools",
   assertInvalid(tools.get(LIST_WORKTREES_TOOL_NAME), { worktreePath: "/tmp/forbidden" });
   assertInvalid(tools.get(LIST_WORKTREES_TOOL_NAME), null);
   for (const forbidden of ["branchName", "force", "remote", "owner", "repo", "path", "rebase"]) {
-    assertInvalid(tools.get(FETCH_BRANCH_TOOL_NAME), { [forbidden]: "forbidden" });
     assertInvalid(tools.get(PULL_BRANCH_TOOL_NAME), { [forbidden]: "forbidden" });
     assertInvalid(tools.get(REBASE_BRANCH_TOOL_NAME), { [forbidden]: "forbidden" });
     assertInvalid(tools.get(PUSH_BRANCH_TOOL_NAME), { [forbidden]: "forbidden" });
+  }
+});
+
+test("runtime schema validation enforces strict optional fetch_branch inputs", () => {
+  const tool = registeredTools().get(FETCH_BRANCH_TOOL_NAME);
+
+  assertValid(tool, {});
+  assertValid(tool, { branch: "main" });
+  assertValid(tool, { remote: "origin", branch: "main" });
+  assertInvalid(tool, null);
+  assertInvalid(tool, { remote: "", branch: "main" });
+  assertInvalid(tool, { branch: "" });
+  assertInvalid(tool, { remote: {}, branch: "main" });
+  assertInvalid(tool, { branch: [] });
+  for (const forbidden of ["branchName", "force", "owner", "repo", "path", "rebase", "refspec", "prune", "tags"]) {
+    assertInvalid(tool, { branch: "main", [forbidden]: "forbidden" });
   }
 });
 
@@ -275,9 +298,14 @@ test("runtime schema validation enforces strict create_worktree and remove_workt
   assertInvalid(removeTool, { worktreePath: "" });
   assertInvalid(removeTool, { worktreePath: [] });
 
+  assertValid(createTool, { ...validCreate, baseRef: "origin/main" });
+  assertValid(createTool, { ...validCreate, baseRef: "a".repeat(40) });
+  assertInvalid(createTool, { ...validCreate, baseRef: "" });
+  assertInvalid(createTool, { ...validCreate, baseRef: [] });
+  assertInvalid(removeTool, { ...validRemove, baseRef: "origin/main" });
+
   const forbiddenFields = [
     "force",
-    "baseRef",
     "remote",
     "detach",
     "orphan",

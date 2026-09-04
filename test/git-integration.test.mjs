@@ -9,7 +9,9 @@ import {
   changeExistingLocalBranch,
   createLocalBranch,
   fetchCurrentBranch,
+  fetchRemoteBranch,
   getBranchStatus,
+  getLocalBranchAncestry,
   createWorktree,
   getRecentCommits,
   getWorkingTreeStatus,
@@ -1151,6 +1153,89 @@ test("real git fetchCurrentBranch refreshes upstream state and rebaseCurrentBran
       assert.deepEqual(rebasePi.calls.filter((call) => call.args[0] === "rebase").map((call) => call.args), [
         ["rebase", "--no-autostash", "--no-update-refs", "origin/feature/rebase"],
       ]);
+    } finally {
+      await rm(remoteRoot, { recursive: true, force: true });
+      await rm(updaterRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("real git targeted fetch, remote-baseline worktree creation, and remote-tracking ancestry cover the merged-PR cleanup flow", async () => {
+  await withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    const rawRemoteRoot = await mkdtemp(join(tmpdir(), "branchme-remote-baseline-remote-"));
+    const remoteRoot = await realpath(rawRemoteRoot);
+    const rawUpdaterRoot = await mkdtemp(join(tmpdir(), "branchme-remote-baseline-updater-"));
+    const updaterRoot = await realpath(rawUpdaterRoot);
+    const updaterCheckout = join(updaterRoot, "checkout");
+    const worktreePath = join(temporaryRoot, "issue-15");
+
+    try {
+      await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
+      await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      await runGit(repoRoot, ["push", "origin", "main"]);
+      const staleLocalMain = await refHead(repoRoot, "refs/heads/main");
+
+      // The primary checkout sits on a feature branch without an upstream and is dirty,
+      // while origin/main advances behind its back.
+      await runGit(repoRoot, ["switch", "-c", "feat/14-bootstrap-monorepo"]);
+      await writeFile(join(repoRoot, "dirty.txt"), "dirty\n", "utf8");
+      await runGit(updaterRoot, ["clone", remoteRoot, updaterCheckout]);
+      await runGit(updaterCheckout, ["config", "user.email", "branchme-test@example.invalid"]);
+      await runGit(updaterCheckout, ["config", "user.name", "BranchMe Test"]);
+      await writeFile(join(updaterCheckout, "merged.txt"), "merged\n", "utf8");
+      await runGit(updaterCheckout, ["add", "merged.txt"]);
+      await runGit(updaterCheckout, ["commit", "-m", "merged feature commit"]);
+      await runGit(updaterCheckout, ["push", "origin", "main"]);
+      const remoteMainCommit = (await runGit(updaterCheckout, ["rev-parse", "HEAD"])).stdout.trim();
+
+      const pi = makeRealGitPi(repoRoot, [worktreePath]);
+      const fetched = await fetchRemoteBranch(pi, { cwd: repoRoot }, "origin", "main");
+
+      assert.equal(fetched.remote, "origin");
+      assert.equal(fetched.branch, "main");
+      assert.equal(fetched.refspec, "refs/heads/main:refs/remotes/origin/main");
+      assert.equal((await runGit(repoRoot, ["rev-parse", "origin/main"])).stdout.trim(), remoteMainCommit);
+      assert.equal(await refHead(repoRoot, "refs/heads/main"), staleLocalMain);
+      assert.equal(await currentBranch(repoRoot), "feat/14-bootstrap-monorepo");
+
+      await assert.rejects(
+        () => createWorktree(pi, { cwd: repoRoot }, worktreePath, "issue-15", "new", undefined, "origin/nonexistent"),
+        /baseRef.*does not name an existing local branch, remote-tracking ref, or full commit/iu,
+      );
+
+      const created = await createWorktree(
+        pi,
+        { cwd: repoRoot },
+        worktreePath,
+        "issue-15",
+        "new",
+        undefined,
+        "origin/main",
+      );
+
+      assert.equal(created.request.baseRef, "origin/main");
+      assert.equal(created.handoff.cwd, worktreePath);
+      assert.equal(created.handoff.head, remoteMainCommit);
+      assert.equal(created.handoff.ready, true);
+      assert.equal(await currentBranch(worktreePath), "issue-15");
+      assert.equal((await runGit(worktreePath, ["status", "--porcelain"])).stdout, "");
+      assert.equal(await currentBranch(repoRoot), "feat/14-bootstrap-monorepo");
+      assert.equal((await runGit(repoRoot, ["status", "--porcelain"])).stdout, "?? dirty.txt\n");
+      assert.equal(await refHead(repoRoot, "refs/heads/main"), staleLocalMain);
+
+      const ancestry = await getLocalBranchAncestry(
+        pi,
+        { cwd: repoRoot },
+        { sourceBranch: "issue-15", targetBranch: "origin/main" },
+      );
+      assert.deepEqual(ancestry, {
+        sourceBranch: "issue-15",
+        targetBranch: "origin/main",
+        sourceHead: remoteMainCommit,
+        targetHead: remoteMainCommit,
+        isAncestor: true,
+      });
+      assert.equal((await runGit(repoRoot, ["rev-parse", "origin/main"])).stdout.trim(), remoteMainCommit);
     } finally {
       await rm(remoteRoot, { recursive: true, force: true });
       await rm(updaterRoot, { recursive: true, force: true });

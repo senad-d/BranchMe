@@ -49,6 +49,8 @@ export interface CreateWorktreeToolInput {
   worktreePath: string;
   branchName: string;
   branchMode: CreateWorktreeMode;
+  /** Optional read-only start point for branchMode "new": local branch, remote-tracking ref, or full commit. */
+  baseRef?: string;
 }
 
 export interface RemoveWorktreeToolInput {
@@ -232,6 +234,16 @@ export interface FetchBranchDetails {
   currentBranch: string;
   upstream: string;
   remote: string;
+  remoteRef: string;
+  remoteTrackingRef: string;
+  refspec: string;
+  output: string;
+}
+
+export interface FetchRemoteBranchDetails {
+  repoRoot: string;
+  remote: string;
+  branch: string;
   remoteRef: string;
   remoteTrackingRef: string;
   refspec: string;

@@ -24,7 +24,7 @@ Commands only show info; BranchMe tools perform actions.
 
 1. `branch_status` — inspect repo and branch state.
 2. `change_branch` — switch to a clean existing local branch.
-3. `fetch_branch` — fetch its configured upstream remote without changing local files.
+3. `fetch_branch` — fetch its configured upstream remote (or an explicit `remote`/`branch`) without changing local files.
 4. `pull_branch` — fast-forward from upstream, or `rebase_branch` — rebase local commits onto upstream.
 5. `create_branch` — create a new branch from the updated `HEAD`.
 6. Commit outside BranchMe.
@@ -58,7 +58,7 @@ Commands only show info; BranchMe tools perform actions.
 - Run inside a Git repo with `git` available.
 - For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN` (environment or `.env`).
 - Optional: set `BRANCHME_PR_AUTOFILL=true` in the environment or `.env` to generate omitted PR fields.
-- `fetch_branch`, `pull_branch`, and `rebase_branch` require a configured upstream.
+- `fetch_branch` without `branch`, `pull_branch`, and `rebase_branch` require a configured upstream.
 - `pull_branch` and `rebase_branch` require a clean working tree.
 - `rebase_branch` rewrites local commits only when explicitly requested and auto-aborts on failure.
 - BranchMe never stages, creates user-authored commits, or force-pushes.

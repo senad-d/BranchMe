@@ -24,6 +24,7 @@ import {
   createLocalBranch,
   createWorktree,
   fetchCurrentBranch,
+  fetchRemoteBranch,
   getGitRoot,
   getLocalBranchCommit,
   getPullRequestCommitSubjects,
@@ -74,8 +75,8 @@ const BranchStatusParametersSchema = Type.Object(
     ancestry: Type.Optional(
       Type.Object(
         {
-          sourceBranch: Type.String({ minLength: 1, description: "Exact existing local source branch to verify." }),
-          targetBranch: Type.String({ minLength: 1, description: "Exact existing local target branch to verify." }),
+          sourceBranch: Type.String({ minLength: 1, description: "Exact existing local branch or remote-tracking ref (for example origin/main) whose commit is verified as the ancestor." }),
+          targetBranch: Type.String({ minLength: 1, description: "Exact existing local branch or remote-tracking ref (for example origin/main) whose commit is verified as the descendant." }),
         },
         { additionalProperties: false },
       ),
@@ -124,8 +125,26 @@ const CreateWorktreeParametersSchema = Type.Object(
     worktreePath: Type.String({ minLength: 1, description: "Explicit absolute destination path for the linked worktree." }),
     branchName: Type.String({ minLength: 1, description: "New or existing local branch name for the linked worktree." }),
     branchMode: StringEnum(["new", "existing"] as const, {
-      description: "Whether create_worktree creates a new local branch from current HEAD or uses an existing local branch.",
+      description: "Whether create_worktree creates a new local branch (from current HEAD, or from baseRef when provided) or uses an existing local branch.",
     }),
+    baseRef: Type.Optional(Type.String({
+      minLength: 1,
+      description: "Optional read-only start point for branchMode 'new': an exact existing local branch, remote-tracking ref (for example origin/main), or full commit that the new branch starts from instead of current HEAD. Never checked out or mutated.",
+    })),
+  },
+  { additionalProperties: false },
+);
+
+const FetchBranchParametersSchema = Type.Object(
+  {
+    remote: Type.Optional(Type.String({
+      minLength: 1,
+      description: "Configured remote name for a targeted fetch; defaults to origin and requires branch. Omit together with branch to fetch the current branch's configured upstream.",
+    })),
+    branch: Type.Optional(Type.String({
+      minLength: 1,
+      description: "Exact branch name on the remote (for example main) to fetch into its remote-tracking ref without touching local branches or the current branch's upstream. Omit to fetch the current branch's configured upstream.",
+    })),
   },
   { additionalProperties: false },
 );
@@ -256,7 +275,10 @@ export function formatCreateWorktree(details: CreateWorktreeDetails): string {
   const cwd = safeWorktreeFormatValue(details.handoff.cwd, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
   const branch = safeWorktreeFormatValue(details.handoff.branch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
   const mode = details.request.branchMode === "new" ? "new local branch" : "existing local branch";
-  return `Created linked worktree ${cwd} for ${mode} ${branch}. Verified its canonical path, local branch, HEAD ${shortCommit(details.handoff.head)}, clean working tree, and ready handoff.`;
+  const base = details.request.baseRef === undefined
+    ? ""
+    : ` from base ${safeWorktreeFormatValue(details.request.baseRef, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS)}`;
+  return `Created linked worktree ${cwd} for ${mode} ${branch}${base}. Verified its canonical path, local branch, HEAD ${shortCommit(details.handoff.head)}, clean working tree, and ready handoff.`;
 }
 
 export function formatRemoveWorktree(details: RemoveWorktreeDetails): string {
@@ -487,12 +509,13 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: BRANCH_STATUS_TOOL_NAME,
     label: "Branch Status",
-    description: "branch_status explicitly refreshes the current Git repository snapshot and can optionally verify whether one captured local branch commit is an ancestor of another. branch_status is read-only and never mutates files, Git state, or GitHub state.",
-    promptSnippet: "branch_status: explicitly refresh current-repository Git state and optionally verify targeted local-branch ancestry without mutation",
+    description: "branch_status explicitly refreshes the current Git repository snapshot and can optionally verify whether one captured branch commit is an ancestor of another; ancestry endpoints may be exact local branches or remote-tracking refs such as origin/main. branch_status is read-only and never mutates files, Git state, or GitHub state.",
+    promptSnippet: "branch_status: explicitly refresh current-repository Git state and optionally verify targeted local-branch or remote-tracking ancestry without mutation",
     promptGuidelines: [
       "Use the automatic Git context for start-of-run questions; call branch_status only for an explicit refresh or after Git state changes during the current run.",
       "Use branch_status as a read-only refresh; branch_status never mutates files, Git state, or GitHub state.",
       "Use targeted branch_status ancestry verification only after integrate_branch completes; do not issue branch_status in the same parallel tool batch as integrate_branch.",
+      "Use branch_status ancestry with a remote-tracking target such as origin/main after fetch_branch completes to prove a branch is contained in the fetched baseline; branch_status never checks out or resets remote-tracking refs.",
     ],
     parameters: BranchStatusParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -564,18 +587,29 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: FETCH_BRANCH_TOOL_NAME,
     label: "Fetch Branch",
-    description: "fetch_branch fetches the current branch's configured upstream branch into its remote-tracking ref with an explicit git fetch --no-tags --no-recurse-submodules refspec. fetch_branch does not change local branches or working-tree files and never prunes, rebases, merges, stashes, stages, commits, or pushes.",
-    promptSnippet: "fetch_branch: fetch the current branch's configured upstream into its remote-tracking ref without changing local branches or files",
+    description: "fetch_branch fetches one branch into its remote-tracking ref with an explicit git fetch --no-tags --no-recurse-submodules refspec. Without arguments fetch_branch fetches the current branch's configured upstream; with branch (and optional remote, default origin) it fetches that exact remote branch without touching local branches, the working tree, or the current branch's upstream configuration. fetch_branch never prunes, rebases, merges, stashes, stages, commits, or pushes.",
+    promptSnippet: "fetch_branch: fetch the current branch's configured upstream, or an explicit remote branch, into its remote-tracking ref without changing local branches or files",
     promptGuidelines: [
-      "Use fetch_branch only when the user explicitly wants to fetch the configured upstream branch for the current branch.",
-      "Use fetch_branch only on a current branch with an upstream; fetch_branch has no branchName, remote, tags, prune, force, or refspec parameters.",
-      "Call fetch_branch and wait for it to complete before rebase_branch when the user wants the latest upstream state; do not batch fetch_branch with rebase_branch.",
+      "Use fetch_branch without arguments to fetch the configured upstream branch for the current branch; that default requires a current branch with an upstream.",
+      "Use fetch_branch with branch (and optional remote, default origin) to refresh another remote-tracking ref such as origin/main; fetch_branch never changes local branches, working-tree files, or upstream configuration, and remote requires branch.",
+      "Call fetch_branch and wait for it to complete before rebase_branch or a targeted branch_status ancestry proof against the fetched remote-tracking ref; do not batch fetch_branch with dependent calls.",
     ],
-    parameters: EmptyParametersSchema,
-    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-      const details = await fetchCurrentBranch(pi, ctx, signal);
+    parameters: FetchBranchParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (params.branch === undefined) {
+        if (params.remote !== undefined) {
+          throw new Error("fetch_branch remote requires branch; omit both to fetch the current branch's configured upstream.");
+        }
+        const details = await fetchCurrentBranch(pi, ctx, signal);
+        return {
+          content: [{ type: "text", text: `Fetched configured upstream remote ${details.remote} for current branch ${details.currentBranch}.` }],
+          details,
+        };
+      }
+
+      const details = await fetchRemoteBranch(pi, ctx, params.remote ?? "origin", params.branch, signal);
       return {
-        content: [{ type: "text", text: `Fetched configured upstream remote ${details.remote} for current branch ${details.currentBranch}.` }],
+        content: [{ type: "text", text: `Fetched ${details.remote}/${details.branch} into remote-tracking ref ${details.remoteTrackingRef} without changing local branches.` }],
         details,
       };
     },
@@ -767,11 +801,12 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: CREATE_WORKTREE_TOOL_NAME,
     label: "Create Worktree",
-    description: "create_worktree creates and verifies one linked worktree at an explicit absolute worktreePath for either a new local branch from current HEAD or an existing unoccupied local branch. create_worktree returns exact lossless handoff identity fields and never infers paths, remotes, base refs, detached or orphan modes, or force behavior.",
-    promptSnippet: "create_worktree: create and verify a linked worktree at an explicit absolute path with a ready handoff cwd",
+    description: "create_worktree creates and verifies one linked worktree at an explicit absolute worktreePath for either a new local branch (from current HEAD, or from an explicit read-only baseRef such as origin/main or a full commit) or an existing unoccupied local branch. create_worktree returns exact lossless handoff identity fields and never infers paths, remotes, base refs, detached or orphan modes, or force behavior.",
+    promptSnippet: "create_worktree: create and verify a linked worktree at an explicit absolute path, optionally starting its new branch from an explicit read-only baseRef, with a ready handoff cwd",
     promptGuidelines: [
       "Use create_worktree only when the user explicitly requests worktree creation and provides or approves the exact absolute worktreePath; create_worktree must never infer a filesystem path silently.",
-      "Use create_worktree with exactly worktreePath, branchName, and branchMode; create_worktree never accepts force, baseRef, remote, detach, orphan, move, prune, repair, lock, or unlock parameters.",
+      "Use create_worktree with worktreePath, branchName, branchMode, and optionally baseRef for branchMode 'new'; create_worktree never accepts force, remote, detach, orphan, move, prune, repair, lock, or unlock parameters.",
+      "Use create_worktree with an explicit baseRef such as origin/main to start a new branch from a fetched remote baseline regardless of the current checkout's branch, dirt, or staleness; create_worktree only reads baseRef and never checks out or resets it.",
       "Do not batch create_worktree with dependent worktree mutations; wait for create_worktree to complete and verify its ready exact handoff.cwd before passing that cwd to another agent or session.",
     ],
     parameters: CreateWorktreeParametersSchema,
@@ -783,6 +818,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
         params.branchName,
         params.branchMode,
         signal,
+        params.baseRef,
       );
       return {
         content: [{ type: "text", text: formatCreateWorktree(details) }],
