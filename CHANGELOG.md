@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 - Unreleased
+## 0.2.2 - Unreleased
 
 - Allowed `branch_status` ancestry endpoints to be remote-tracking refs such as `origin/main` in addition to exact local branches; local branches take precedence and remote-tracking refs stay read-only comparison targets.
 - Added optional `remote`/`branch` parameters to `fetch_branch` for a targeted fetch of one exact remote branch into its remote-tracking ref (default remote `origin`; `remote` requires `branch`) without touching local branches, the working tree, or the current branch's upstream configuration; the no-argument behavior is unchanged.
