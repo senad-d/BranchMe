@@ -1,6 +1,6 @@
 # Project Definition Brief
 
-Originally approved on 2026-06-30. Updated to describe the implemented `0.2.0` package.
+Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` package.
 
 ## 1. Bootstrap history
 
@@ -15,7 +15,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.2.0` p
 - Exported extension function: `branchMeExtension`
 - Repository URL: `https://github.com/senad-d/branchme`
 - One-sentence pitch: Verified current-repository Pi tools for branch, integration, retirement, linked-worktree, push, and GitHub pull request workflows.
-- Tool count: thirteen strict agent-callable tools.
+- Tool count: fourteen strict agent-callable tools.
 
 ## 3. Users and use cases
 
@@ -27,6 +27,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.2.0` p
   - Create and verify a linked worktree for a new branch from current `HEAD` or an unoccupied existing local branch.
   - Return an exact, absolute, machine-readable worktree handoff for a caller-managed separate Pi session or subagent.
   - Remove an exact verified linked worktree only when it is clean and contains no ignored entries, while retaining its local branch.
+  - Land a host-merged feature in one cwd-independent call: fetch/prove remote ancestry, remove a clean linked checkout including ignored residue, lease-delete the source branch, and sync the target independently without touching a dirty checkout.
   - Retire one exact unoccupied local branch ref only when it matches a full expected `HEAD` and its relationship to one exact local target has been verified; unmerged retirement requires explicit force authorization.
   - Switch to an existing local branch after a clean-worktree preflight or create a new branch from current `HEAD`.
   - Fetch a configured upstream tracking ref, fast-forward the current branch, or explicitly rebase it.
@@ -51,6 +52,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.2.0` p
 | Tool | `create_worktree` | Create and verify a linked worktree | Exact absolute handoff cwd; new/existing local branch modes only |
 | Tool | `remove_worktree` | Remove an exact verified clean linked worktree | Force-free; ignored entries block removal; branch retained |
 | Tool | `retire_branch` | Delete one exact verified local branch ref | Expected-`HEAD` lease; exact target ancestry; explicit force for unmerged history; local-only |
+| Tool | `land_branch` | Post-host-merge cleanup and final target sync in one call | Remote ancestry gate, ignored-residue deletion, leased local source deletion, per-step receipts; run from repository root |
 | Tool | `change_branch` | Switch to an existing local branch | Rejects dirty worktrees |
 | Tool | `fetch_branch` | Refresh the current branch's configured tracking ref | Explicit fetch refspec; no checkout change |
 | Tool | `pull_branch` | Fast-forward the clean current branch | No rebase, merge commit, or autostash |
@@ -75,10 +77,11 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.2.0` p
   - `src/git.ts`
   - `src/git-integration.ts`
   - `src/git-retirement.ts`
+  - `src/git-landing.ts`
   - `src/github.ts`
   - `src/ui/branchme-panel.ts`
 - Module boundaries:
-  - The extension entry point registers the informational command, thirteen tools, and automatic context hook.
+  - The extension entry point registers the informational command, fourteen tools, and automatic context hook.
   - The context module owns bounded read-only collection, prompt formatting, targeted ancestry rendering, and the `before_agent_start` hook; automatic context never runs ancestry queries.
   - The command and UI modules own mode-safe informational help/status behavior and never invoke mutations.
   - The tools module owns strict TypeBox schemas, descriptions, prompt metadata, bounded display content, and serializable result details.
@@ -101,6 +104,8 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.2.0` p
 - Active-checkout mutations: explicit branch switching, creation, pull, rebase, and integration operations can update Git metadata and working-tree files through Git. Explicit retirement can delete one exact local branch ref. Push and fetch operations can update remote or remote-tracking refs through Git.
 - Linked-worktree mutations: `create_worktree` can create a checkout directory outside the active checkout after canonical destination and repository-boundary validation. `remove_worktree` can recursively remove only an exact verified linked-worktree directory after clean and ignored-entry preflights.
 - BranchMe does not directly edit project files, stage content, create user-authored commits, accept commit messages, copy local-only files into new worktrees, delete the retained branch during removal, or mutate worktrees through slash commands. `integrate_branch` may cause Git to create a standard merge commit under the verified boundary below; `retire_branch` may delete one exact local branch ref only under the separate leased boundary below.
+
+The standalone worktree-removal/retirement contracts below remain unchanged. `land_branch` is an explicit combined post-merge alternative: it authorizes deletion of ignored residue, uses the fetched remote-tracking target for leased retirement, reports each outcome, and syncs the local target last. See [README landing contract](../README.md#post-merge-cleanup-in-one-call) and [security boundary](../SECURITY.md#post-merge-landing-boundary).
 
 ## 7. Worktree handoff contract
 

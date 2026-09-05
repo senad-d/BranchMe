@@ -11,6 +11,7 @@ import {
   GIT_RETIREMENT_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
   INTEGRATE_BRANCH_TOOL_NAME,
+  LAND_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
@@ -42,6 +43,7 @@ import {
 import { collectGitContext, formatGitContext } from "../git-context.ts";
 import { integrateBranch } from "../git-integration.ts";
 import { retireBranch } from "../git-retirement.ts";
+import { formatLandBranch, landBranch } from "../git-landing.ts";
 import {
   createGitHubPullRequest,
   ensureGitHubBranchExists,
@@ -102,6 +104,16 @@ const RetireBranchParametersSchema = Type.Object(
     }),
     targetBranch: Type.String({ minLength: 1, description: "Exact existing local branch used for ancestry verification." }),
     force: Type.Boolean({ description: "Explicit authorization for unmerged retirement; false for merged retirement." }),
+  },
+  { additionalProperties: false },
+);
+
+const LandBranchParametersSchema = Type.Object(
+  {
+    sourceBranch: Type.String({ minLength: 1, description: "Merged local feature branch to delete, or its name on an idempotent retry." }),
+    targetBranch: Type.String({ minLength: 1, description: "Local default branch to fast-forward after cleanup." }),
+    remote: Type.Optional(Type.String({ minLength: 1, description: "Configured remote name; defaults to origin." })),
+    worktreePath: Type.Optional(Type.String({ minLength: 1, description: "Absolute linked-worktree path to remove, including one parked on targetBranch. Omit to find the source branch's worktree." })),
   },
   { additionalProperties: false },
 );
@@ -698,6 +710,28 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const details = await retireBranch(pi, ctx, params, signal);
       return {
         content: [{ type: "text", text: formatRetireBranch(details) }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: LAND_BRANCH_TOOL_NAME,
+    label: "Land Branch",
+    description: "land_branch performs deterministic post-merge cleanup: fetch the remote target, prove source ancestry, remove its clean linked worktree (including ignored residue), lease-delete the local source branch, then fast-forward the local target without switching branches. Returns a structured per-step receipt and one-line summary. No remote mutation, force, stash, reset, checkout, or prune; retries are idempotent. Diagnostics are redacted and bounded to 4000 characters each.",
+    promptSnippet: "land_branch: post-merge linked-worktree cleanup, leased source retirement, and independent fast-forward target sync with verified receipts",
+    promptGuidelines: [
+      "Use land_branch after the pull request merged on the host; the source tip must be an ancestor of the fetched remote target (squash/rebase merges may not satisfy this).",
+      "land_branch is cwd-independent; run from the repository root, never inside the worktree being removed.",
+      "land_branch deletes ignored files such as .env, .pi/, node_modules/, and dist/ with the worktree and lists their top-level entries in deletedIgnoredPaths; preserve anything needed beforehand.",
+      "land_branch target sync never touches a dirty checkout; skipped-dirty reports its path and ahead/behind counts, independently of cleanup outcomes.",
+      "Call land_branch by itself and inspect each receipt outcome; do not batch it with other Git mutations. It never switches branches or mutates remote branches.",
+    ],
+    parameters: LandBranchParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await landBranch(pi, ctx, params, signal);
+      return {
+        content: [{ type: "text", text: formatLandBranch(details) }],
         details,
       };
     },

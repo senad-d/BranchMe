@@ -10,7 +10,9 @@ import {
   getCanonicalCommonGitDirectory,
   getCanonicalGitWorktreeRoot,
   getLocalBranchCommit,
+  getRemoteTrackingRefCommit,
   inspectDirectLocalBranchRef,
+  inspectDirectRemoteTrackingRef,
   inspectLocalBranchWorktreeOccupancy,
   isCommitAncestor,
   isLosslessGitMetadata,
@@ -35,6 +37,8 @@ import type {
 
 const FULL_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
 const RETIREMENT_REQUEST_FIELDS = new Set(["branchName", "expectedHead", "targetBranch", "force"]);
+
+type RetirementTargetScope = "local" | "remote-tracking";
 
 export interface PreparedBranchRetirement {
   worktreeRoot: string;
@@ -62,7 +66,7 @@ function normalizeExpectedHead(value: unknown): string {
   return value.toLowerCase();
 }
 
-function validateRetirementRequest(request: unknown): RetireBranchToolInput {
+function validateRetirementRequest(request: unknown, targetScope: RetirementTargetScope = "local"): RetireBranchToolInput {
   if (typeof request !== "object" || request === null || Array.isArray(request)) {
     throw new TypeError("Branch retirement request must be an object.");
   }
@@ -78,7 +82,7 @@ function validateRetirementRequest(request: unknown): RetireBranchToolInput {
 
   validateRetirementBranchName(values.branchName, "Retiring branch");
   validateRetirementBranchName(values.targetBranch, "Target branch");
-  if (values.branchName === values.targetBranch) {
+  if (targetScope === "local" && values.branchName === values.targetBranch) {
     throw new Error("Retiring branch and target branch must be distinct local branches.");
   }
   const expectedHead = normalizeExpectedHead(values.expectedHead);
@@ -164,13 +168,26 @@ function retirementRefIdentity(
   };
 }
 
+function retirementTargetScope(prepared: PreparedBranchRetirement): RetirementTargetScope {
+  return prepared.target.fullRef.startsWith("refs/remotes/") ? "remote-tracking" : "local";
+}
+
+function targetRefInspector(scope: RetirementTargetScope) {
+  return scope === "local" ? inspectDirectLocalBranchRef : inspectDirectRemoteTrackingRef;
+}
+
+function targetCommitResolver(scope: RetirementTargetScope) {
+  return scope === "local" ? getLocalBranchCommit : getRemoteTrackingRefCommit;
+}
+
 export async function prepareBranchRetirement(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   requestValue: unknown,
   signal?: AbortSignal,
+  targetScope: RetirementTargetScope = "local",
 ): Promise<PreparedBranchRetirement> {
-  const request = validateRetirementRequest(requestValue);
+  const request = validateRetirementRequest(requestValue, targetScope);
   const worktreeRoot = await getCanonicalGitWorktreeRoot(pi, ctx, signal);
   const rootCtx = { cwd: worktreeRoot };
   const canonicalCommonGitDirectory = await getCanonicalCommonGitDirectory(pi, rootCtx, signal);
@@ -182,11 +199,11 @@ export async function prepareBranchRetirement(
     "Retiring",
   );
   const targetRef = requirePresentDirectRef(
-    await inspectDirectLocalBranchRef(pi, rootCtx, request.targetBranch, signal),
+    await targetRefInspector(targetScope)(pi, rootCtx, request.targetBranch, signal),
     "Target",
   );
   const retiringHead = await getLocalBranchCommit(pi, rootCtx, request.branchName, signal);
-  const targetHead = await getLocalBranchCommit(pi, rootCtx, request.targetBranch, signal);
+  const targetHead = await targetCommitResolver(targetScope)(pi, rootCtx, request.targetBranch, signal);
   requireDirectRefCommitIdentity(retiringRef, retiringHead, "Retiring");
   requireDirectRefCommitIdentity(targetRef, targetHead, "Target");
   if (!sameObjectIdentity(retiringHead, request.expectedHead)) {
@@ -328,7 +345,7 @@ async function inspectImmediateRetirementState(
     "Retiring",
   );
   const targetRef = requirePresentDirectRef(
-    await inspectDirectLocalBranchRef(pi, rootCtx, prepared.request.targetBranch, signal),
+    await targetRefInspector(retirementTargetScope(prepared))(pi, rootCtx, prepared.request.targetBranch, signal),
     "Target",
   );
   const retiringHead = await getLocalBranchCommit(
@@ -337,7 +354,7 @@ async function inspectImmediateRetirementState(
     prepared.request.branchName,
     signal,
   );
-  const targetHead = await getLocalBranchCommit(
+  const targetHead = await targetCommitResolver(retirementTargetScope(prepared))(
     pi,
     rootCtx,
     prepared.request.targetBranch,
@@ -445,7 +462,7 @@ async function inspectPostRetirementState(
     rootCtx,
     prepared.request.branchName,
   );
-  const targetRef = await inspectDirectLocalBranchRef(
+  const targetRef = await targetRefInspector(retirementTargetScope(prepared))(
     pi,
     rootCtx,
     prepared.request.targetBranch,
@@ -458,7 +475,7 @@ async function inspectPostRetirementState(
   }
   let targetHead: string | null = null;
   if (targetRef.status === "present") {
-    targetHead = await getLocalBranchCommit(pi, rootCtx, prepared.request.targetBranch);
+    targetHead = await targetCommitResolver(retirementTargetScope(prepared))(pi, rootCtx, prepared.request.targetBranch);
     requireDirectRefCommitIdentity(targetRef, targetHead, "Target");
     targetHead = targetHead.toLowerCase();
   }
@@ -610,14 +627,20 @@ function classifyRetirementOutcome(
   );
 }
 
-async function retireBranchWithinQueue(
+// Caller must hold the repository mutation queue; remote targets are used only by land_branch.
+export async function retireBranchWithinQueue(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   request: RetireBranchToolInput,
   queuedWorktreeRoot: string,
   signal?: AbortSignal,
+  targetScope: RetirementTargetScope = "local",
+  expectedTargetHead?: string,
 ): Promise<RetireBranchDetails> {
-  const prepared = await prepareBranchRetirement(pi, ctx, request, signal);
+  const prepared = await prepareBranchRetirement(pi, ctx, request, signal, targetScope);
+  if (expectedTargetHead !== undefined && prepared.target.head !== expectedTargetHead) {
+    throw new Error("The fetched retirement target moved after the landing ancestry proof.");
+  }
   if (prepared.worktreeRoot !== queuedWorktreeRoot) {
     throw new Error("The active worktree changed while preparing branch retirement.");
   }

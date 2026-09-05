@@ -39,6 +39,11 @@ const expectedBranchMeTools = [
     properties: ["branchName", "expectedHead", "force", "targetBranch"],
     required: ["branchName", "expectedHead", "targetBranch", "force"],
   },
+  {
+    name: "land_branch",
+    properties: ["remote", "sourceBranch", "targetBranch", "worktreePath"],
+    required: ["sourceBranch", "targetBranch"],
+  },
   { name: "list_worktrees", properties: [], required: [] },
   {
     name: "create_worktree",
@@ -224,7 +229,7 @@ export default function branchMeRuntimeVerifier(pi) {
       const failures = [];
       const tools = [];
 
-      if (expectedTools.length !== 13) failures.push("runtime verifier did not expect exactly thirteen BranchMe tools");
+      if (expectedTools.length !== 14) failures.push("runtime verifier did not expect exactly fourteen BranchMe tools");
       for (const forbiddenName of ["continue_merge", "abort_merge"]) {
         if (byName.has(forbiddenName) || activeTools.has(forbiddenName)) {
           failures.push(forbiddenName + " must not be registered or active");

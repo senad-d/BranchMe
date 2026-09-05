@@ -23,6 +23,7 @@ const requiredPublicFiles = [
   "src/constants.ts",
   "src/extension.ts",
   "src/git-retirement.ts",
+  "src/git-landing.ts",
   "src/git.ts",
   "src/github.ts",
   "src/redaction.ts",

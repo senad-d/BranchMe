@@ -9,6 +9,7 @@ import {
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
   INTEGRATE_BRANCH_TOOL_NAME,
+  LAND_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
@@ -125,6 +126,21 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
     body: "",
     draft: false,
   });
+});
+
+test("runtime schema validation enforces exact land_branch inputs", () => {
+  const tool = registeredTools().get(LAND_BRANCH_TOOL_NAME);
+  const required = { sourceBranch: "feature/merged", targetBranch: "main" };
+  assertValid(tool, required);
+  assertValid(tool, { ...required, remote: "origin", worktreePath: "/tmp/linked" });
+  for (const args of [{}, { sourceBranch: "feature/merged" }, { targetBranch: "main" },
+    { ...required, sourceBranch: "" }, { ...required, targetBranch: "" },
+    { ...required, remote: "" }, { ...required, worktreePath: "" }]) {
+    assertInvalid(tool, args);
+  }
+  for (const key of ["force", "stash", "reset", "checkout", "prune", "expectedHead", "repo", "cwd"]) {
+    assertInvalid(tool, { ...required, [key]: "forbidden" });
+  }
 });
 
 test("runtime schema validation enforces strict optional branch_status ancestry", () => {

@@ -1,6 +1,6 @@
 {
   "name": "@senad-d/branchme",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "type": "module",
   "description": "Pi extension for verified current-repository Git branch, worktree, integration, retirement, push, and pull request workflows.",
   "license": "MIT",

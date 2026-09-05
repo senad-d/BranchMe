@@ -13,10 +13,11 @@ src/
 ├── commands/
 │   └── branchme-command.ts       # /branchme status/help command; informational only
 ├── tools/
-│   └── branchme-tools.ts         # registration for thirteen branch/integration/retirement/worktree/GitHub tools
+│   └── branchme-tools.ts         # registration for fourteen branch/integration/retirement/landing/worktree/GitHub tools
 ├── git.ts                        # shared argv-style Git primitives and per-repo mutation queue
 ├── git-integration.ts            # integration preflight, merge, cleanup, and verification state machine
 ├── git-retirement.ts             # leased local-ref retirement and postcondition state machine
+├── git-landing.ts                # queued post-merge cleanup, explicit cwd routing, per-step receipts
 ├── github.ts                     # GitHub repo resolution, env/.env tokens, branch preflight, REST calls, redaction
 └── ui/
     └── branchme-panel.ts         # compact /branchme status panel renderer
@@ -24,7 +25,7 @@ src/
 
 ## Module boundaries
 
-1. `src/extension.ts` stays small and registers the command, thirteen tools, and one `before_agent_start` context hook.
+1. `src/extension.ts` stays small and registers the command, fourteen tools, and one `before_agent_start` context hook.
 2. `src/git-context.ts` owns the shared read-only collector, escaped/bounded formatter, automatic system-prompt append, and the current-state output used by `branch_status`.
 3. `src/commands/branchme-command.ts` parses `/branchme`, `/branchme help`, `--help`, and `-h`; it never performs git or GitHub mutations and avoids raw stdout in JSON mode.
 4. `src/tools/branchme-tools.ts` owns strict TypeBox schemas, prompt metadata, bounded tool content, and safe structured details. `branch_status` delegates to the shared context collector and optional ancestry verifier; `integrate_branch` and `retire_branch` delegate to focused mutation state machines; worktree tools expose explicit inventory and verified handoff operations.
@@ -35,6 +36,7 @@ src/
 9. `src/redaction.ts` owns shared credential redaction for Git, GitHub, and prompt-bound metadata.
 10. `src/types.ts` keeps serializable details shared by helpers, context, and tools.
 11. `src/ui/branchme-panel.ts` renders a compact status panel and clips lines to terminal width.
+12. `src/git-landing.ts` owns execution-only `land_branch` orchestration and receipt types. It resolves the primary checkout, routes every Git call with `-C`, and reuses queue-free targeted fetch/removal/retirement helpers under one primary-root mutation window. Remote ancestry gates cleanup; final target sync independently reports exact ref observations. No startup work or persistent landing state is added.
 
 ## Pi extension conventions
 
@@ -69,10 +71,11 @@ src/
 - `list_worktrees` reads a bounded `git worktree list --porcelain -z` inventory and remains explicit rather than expanding automatic active-worktree context.
 - `create_worktree` requires an explicitly approved absolute destination, canonicalizes its existing parent, rejects existing or nested/common-Git-directory destinations, and creates from current `HEAD`, from an explicit read-only `baseRef` (exact local branch, remote-tracking ref, or full commit resolved to a commit before mutation and never checked out or reset), or from an unoccupied existing local branch. It verifies canonical path, branch, `HEAD`, and cleanliness before returning a ready handoff.
 - `remove_worktree` resolves an exact fresh current-repository inventory match, rejects main/current/dirty/ignored-entry-containing/detached/locked/prunable/missing/bare entries, runs a bounded removal-specific ignored-entry scan, performs force-free removal with the verified path, and confirms that the local branch remains at the same commit.
+- `land_branch` fetches the exact remote target, refuses unmerged history or a cwd inside the removal target, removes only a safe linked source/target checkout (including ignored residue), and lease-deletes only the source local ref against the fetched remote-tracking target. Target sync is last and uses a non-forced fetch refspec, a clean-worktree ff-only pull, dirty-skip, or no-op. Failed/unattempted sync is explicit; receipts include actual before/after refs and top-level deleted ignored paths. Standalone removal/retirement defaults are unchanged.
 - `push_branch` mutates remote refs only for the current branch and uses an explicit upstream remote/refspec instead of bare `git push` when an upstream exists.
 - `pull_request` requires resolved `headBranch` and `baseBranch` values to be distinct and exist locally, requires `headBranch` to match the GitHub-visible branch commit, queues behind already-started same-repository git mutation windows, makes GitHub REST API calls for the resolved current repository only, and rejects owner-prefixed or unsafe branch refs before the request. Omitted fields require configured autofill.
 - `pull_request` reads `GITHUB_TOKEN` or `GH_TOKEN` from process environment first; only when neither process token is set does it read those token keys from a small regular `.env` file in the verified git root as a fallback. `BRANCHME_PR_AUTOFILL` uses the same process-first, `.env`-fallback precedence and defaults off.
-- BranchMe does not force checkout/removal, move/prune/repair/lock/unlock worktrees, create detached/orphan worktrees, infer remote worktree branches, copy ignored/untracked files such as `.env`, remove linked worktrees that contain ignored entries, delete retained worktree branches during removal, change Pi's cwd, or start Pi sessions. It also does not stash, stage, create user-authored commits, accept commit messages, reset, force-push, directly edit files, read unsupported `.env` keys, follow unsafe `.env` file types, depend on GitHub CLI, or collect telemetry. Only explicit `integrate_branch` may let Git create a standard merge commit for divergent histories; only explicit leased `retire_branch` may delete one exact local branch ref. Retirement has no bulk, inferred-target, remote, remote-tracking, rollback, or automatic worktree deletion. Git documents submodule worktree support as incomplete; BranchMe adds no force-based submodule cleanup.
+- BranchMe does not force checkout/removal, move/prune/repair/lock/unlock worktrees, create detached/orphan worktrees, infer remote worktree branches, copy ignored/untracked files such as `.env`, remove ignored-entry-containing worktrees through standalone `remove_worktree`, delete retained worktree branches during standalone removal, change Pi's cwd, or start Pi sessions. It also does not stash, stage, create user-authored commits, accept commit messages, reset, force-push, directly edit files, read unsupported `.env` keys, follow unsafe `.env` file types, depend on GitHub CLI, or collect telemetry. Only explicit `integrate_branch` may let Git create a standard merge commit for divergent histories; only explicit leased `retire_branch` or merged-only `land_branch` may delete one exact local branch ref. Retirement has no bulk, inferred-target, remote, remote-tracking, rollback, or automatic worktree deletion. Git documents submodule worktree support as incomplete; BranchMe adds no force-based submodule cleanup.
 
 ## Documentation
 
@@ -91,6 +94,7 @@ test/
 ├── git-integration.test.mjs # isolated real-Git context, branch integration, and worktree lifecycle coverage
 ├── git-retirement.test.mjs # mocked retirement preflight, lease, postconditions, and failures
 ├── git-retirement-integration.test.mjs # isolated real-Git local-ref retirement lifecycle coverage
+├── land-branch.test.mjs  # bare-origin post-merge cleanup, cwd safety, idempotence, and receipt regressions
 ├── github.test.mjs       # GitHub parsing, token resolution, related-PR lookup, redaction
 ├── preparation.test.mjs  # package/docs/source metadata checks
 ├── schema-validation.test.mjs # strict TypeBox schema validation, including worktree and retirement fields

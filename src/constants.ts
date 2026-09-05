@@ -14,6 +14,7 @@ export const CREATE_WORKTREE_TOOL_NAME = "create_worktree";
 export const REMOVE_WORKTREE_TOOL_NAME = "remove_worktree";
 export const INTEGRATE_BRANCH_TOOL_NAME = "integrate_branch";
 export const RETIRE_BRANCH_TOOL_NAME = "retire_branch";
+export const LAND_BRANCH_TOOL_NAME = "land_branch";
 export const PULL_REQUEST_AUTOFILL_ENV_NAME = "BRANCHME_PR_AUTOFILL";
 
 export const BRANCHME_TOOL_NAMES = [
@@ -25,6 +26,7 @@ export const BRANCHME_TOOL_NAMES = [
   REBASE_BRANCH_TOOL_NAME,
   INTEGRATE_BRANCH_TOOL_NAME,
   RETIRE_BRANCH_TOOL_NAME,
+  LAND_BRANCH_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,

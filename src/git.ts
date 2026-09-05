@@ -741,7 +741,7 @@ export function validateWorktreePathInput(worktreePath: unknown): string {
   return normalizedPath;
 }
 
-async function canonicalizePathAllowMissing(path: string): Promise<string | null> {
+export async function canonicalizePathAllowMissing(path: string): Promise<string | null> {
   let candidate = normalize(path);
   const suffix: string[] = [];
 
@@ -759,7 +759,7 @@ async function canonicalizePathAllowMissing(path: string): Promise<string | null
   }
 }
 
-async function collectWorktreeInventory(
+export async function collectWorktreeInventory(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   signal?: AbortSignal,
@@ -783,7 +783,7 @@ async function collectWorktreeInventory(
   return { repoRoot, canonicalCurrentPath, entries };
 }
 
-function pathIsInsideOrEqual(candidatePath: string, boundaryPath: string): boolean {
+export function pathIsInsideOrEqual(candidatePath: string, boundaryPath: string): boolean {
   const relation = relative(boundaryPath, candidatePath);
   return relation === "" || (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation));
 }
@@ -1399,7 +1399,11 @@ async function requirePresentWorktreeDirectory(canonicalPath: string): Promise<v
 
 interface WorktreeRemovalStatus {
   workingTree: WorkingTreeDetails;
-  hasIgnoredEntries: boolean;
+  ignoredPaths: string[];
+}
+
+function compareIgnoredPaths(left: string, right: string): number {
+  return left.localeCompare(right);
 }
 
 function parseWorktreeRemovalStatus(output: string): WorktreeRemovalStatus {
@@ -1408,7 +1412,7 @@ function parseWorktreeRemovalStatus(output: string): WorktreeRemovalStatus {
   }
 
   const records = output.split(NUL_SEPARATOR);
-  let hasIgnoredEntries = false;
+  const ignoredPaths = new Set<string>();
   let skipNextRecord = false;
   for (const [index, record] of records.entries()) {
     if (skipNextRecord) {
@@ -1419,12 +1423,12 @@ function parseWorktreeRemovalStatus(output: string): WorktreeRemovalStatus {
 
     const parsed = parsePorcelainChange(records, index);
     skipNextRecord = parsed.nextIndex > index;
-    if (parsed.status === "!!") hasIgnoredEntries = true;
+    if (parsed.status === "!!") ignoredPaths.add(parsed.path.split("/")[0]);
   }
 
   return {
     workingTree: parseWorkingTreeStatus(output).workingTree,
-    hasIgnoredEntries,
+    ignoredPaths: [...ignoredPaths].sort(compareIgnoredPaths),
   };
 }
 
@@ -1432,7 +1436,8 @@ async function inspectRemovableWorktree(
   pi: Pick<ExtensionAPI, "exec">,
   canonicalPath: string,
   signal?: AbortSignal,
-): Promise<WorkingTreeDetails> {
+  allowIgnored = false,
+): Promise<WorktreeRemovalStatus> {
   const workingTree = await inspectWorktreeState(pi, canonicalPath, signal);
   if (workingTree.state !== "clean") {
     throw new Error("The target worktree has staged, unstaged, untracked, or unmerged changes; clean it before removal.");
@@ -1446,12 +1451,12 @@ async function inspectRemovableWorktree(
   if (removalStatus.workingTree.state !== "clean") {
     throw new Error("The target worktree has staged, unstaged, untracked, or unmerged changes; clean it before removal.");
   }
-  if (removalStatus.hasIgnoredEntries) {
+  if (!allowIgnored && removalStatus.ignoredPaths.length > 0) {
     throw new Error(
       "The target worktree contains ignored files or directories; remove or preserve them outside the checkout before removal.",
     );
   }
-  return workingTree;
+  return removalStatus;
 }
 
 function assertWorktreeRemoved(
@@ -1487,7 +1492,22 @@ export async function removeWorktree(
   const repoRoot = await getGitRoot(pi, ctx, signal);
   const rootCtx = { cwd: repoRoot };
 
-  return withRepositoryMutationQueue(repoRoot, async () => {
+  return withRepositoryMutationQueue(
+    repoRoot,
+    removeWorktreeWithinQueue.bind(undefined, pi, rootCtx, requestedWorktreePath, signal),
+  );
+}
+
+// Caller must hold the repository mutation queue. Standalone removal still refuses ignored residue.
+export async function removeWorktreeWithinQueue(
+  pi: Pick<ExtensionAPI, "exec">,
+  rootCtx: GitCommandContext,
+  requestedWorktreePath: string,
+  signal?: AbortSignal,
+  allowIgnored = false,
+  expectedIdentity?: { branch: string; head: string },
+): Promise<RemoveWorktreeDetails & { deletedIgnoredPaths: string[] }> {
+    const repoRoot = rootCtx.cwd;
     const resolved = await resolveWorktreeRemovalTarget(
       pi,
       rootCtx,
@@ -1499,6 +1519,9 @@ export async function removeWorktree(
     }
 
     const worktree = requireRemovableWorktreeEntry(resolved);
+    if (expectedIdentity && (worktree.branch !== expectedIdentity.branch || worktree.head !== expectedIdentity.head)) {
+      throw new Error("The selected worktree branch or HEAD moved after the landing ancestry proof.");
+    }
     const branchName = resolved.entry.record.branch;
     const head = resolved.entry.record.head;
     if (branchName === null || head === null) {
@@ -1507,7 +1530,7 @@ export async function removeWorktree(
     const verifiedCanonicalPath = requireLosslessWorktreeIdentity(resolved.canonicalPath, "cwd");
     const retainedBranch = requireLosslessWorktreeIdentity(branchName, "branch");
     await requirePresentWorktreeDirectory(verifiedCanonicalPath);
-    const workingTree = await inspectRemovableWorktree(pi, verifiedCanonicalPath, signal);
+    const { workingTree, ignoredPaths } = await inspectRemovableWorktree(pi, verifiedCanonicalPath, signal, allowIgnored);
     const branchHeadBefore = await getLocalBranchCommit(pi, rootCtx, retainedBranch, signal);
     if (branchHeadBefore.toLowerCase() !== head.toLowerCase()) {
       throw new Error("The target local branch did not match the worktree HEAD before removal.");
@@ -1540,6 +1563,7 @@ export async function removeWorktree(
       );
       return {
         action: "remove_worktree",
+        deletedIgnoredPaths: ignoredPaths.map((path) => redactSecrets(path)),
         repoRoot: safeWorktreeValue(repoRoot, GIT_WORKTREE_PATH_LIMIT_CHARS),
         request: {
           worktreePath: safeWorktreeValue(requestedWorktreePath, GIT_WORKTREE_PATH_LIMIT_CHARS),
@@ -1567,7 +1591,6 @@ export async function removeWorktree(
     } catch (error) {
       throw worktreeRemovalFailure(error, resolved.canonicalPath, branchName);
     }
-  });
 }
 
 function isRenameOrCopyStatus(status: string): boolean {
@@ -1880,8 +1903,9 @@ export async function getAheadBehindCount(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   signal?: AbortSignal,
+  comparison = "HEAD...@{u}",
 ): Promise<AheadBehindCount> {
-  const result = await runGit(pi, ctx, ["rev-list", "--left-right", "--count", "HEAD...@{u}"], {
+  const result = await runGit(pi, ctx, ["rev-list", "--left-right", "--count", comparison], {
     signal,
     timeout: GIT_STATUS_TIMEOUT_MS,
   });
@@ -1934,9 +1958,9 @@ export async function localBranchExists(
   return result.code === 0;
 }
 
-function requireLosslessLocalRef(branchName: string): string {
+function requireLosslessLocalRef(branchName: string, prefix = "refs/heads/"): string {
   requireLosslessWorktreeIdentity(branchName, "branch");
-  const fullRef = `refs/heads/${branchName}`;
+  const fullRef = `${prefix}${branchName}`;
   if (!isLosslessGitMetadata(fullRef, GIT_CONTEXT_VALUE_LIMIT_CHARS)) {
     throw new Error(
       "The full local branch ref cannot be returned safely and losslessly. " +
@@ -2015,8 +2039,27 @@ export async function inspectDirectLocalBranchRef(
   branchName: string,
   signal?: AbortSignal,
 ): Promise<DirectLocalBranchRefInspection> {
+  return inspectDirectBranchRef(pi, ctx, branchName, "refs/heads/", signal);
+}
+
+export async function inspectDirectRemoteTrackingRef(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  refName: string,
+  signal?: AbortSignal,
+): Promise<DirectLocalBranchRefInspection> {
+  return inspectDirectBranchRef(pi, ctx, refName, "refs/remotes/", signal);
+}
+
+async function inspectDirectBranchRef(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  branchName: string,
+  prefix: string,
+  signal?: AbortSignal,
+): Promise<DirectLocalBranchRefInspection> {
   validateBranchNameInput(branchName);
-  const fullRef = requireLosslessLocalRef(branchName);
+  const fullRef = requireLosslessLocalRef(branchName, prefix);
   const listArgs = [
     "for-each-ref",
     "--count=1",
@@ -2317,7 +2360,22 @@ export async function fetchRemoteBranch(
   const repoRoot = await getGitRoot(pi, ctx, signal);
   const rootCtx = { cwd: repoRoot };
 
-  return withRepositoryMutationQueue(repoRoot, async () => {
+  return withRepositoryMutationQueue(
+    repoRoot,
+    fetchRemoteBranchWithinQueue.bind(undefined, pi, rootCtx, remote, branch, signal),
+  );
+}
+
+// Caller must hold the repository mutation queue.
+export async function fetchRemoteBranchWithinQueue(
+  pi: Pick<ExtensionAPI, "exec">,
+  rootCtx: GitCommandContext,
+  remote: string,
+  branch: string,
+  signal?: AbortSignal,
+): Promise<FetchRemoteBranchDetails> {
+    const repoRoot = rootCtx.cwd;
+    validateRequestedRemoteName(remote);
     await validateBranchName(pi, rootCtx, branch, signal);
     await requireConfiguredRemote(pi, rootCtx, remote, signal);
 
@@ -2343,7 +2401,6 @@ export async function fetchRemoteBranch(
       refspec: safeDetail(refspec),
       output: safeOutput(result.stdout || result.stderr),
     };
-  });
 }
 
 export async function pullCurrentBranch(
