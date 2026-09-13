@@ -2,6 +2,10 @@ export const EXTENSION_DISPLAY_NAME = "BranchMe";
 export const BRANCHME_COMMAND_NAME = "branchme";
 
 export const BRANCH_STATUS_TOOL_NAME = "branch_status";
+export const LIST_BRANCHES_TOOL_NAME = "list_branches";
+export const TRACK_BRANCH_TOOL_NAME = "track_branch";
+export const UPDATE_FROM_BASE_TOOL_NAME = "update_from_base";
+export const INIT_REPOSITORY_TOOL_NAME = "init_repository";
 export const CREATE_BRANCH_TOOL_NAME = "create_branch";
 export const CHANGE_BRANCH_TOOL_NAME = "change_branch";
 export const FETCH_BRANCH_TOOL_NAME = "fetch_branch";
@@ -9,6 +13,7 @@ export const PULL_BRANCH_TOOL_NAME = "pull_branch";
 export const REBASE_BRANCH_TOOL_NAME = "rebase_branch";
 export const PUSH_BRANCH_TOOL_NAME = "push_branch";
 export const PULL_REQUEST_TOOL_NAME = "pull_request";
+export const PULL_REQUEST_STATUS_TOOL_NAME = "pull_request_status";
 export const LIST_WORKTREES_TOOL_NAME = "list_worktrees";
 export const CREATE_WORKTREE_TOOL_NAME = "create_worktree";
 export const REMOVE_WORKTREE_TOOL_NAME = "remove_worktree";
@@ -19,6 +24,10 @@ export const PULL_REQUEST_AUTOFILL_ENV_NAME = "BRANCHME_PR_AUTOFILL";
 
 export const BRANCHME_TOOL_NAMES = [
   BRANCH_STATUS_TOOL_NAME,
+  LIST_BRANCHES_TOOL_NAME,
+  TRACK_BRANCH_TOOL_NAME,
+  UPDATE_FROM_BASE_TOOL_NAME,
+  INIT_REPOSITORY_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
@@ -29,6 +38,7 @@ export const BRANCHME_TOOL_NAMES = [
   LAND_BRANCH_TOOL_NAME,
   PUSH_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
+  PULL_REQUEST_STATUS_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   REMOVE_WORKTREE_TOOL_NAME,
@@ -51,6 +61,9 @@ export const GIT_CONTEXT_VALUE_LIMIT_CHARS = 512;
 export const GIT_CONTEXT_SUMMARY_LIMIT_CHARS = 4_000;
 export const PULL_REQUEST_AUTOFILL_COMMIT_LIMIT = 20;
 export const PULL_REQUEST_AUTOFILL_SUBJECT_LIMIT_CHARS = 256;
+export const GIT_BRANCH_RAW_OUTPUT_LIMIT_BYTES = 128 * 1024;
+export const GIT_BRANCH_ENTRY_LIMIT = 200;
+export const GIT_BRANCH_SUMMARY_LIMIT_CHARS = 4_000;
 export const GIT_WORKTREE_RAW_OUTPUT_LIMIT_BYTES = 128 * 1024;
 export const GIT_WORKTREE_ENTRY_LIMIT = 100;
 export const GIT_WORKTREE_PATH_LIMIT_CHARS = 4_096;

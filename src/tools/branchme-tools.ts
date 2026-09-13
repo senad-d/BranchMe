@@ -1,4 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
+import { registerWorkflowTools } from "./workflow-tools.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -7,11 +8,14 @@ import {
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  GIT_BRANCH_SUMMARY_LIMIT_CHARS,
   GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
   GIT_RETIREMENT_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
+  INIT_REPOSITORY_TOOL_NAME,
   INTEGRATE_BRANCH_TOOL_NAME,
   LAND_BRANCH_TOOL_NAME,
+  LIST_BRANCHES_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
@@ -30,6 +34,8 @@ import {
   getLocalBranchCommit,
   getPullRequestCommitSubjects,
   inferPullRequestBaseBranch,
+  initializeRepository,
+  listBranches,
   listWorktrees,
   localBranchExists,
   pullCurrentBranch,
@@ -45,7 +51,7 @@ import { integrateBranch } from "../git-integration.ts";
 import { retireBranch } from "../git-retirement.ts";
 import { formatLandBranch, landBranch } from "../git-landing.ts";
 import {
-  createGitHubPullRequest,
+  createOrReuseGitHubPullRequest,
   ensureGitHubBranchExists,
   redactSecrets,
   repositoryLabel,
@@ -58,9 +64,9 @@ import type {
   ChangeBranchDetails,
   CreateWorktreeDetails,
   GitContextDetails,
+  InitRepositoryDetails,
   IntegrateBranchDetails,
   ListWorktreesDetails,
-  PullRequestDetails,
   PullRequestInput,
   PullRequestInputField,
   PullRequestToolDetails,
@@ -71,6 +77,16 @@ import type {
 } from "../types.ts";
 
 const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
+
+const InitRepositoryParametersSchema = Type.Object(
+  {
+    initialBranch: Type.Optional(Type.String({
+      minLength: 1,
+      description: "Initial unborn branch name; defaults to main.",
+    })),
+  },
+  { additionalProperties: false },
+);
 
 const BranchStatusParametersSchema = Type.Object(
   {
@@ -114,6 +130,7 @@ const LandBranchParametersSchema = Type.Object(
     targetBranch: Type.String({ minLength: 1, description: "Local default branch to fast-forward after cleanup." }),
     remote: Type.Optional(Type.String({ minLength: 1, description: "Configured remote name; defaults to origin." })),
     worktreePath: Type.Optional(Type.String({ minLength: 1, description: "Absolute linked-worktree path to remove, including one parked on targetBranch. Omit to find the source branch's worktree." })),
+    pullRequestNumber: Type.Optional(Type.Integer({ minimum: 1, description: "Merged GitHub PR number for exact host-merge evidence, required for squash/rebase merges without source ancestry." })),
   },
   { additionalProperties: false },
 );
@@ -164,6 +181,9 @@ const FetchBranchParametersSchema = Type.Object(
 const RemoveWorktreeParametersSchema = Type.Object(
   {
     worktreePath: Type.String({ minLength: 1, description: "Explicit absolute path of the linked worktree to remove." }),
+    deleteIgnored: Type.Optional(Type.Boolean({
+      description: "Explicit authorization to delete ignored files and directories with the worktree; defaults to false.",
+    })),
   },
   { additionalProperties: false },
 );
@@ -200,9 +220,9 @@ export function formatChangeBranch(details: ChangeBranchDetails): string {
   return `Changed branch from ${previous} to ${details.currentBranch}.`;
 }
 
-export function formatPullRequest(details: PullRequestDetails, autofilledFields: PullRequestInputField[] = []): string {
+export function formatPullRequest(details: PullRequestToolDetails, autofilledFields: PullRequestInputField[] = []): string {
   const autofill = autofilledFields.length > 0 ? ` Autofilled fields: ${autofilledFields.join(", ")}.` : "";
-  return `Created pull request #${details.number} (${details.state}) for ${repositoryLabel(details.repository)}: ${details.url}.${autofill}`;
+  return `${details.outcome === "existing" ? "Reused existing" : "Created"} pull request #${details.number} (${details.state}) for ${repositoryLabel(details.repository)}: ${details.url}.${autofill}`;
 }
 
 const WORKTREE_FORMAT_PATH_LIMIT_CHARS = 512;
@@ -281,6 +301,12 @@ export function formatListWorktrees(details: ListWorktreesDetails): string {
 
   if (omitted > 0) lines.push(worktreeOmissionLine(omitted));
   return lines.join("\n");
+}
+
+export function formatInitRepository(details: InitRepositoryDetails): string {
+  const root = safeWorktreeFormatValue(details.repoRoot, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
+  const branch = safeWorktreeFormatValue(details.initialBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
+  return `Initialized non-bare Git repository at ${root} with unborn initial branch ${branch}. No files were staged or committed.`;
 }
 
 export function formatCreateWorktree(details: CreateWorktreeDetails): string {
@@ -518,6 +544,28 @@ async function requireGitHubHeadMatchesLocalBranch(
 }
 
 export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "exec">, options: BranchMeToolOptions = {}): void {
+  registerWorkflowTools(pi, options);
+  pi.registerTool({
+    name: LIST_BRANCHES_TOOL_NAME,
+    label: "List Branches",
+    description: "list_branches reads up to 200 local and remote-tracking branches, including commits, upstream counts, symbolic refs, and worktree occupancy. Read-only; cached remote refs are not fetched. Text is bounded to 4000 characters.",
+    promptSnippet: "list_branches: discover local and cached remote-tracking branches without mutation",
+    promptGuidelines: [
+      "Use list_branches to discover names and worktree occupancy before branch operations; it never fetches or mutates Git state.",
+      "Treat list_branches names and paths as display metadata; redacted or truncated values are not executable identities.",
+    ],
+    parameters: EmptyParametersSchema,
+    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+      const details = await listBranches(pi, ctx, signal);
+      const lines = details.branches.map((branch) =>
+        `${branch.current ? "*" : "-"} ${JSON.stringify(branch.name)} (${branch.kind}) ${shortCommit(branch.head)}; upstream ${JSON.stringify(branch.upstream)}; ahead ${branch.ahead ?? "?"}, behind ${branch.behind ?? "?"}; worktrees ${JSON.stringify(branch.worktreePaths)}`);
+      const text = [`Branches: ${details.branches.length}; omitted: ${details.omitted}.`, ...lines].join("\n");
+      return {
+        content: [{ type: "text", text: text.length <= GIT_BRANCH_SUMMARY_LIMIT_CHARS ? text : `${text.slice(0, GIT_BRANCH_SUMMARY_LIMIT_CHARS - 20)}\n[summary truncated]` }],
+        details,
+      };
+    },
+  });
   pi.registerTool({
     name: BRANCH_STATUS_TOOL_NAME,
     label: "Branch Status",
@@ -547,6 +595,27 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
 
       return {
         content: [{ type: "text", text: formatBranchStatus(details) }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: INIT_REPOSITORY_TOOL_NAME,
+    label: "Initialize Repository",
+    description: "init_repository initializes the exact current working directory as a new non-bare Git repository with an unborn initial branch (default main). It rejects an existing .git entry, any directory already inside a Git repository, nested initialization, paths, bare/separate-Git-dir modes, templates, shared modes, staging, commits, remotes, and file creation outside Git metadata.",
+    promptSnippet: "init_repository: initialize the exact current working directory as a verified new non-bare Git repository",
+    promptGuidelines: [
+      "Use init_repository only when the user explicitly asks to initialize the current working directory as a new Git repository.",
+      "Use init_repository with optional initialBranch; it defaults to main and never accepts or infers a path, bare mode, separate Git directory, template, shared mode, remote, initial commit, README, or gitignore content.",
+      "init_repository rejects reinitialization and nested repositories; it creates only Git metadata and an unborn branch, then verifies the exact repository root and Git directory.",
+      "Call init_repository by itself and wait for verification before using repository-dependent Git tools.",
+    ],
+    parameters: InitRepositoryParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await initializeRepository(pi, ctx, params.initialBranch ?? "main", signal);
+      return {
+        content: [{ type: "text", text: formatInitRepository(details) }],
         details,
       };
     },
@@ -718,10 +787,11 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: LAND_BRANCH_TOOL_NAME,
     label: "Land Branch",
-    description: "land_branch performs deterministic post-merge cleanup: fetch the remote target, prove source ancestry, remove its clean linked worktree (including ignored residue), lease-delete the local source branch, then fast-forward the local target without switching branches. Returns a structured per-step receipt and one-line summary. No remote mutation, force, stash, reset, checkout, or prune; retries are idempotent. Diagnostics are redacted and bounded to 4000 characters each.",
+    description: "land_branch performs deterministic post-merge cleanup: fetch the remote target, prove source ancestry or verify exact merged GitHub PR evidence via pullRequestNumber, remove its clean linked worktree (including ignored residue), lease-delete the local source branch, then fast-forward the local target without switching branches. Returns a structured per-step receipt and one-line summary. No remote mutation, force, stash, reset, checkout, or prune; retries are idempotent. Diagnostics are redacted and bounded to 4000 characters each.",
     promptSnippet: "land_branch: post-merge linked-worktree cleanup, leased source retirement, and independent fast-forward target sync with verified receipts",
     promptGuidelines: [
-      "Use land_branch after the pull request merged on the host; the source tip must be an ancestor of the fetched remote target (squash/rebase merges may not satisfy this).",
+      "Use land_branch after the pull request merged on the host; supply pullRequestNumber for squash/rebase merges. It verifies exact merged PR head/base identities and containment of the merge commit in the fetched remote target.",
+      "Without pullRequestNumber, land_branch still requires source ancestry. PR evidence permits deletion of original source history after a squash/rebase merge; inspect the mergeProof receipt.",
       "land_branch is cwd-independent; run from the repository root, never inside the worktree being removed.",
       "land_branch deletes ignored files such as .env, .pi/, node_modules/, and dist/ with the worktree and lists their top-level entries in deletedIgnoredPaths; preserve anything needed beforehand.",
       "land_branch target sync never touches a dirty checkout; skipped-dirty reports its path and ahead/behind counts, independently of cleanup outcomes.",
@@ -729,7 +799,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
     ],
     parameters: LandBranchParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const details = await landBranch(pi, ctx, params, signal);
+      const details = await landBranch(pi, ctx, params, signal, options);
       return {
         content: [{ type: "text", text: formatLandBranch(details) }],
         details,
@@ -772,6 +842,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       "Do not call push_branch and pull_request in the same tool batch; call pull_request only after push_branch has completed.",
       "Use pull_request only for the resolved current repository; pull_request never accepts owner, repo, or owner-prefixed branch refs.",
       "Use pull_request with GITHUB_TOKEN or GH_TOKEN from the process environment or local .env fallback; pull_request must not expose token values.",
+      "pull_request reuses an existing open PR only when its exact head commit and base match; it never updates existing title, body, or draft state.",
     ],
     parameters: PullRequestParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -794,7 +865,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
             fetchImpl: options.fetchImpl,
             signal,
           });
-          const details = await createGitHubPullRequest(repository, resolved.input, token, {
+          const details = await createOrReuseGitHubPullRequest(repository, resolved.input, headBranch.commitSha, token, {
             fetchImpl: options.fetchImpl,
             signal,
           });
@@ -864,16 +935,17 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: REMOVE_WORKTREE_TOOL_NAME,
     label: "Remove Worktree",
-    description: "remove_worktree force-free removes one verified clean linked worktree at an explicit absolute worktreePath while retaining and returning its exact local branch identity. remove_worktree rejects main, current, dirty, detached, locked, prunable, missing, and foreign worktrees and never deletes branches.",
-    promptSnippet: "remove_worktree: force-free removal of an explicitly selected clean linked worktree while retaining its branch",
+    description: "remove_worktree force-free removes one verified clean linked worktree at an explicit absolute worktreePath while retaining and returning its exact local branch identity. Ignored residue is refused by default; deleteIgnored: true explicitly authorizes deleting it with the worktree and reports its top-level paths. remove_worktree rejects main, current, dirty, detached, locked, prunable, missing, and foreign worktrees and never deletes branches.",
+    promptSnippet: "remove_worktree: force-free removal of an explicitly selected clean linked worktree, with optional explicit ignored-residue deletion, while retaining its branch",
     promptGuidelines: [
       "Use remove_worktree only when the user explicitly requests worktree removal and provides or approves the exact absolute worktreePath; remove_worktree must never infer a filesystem path silently.",
-      "Use remove_worktree with exactly worktreePath; remove_worktree never accepts force, move, prune, repair, lock, unlock, branch deletion, remote, or refspec parameters.",
+      "Use remove_worktree with worktreePath and optional deleteIgnored; set deleteIgnored: true only after the user explicitly authorizes deleting all ignored files and directories, including possible .env, .pi/, dependency, and build residue.",
+      "remove_worktree never accepts force, move, prune, repair, lock, unlock, branch deletion, remote, or refspec parameters.",
       "Do not batch remove_worktree with dependent worktree mutations; wait for remove_worktree to complete and verify its non-ready handoff before continuing.",
     ],
     parameters: RemoveWorktreeParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const details = await removeWorktree(pi, ctx, params.worktreePath, signal);
+      const details = await removeWorktree(pi, ctx, params.worktreePath, signal, params.deleteIgnored === true);
       return {
         content: [{ type: "text", text: formatRemoveWorktree(details) }],
         details,

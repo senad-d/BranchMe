@@ -29,6 +29,42 @@ export interface BranchStatusToolInput {
   ancestry?: BranchStatusAncestryQuery;
 }
 
+export type ListBranchesToolInput = Record<string, never>;
+
+export interface BranchEntry {
+  name: string;
+  fullRef: string;
+  kind: "local" | "remote-tracking";
+  head: string;
+  current: boolean;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  symbolicTarget: string | null;
+  worktreePaths: string[];
+}
+
+export interface ListBranchesDetails {
+  action: "list_branches";
+  repoRoot: string;
+  branches: BranchEntry[];
+  omitted: number;
+}
+
+export interface InitRepositoryToolInput {
+  initialBranch?: string;
+}
+
+export interface InitRepositoryDetails {
+  action: "init_repository";
+  request: InitRepositoryToolInput;
+  repoRoot: string;
+  gitDirectory: string;
+  initialBranch: string;
+  bare: false;
+  unborn: true;
+}
+
 export interface IntegrateBranchToolInput {
   sourceBranch: string;
   targetBranch: string;
@@ -55,6 +91,8 @@ export interface CreateWorktreeToolInput {
 
 export interface RemoveWorktreeToolInput {
   worktreePath: string;
+  /** Explicitly authorizes deleting ignored files and directories with the worktree. */
+  deleteIgnored?: boolean;
 }
 
 export interface WorktreeEntry {
@@ -137,6 +175,7 @@ export interface CreateWorktreeDetails {
 
 export interface RemoveWorktreeDetails {
   action: "remove_worktree";
+  deletedIgnoredPaths: string[];
   repoRoot: string;
   request: RemoveWorktreeToolInput;
   verified: {
@@ -452,6 +491,21 @@ export interface PullRequestDetails {
   draft: boolean;
 }
 
+export interface PullRequestStatusInput {
+  number?: number;
+  headBranch?: string;
+}
+
+export interface PullRequestStatusDetails extends PullRequestDetails {
+  title: string;
+  state: "open" | "closed";
+  merged: boolean;
+  mergedAt: string | null;
+  headSha: string;
+  baseSha: string;
+  mergeCommitSha: string | null;
+}
+
 export interface PullRequestInput {
   headBranch: string;
   baseBranch: string;
@@ -465,6 +519,7 @@ export type PullRequestInputField = keyof PullRequestInput;
 export type PullRequestToolInput = Partial<PullRequestInput>;
 
 export interface PullRequestToolDetails extends PullRequestDetails {
+  outcome?: "created" | "existing";
   autofilledFields?: PullRequestInputField[];
 }
 

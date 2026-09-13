@@ -30,6 +30,7 @@ import {
 } from "./git.ts";
 import { retireBranchWithinQueue } from "./git-retirement.ts";
 import { redactSecrets } from "./redaction.ts";
+import { getGitHubPullRequest, parseGitHubRepository, repositoriesEqual, resolveGitHubRepository, resolveGitHubToken, type RelatedPullRequestLookupOptions } from "./github.ts";
 import type { AheadBehindCount } from "./types.ts";
 
 type GitAPI = Pick<ExtensionAPI, "exec">;
@@ -40,6 +41,7 @@ export interface LandBranchInput {
   targetBranch: string;
   remote?: string;
   worktreePath?: string;
+  pullRequestNumber?: number;
 }
 
 export interface LandBranchReceipt {
@@ -50,6 +52,8 @@ export interface LandBranchReceipt {
   sourceBranch: string;
   sourceHead: string | null;
   ancestry: { isAncestor: boolean | null };
+  mergeProof: "ancestry" | "pull-request" | null;
+  pullRequest: { number: number; headSha: string; mergeCommitSha: string } | null;
   worktree: {
     path: string | null;
     outcome: "removed" | "absent" | "refused";
@@ -83,8 +87,8 @@ function landingError(error: unknown): string {
 
 function validateLandingInput(input: LandBranchInput): void {
   for (const key of Object.keys(input)) {
-    if (!["sourceBranch", "targetBranch", "remote", "worktreePath"].includes(key)) {
-      throw new Error("land_branch accepts only sourceBranch, targetBranch, remote, and worktreePath.");
+    if (!["sourceBranch", "targetBranch", "remote", "worktreePath", "pullRequestNumber"].includes(key)) {
+      throw new Error("land_branch accepts only sourceBranch, targetBranch, remote, worktreePath, and pullRequestNumber.");
     }
   }
   for (const branch of [input.sourceBranch, input.targetBranch]) {
@@ -100,6 +104,9 @@ function validateLandingInput(input: LandBranchInput): void {
     requireLosslessWorktreeIdentity(input.remote, "branch");
   }
   if (input.worktreePath !== undefined) validateWorktreePathInput(input.worktreePath);
+  if (input.pullRequestNumber !== undefined && (!Number.isSafeInteger(input.pullRequestNumber) || input.pullRequestNumber <= 0)) {
+    throw new Error("pullRequestNumber must be a positive safe integer.");
+  }
 }
 
 // Reused Git helpers all receive explicit -C routing. Disable config-driven pruning,
@@ -134,6 +141,8 @@ function newLandingReceipt(root: string, input: LandBranchInput): LandBranchRece
     sourceBranch: input.sourceBranch,
     sourceHead: null,
     ancestry: { isAncestor: null },
+    mergeProof: null,
+    pullRequest: null,
     worktree: { path: null, outcome: "refused", reason: "Not attempted.", deletedIgnoredPaths: [] },
     branch: { outcome: "refused", reason: "Not attempted.", expectedHead: null },
     targetSync: { mode: "not-run", worktreePath: null, before: null, after: null, aheadBehind: null, reason: "Not attempted." },
@@ -223,8 +232,10 @@ async function removeLandingWorktree(pi: GitAPI, receipt: LandBranchReceipt, sig
   const sourceHead = await captureLocalHead(pi, ctx, receipt.sourceBranch, signal);
   if (sourceHead !== receipt.sourceHead) throw new Error("Source branch moved after the ancestry proof; no worktree removed.");
   const worktreeHead = validated.worktree.head;
+  const exactMergedPrHead = receipt.mergeProof === "pull-request" &&
+    validated.worktree.branch === receipt.sourceBranch && worktreeHead === receipt.pullRequest?.headSha;
   if (!worktreeHead || !receipt.remoteTargetHead ||
-      !(await isCommitAncestor(pi, ctx, worktreeHead, receipt.remoteTargetHead, signal))) {
+      (!exactMergedPrHead && !(await isCommitAncestor(pi, ctx, worktreeHead, receipt.remoteTargetHead, signal)))) {
     throw new Error("Selected worktree HEAD is not merged into the fetched target.");
   }
   await requireIdleWorktree(pi, { cwd: worktree.path }, signal);
@@ -253,7 +264,9 @@ async function retireLandingBranch(pi: GitAPI, receipt: LandBranchReceipt, signa
     branchName: receipt.sourceBranch,
     expectedHead: head,
     targetBranch: `${receipt.remote}/${receipt.targetBranch}`,
-    force: false,
+    // A verified host merge authorizes retiring rewritten source history, not a
+    // general force option. Identity, occupancy, target stability and lease checks remain.
+    force: receipt.mergeProof === "pull-request" && receipt.pullRequest?.headSha === head,
   }, ctx.cwd, signal, "remote-tracking", receipt.remoteTargetHead);
   receipt.branch.outcome = "deleted";
   receipt.branch.reason = null;
@@ -370,12 +383,40 @@ async function refuseLanding(pi: GitAPI, receipt: LandBranchReceipt, error: unkn
   return receipt;
 }
 
+async function verifyLandingPullRequest(
+  pi: GitAPI,
+  ctx: GitCommandContext,
+  receipt: LandBranchReceipt,
+  number: number,
+  options: RelatedPullRequestLookupOptions,
+  signal?: AbortSignal,
+): Promise<void> {
+  const repository = await resolveGitHubRepository(pi, ctx, signal, options.env);
+  const remoteUrl = await runGit(pi, ctx, ["remote", "get-url", receipt.remote], { signal });
+  const remoteRepository = parseGitHubRepository(remoteUrl.stdout.trim());
+  if (!remoteRepository || !repositoriesEqual(repository, remoteRepository)) {
+    throw new Error("Landing remote does not match the GitHub repository used for PR evidence.");
+  }
+  const token = (await resolveGitHubToken(options.env, { cwd: ctx.cwd, signal })).token;
+  const pr = await getGitHubPullRequest(repository, number, token, { fetchImpl: options.fetchImpl, signal });
+  if (!pr.merged || pr.state !== "closed" || !pr.mergeCommitSha || pr.head !== receipt.sourceBranch ||
+      pr.base !== receipt.targetBranch || (receipt.sourceHead !== null && pr.headSha !== receipt.sourceHead)) {
+    throw new Error("PR merge evidence does not match the exact source commit and target branch; landing refused.");
+  }
+  if (!receipt.remoteTargetHead || !(await isCommitAncestor(pi, ctx, pr.mergeCommitSha, receipt.remoteTargetHead, signal))) {
+    throw new Error("The PR merge commit is not contained in the fetched remote target; landing refused.");
+  }
+  receipt.pullRequest = { number: pr.number, headSha: pr.headSha, mergeCommitSha: pr.mergeCommitSha };
+  receipt.mergeProof = "pull-request";
+}
+
 async function landBranchWithinQueue(
   pi: GitAPI,
   cwd: string,
   root: string,
   input: LandBranchInput,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  options: RelatedPullRequestLookupOptions,
 ): Promise<LandBranchReceipt> {
   const ctx = { cwd: root };
   const receipt = newLandingReceipt(root, input);
@@ -392,8 +433,9 @@ async function landBranchWithinQueue(
     receipt.branch.expectedHead = receipt.sourceHead;
     receipt.targetSync.before = await captureLocalHead(pi, ctx, input.targetBranch, signal);
     if (receipt.targetSync.before === null) throw new Error("Local target branch does not exist.");
-    await fetchRemoteBranchWithinQueue(pi, ctx, receipt.remote, receipt.targetBranch, signal);
     const tracking = `${receipt.remote}/${receipt.targetBranch}`;
+    await inspectDirectRemoteTrackingRef(pi, ctx, tracking, signal);
+    await fetchRemoteBranchWithinQueue(pi, ctx, receipt.remote, receipt.targetBranch, signal);
     const ref = await inspectDirectRemoteTrackingRef(pi, ctx, tracking, signal);
     receipt.remoteTargetHead = await getRemoteTrackingRefCommit(pi, ctx, tracking, signal);
     if (ref.status !== "present" || ref.objectId !== receipt.remoteTargetHead) {
@@ -403,9 +445,18 @@ async function landBranchWithinQueue(
     step = "ancestry";
     if (receipt.sourceHead !== null) {
       receipt.ancestry.isAncestor = await isCommitAncestor(pi, ctx, receipt.sourceHead, receipt.remoteTargetHead, signal);
-      if (!receipt.ancestry.isAncestor) throw new Error("Source branch is not merged into the fetched remote target; landing refused.");
     }
-    receipt.steps.push({ step: "ancestry", outcome: receipt.sourceHead === null ? "absent" : "verified", reason: null });
+    if (input.pullRequestNumber !== undefined) {
+      await verifyLandingPullRequest(pi, ctx, receipt, input.pullRequestNumber, options, signal);
+    } else if (receipt.ancestry.isAncestor === false) {
+      throw new Error("Source branch is not merged into the fetched remote target; landing refused. For a squash/rebase merge, supply pullRequestNumber for verified host evidence.");
+    } else if (receipt.ancestry.isAncestor) {
+      receipt.mergeProof = "ancestry";
+    }
+    let ancestryOutcome = "verified";
+    if (receipt.mergeProof === "pull-request") ancestryOutcome = "pr-verified";
+    else if (receipt.sourceHead === null) ancestryOutcome = "absent";
+    receipt.steps.push({ step: "ancestry", outcome: ancestryOutcome, reason: null });
   } catch (error) {
     receipt.steps.push({ step, outcome: "refused", reason: landingError(error) });
     return refuseLanding(pi, receipt, error);
@@ -426,7 +477,7 @@ async function landBranchWithinQueue(
   return receipt;
 }
 
-export async function landBranch(pi: GitAPI, ctx: GitCommandContext, input: LandBranchInput, signal?: AbortSignal): Promise<LandBranchReceipt> {
+export async function landBranch(pi: GitAPI, ctx: GitCommandContext, input: LandBranchInput, signal?: AbortSignal, options: RelatedPullRequestLookupOptions = {}): Promise<LandBranchReceipt> {
   validateLandingInput(input);
   const routedPi: GitAPI = { exec: executeLandingGit.bind(undefined, pi, input.remote ?? "origin") };
   const callerRoot = await getCanonicalGitWorktreeRoot(routedPi, ctx, signal);
@@ -439,11 +490,12 @@ export async function landBranch(pi: GitAPI, ctx: GitCommandContext, input: Land
       await getCanonicalCommonGitDirectory(routedPi, { cwd: root }, signal) !== await getCanonicalCommonGitDirectory(routedPi, { cwd: callerRoot }, signal)) {
     throw new Error("Primary checkout repository identity could not be verified.");
   }
-  return withRepositoryMutationQueue(root, landBranchWithinQueue.bind(undefined, routedPi, ctx.cwd, root, input, signal));
+  return withRepositoryMutationQueue(root, landBranchWithinQueue.bind(undefined, routedPi, ctx.cwd, root, input, signal, options));
 }
 
 export function formatLandBranch(receipt: LandBranchReceipt): string {
-  const summary = `land_branch: worktree ${receipt.worktree.outcome}; branch ${receipt.branch.outcome}; target sync ${receipt.targetSync.mode}.`;
+  const proof = receipt.pullRequest ? ` Verified merged PR #${receipt.pullRequest.number}; source ancestry: ${receipt.ancestry.isAncestor ?? "unknown"}.` : "";
+  const summary = `land_branch: worktree ${receipt.worktree.outcome}; branch ${receipt.branch.outcome}; target sync ${receipt.targetSync.mode}.${proof}`;
   const reason = receipt.worktree.reason ?? receipt.branch.reason ?? receipt.targetSync.reason;
   return reason ? `${summary} ${landingError(reason)}` : summary;
 }

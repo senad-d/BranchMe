@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  Current-repository branch, worktree, integration, retirement, and pull request tools for <a href="https://pi.dev">pi</a>.
-  <br />Inspect branch state, manage verified linked worktrees, integrate or retire local branches, push, and open GitHub PRs from pi prompts.
+  Git repository initialization, branch, worktree, integration, retirement, and pull request tools for <a href="https://pi.dev">pi</a>.
+  <br />Initialize a repository, inspect branch state, manage verified linked worktrees, integrate or retire local branches, push, and open GitHub PRs from pi prompts.
 </p>
 
 ---
 
-BranchMe is a Pi extension for safe branch and worktree workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and fourteen agent-callable tools that refresh state, manage, integrate, and retire local branches, inspect/create/remove linked worktrees, push the current branch, and create GitHub pull requests.
+BranchMe is a Pi extension for safe Git repository, branch, and worktree workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and nineteen agent-callable tools that initialize a repository, refresh state, manage, integrate, and retire local branches, inspect/create/remove linked worktrees, push the current branch, and create GitHub pull requests.
 
 <table align="center">
   <tr>
@@ -30,14 +30,14 @@ BranchMe is a Pi extension for safe branch and worktree workflow automation. Bef
 </table>
 
 - **Context-aware:** every agent run starts with bounded branch, working-tree, related-PR, and recent-commit metadata; repository metadata is untrusted data, not instructions.
-- **Repository-scoped:** Git and GitHub operations resolve from the checkout where pi is running. Linked worktree directories may be outside that checkout, but must be verified members of the same repository.
+- **Repository-scoped:** `init_repository` can initialize only pi's exact current working directory when it is not already inside a repository. Other Git and GitHub operations resolve from the checkout where pi is running. Linked worktree directories may be outside that checkout, but must be verified members of the same repository.
 - **Explicit history rewrites:** `rebase_branch` runs only when explicitly requested, requires a clean current branch with an upstream, disables autostash and multi-ref updates, and automatically attempts to abort on failure.
 - **Verified worktree handoff:** `create_worktree` verifies path, branch, `HEAD`, and cleanliness before returning an absolute `handoff.cwd`; starting another Pi session or subagent there remains the caller's responsibility.
-- **Commit-safe:** context collection is read-only, and BranchMe never stages files, creates user-authored commits, accepts or generates commit messages, force-pushes, resets, or edits files directly. An explicit `integrate_branch` call may let Git create its standard merge commit for divergent local histories.
-- **Strict tools:** tool schemas reject undocumented properties such as `stash`, `discard`, `owner`, `repo`, `path`, or `baseRef`; the only force decision is the required boolean on `retire_branch`, and every tool accepts only its documented fields.
+- **Commit-safe:** context collection is read-only, and BranchMe never stages files, creates user-authored commits, accepts or generates commit messages, force-pushes, resets, or edits files directly. Explicit `integrate_branch` and `update_from_base` calls may let Git create a standard merge commit for divergent histories.
+- **Strict tools:** tool schemas reject undocumented properties such as `stash`, `discard`, `owner`, `repo`, or `path`; `baseRef` is supported only by `create_worktree` in new-branch mode; the only force decision is the required boolean on `retire_branch`, and every tool accepts only its documented fields.
 - **PR-ready:** create GitHub pull requests from existing local branches after verifying the `headBranch` matches GitHub and the base is visible. PR fields can stay explicit, or configured autofill can derive omitted fields from the current branch, default branch, and commit subjects.
 
-> **Security:** pi packages run with your full system permissions. BranchMe runs local `git` commands, may create or remove verified linked-worktree directories outside the active checkout, may integrate local history or retire one exact local branch ref, may make an automatic authenticated GitHub request to find a related open pull request, can update branches and remotes, and can create GitHub pull requests. Repository-configured hooks—including `reference-transaction` hooks invoked by retirement—merge drivers, filters, and signing policy may run commands or contact networks outside BranchMe's direct argv guarantees. Read [`SECURITY.md`](SECURITY.md).
+> **Security:** pi packages run with your full system permissions. BranchMe runs local `git` commands, may initialize `.git` metadata in the current directory, may create or remove verified linked-worktree directories outside the active checkout, may integrate local history or retire one exact local branch ref, may make an automatic authenticated GitHub request to find a related open pull request, can update branches and remotes, and can create GitHub pull requests. Repository-configured hooks—including `reference-transaction` hooks invoked by retirement—merge drivers, filters, and signing policy may run commands or contact networks outside BranchMe's direct argv guarantees. Read [`SECURITY.md`](SECURITY.md).
 
 ## Table of Contents
 
@@ -79,6 +79,10 @@ A normal prompt can use the automatic start-of-run snapshot without a tool call.
 Refresh the repository state with branch_status, then create a branch named feature/update-docs with create_branch.
 ```
 
+When pi starts in a directory that is not already inside a Git repository, explicitly ask it to call `init_repository`. The tool defaults to an unborn `main` branch, or accepts an optional `initialBranch`; it creates no commit, README, `.gitignore`, remote, or user configuration.
+
+Use `list_branches` to discover local and cached remote-tracking branches, upstream ahead/behind counts, and worktree occupancy. To join an existing remote branch in the active checkout, use `track_branch` rather than creating from the wrong `HEAD`.
+
 A typical BranchMe flow is:
 
 1. Use the automatic snapshot to understand state at the start of the agent run.
@@ -88,7 +92,9 @@ A typical BranchMe flow is:
 5. Create from the updated `HEAD` with `create_branch`.
 6. Make edits and commit outside BranchMe.
 7. Push the current branch with `push_branch`.
-8. After `push_branch` completes and GitHub can see the branches, create a pull request with `pull_request`.
+8. After `push_branch` completes and GitHub can see the branches, create or reuse a matching open pull request with `pull_request`.
+9. While working, use `update_from_base({ baseBranch: "main" })` to fetch and merge the remote base into the clean feature branch without rewriting published history or changing its upstream.
+10. Inspect the PR with `pull_request_status({ number: 123 })`. Merge it on GitHub outside BranchMe, then use `land_branch` from the primary checkout. Supply `pullRequestNumber: 123` for squash/rebase merge evidence.
 
 For isolated work, a specialized Git subagent can use the explicit worktree workflow:
 
@@ -96,16 +102,16 @@ For isolated work, a specialized Git subagent can use the explicit worktree work
 2. Ask the user to provide or approve an exact absolute destination and call `create_worktree` with `branchMode: "new"` or `"existing"`.
 3. Wait for the result and require `details.handoff.ready === true`.
 4. Have the caller or orchestrator start a **separate** Pi session or subagent with its working directory set to the returned absolute `details.handoff.cwd`.
-5. After that session finishes, remove or preserve any staged, unstaged, untracked, unmerged, or ignored local files, then explicitly call `remove_worktree` if removal was requested. Removal retains the local branch.
+5. After that session finishes, remove or preserve any staged, unstaged, untracked, or unmerged files, then explicitly call `remove_worktree` if removal was requested. Ignored residue is protected by default; after preserving anything valuable, explicitly set `deleteIgnored: true` to delete it with the worktree. Removal retains the local branch.
 6. If the user separately asks to retire that retained branch, obtain its fresh exact `HEAD`, verify it against an exact local target, and call `retire_branch` only after worktree removal has completed.
 
-After a pull request merges on the host, use [`land_branch`](#post-merge-cleanup-in-one-call) from the repository root instead of composing fetch/removal/retirement/sync calls. This explicitly authorized combined workflow deletes ignored worktree residue and retires the source branch; standalone `remove_worktree` continues to retain the branch and refuse ignored residue.
+After a pull request merges on the host, use [`land_branch`](#post-merge-cleanup-in-one-call) from the repository root instead of composing fetch/removal/retirement/sync calls. This combined workflow deletes ignored worktree residue and retires the source branch. Standalone `remove_worktree` always retains the branch and protects ignored residue unless `deleteIgnored: true` explicitly authorizes its deletion.
 
 BranchMe does not change the active Pi process's cwd, start Pi or other processes, create sessions, or copy `.env` or other ignored/untracked files. For credentials needed by agents in linked worktrees, prefer process-level environment variables rather than copying repository-root secrets.
 
 To refresh the current branch's configured remote-tracking ref without changing the local branch or working tree, use `fetch_branch` with no arguments. To refresh another remote-tracking ref — for example `origin/main` after a pull request merged on GitHub — call `fetch_branch` with `branch` (and optional `remote`, default `origin`); the targeted fetch never touches local branches, the working tree, or the current branch's upstream configuration. To reconcile the clean current branch by rewriting its local commits, run `fetch_branch`, wait for it to complete, and then run `rebase_branch`. The no-argument `fetch_branch` and `rebase_branch` require a configured upstream; `rebase_branch` automatically attempts `git rebase --abort` if rebasing fails.
 
-BranchMe is tool-based. The slash command is informational only and never changes or updates branches, creates or removes worktrees, changes cwd, starts processes/sessions, fetches, rebases, pushes, commits, stages, edits files, or opens pull requests.
+BranchMe is tool-based. The slash command is informational only and never initializes repositories, changes or updates branches, creates or removes worktrees, changes cwd, starts processes/sessions, fetches, rebases, pushes, commits, stages, edits files, or opens pull requests.
 
 ---
 
@@ -141,7 +147,7 @@ pi install /absolute/path/to/branchme
 
 ## Repository and GitHub Setup
 
-BranchMe does not bundle Git and does not create repositories. Start pi from inside the repository you want BranchMe to manage:
+BranchMe does not bundle Git. Start pi inside an existing repository, or start it in an existing non-repository directory and explicitly request `init_repository`:
 
 ```bash
 cd /path/to/your/git/repo
@@ -149,6 +155,17 @@ git status
 git remote get-url origin
 pi
 ```
+
+For a new repository:
+
+```bash
+mkdir my-project
+cd my-project
+pi
+# Ask: Initialize this directory with init_repository.
+```
+
+Initialization rejects existing or nested repositories, defaults to an unborn `main` branch, and creates no commit or project files. Git environment overrides that redirect repository paths or discovery must be unset. Failed or unrecognized repository discovery is not treated as permission to initialize; uncertain postconditions require inspection without automatic cleanup.
 
 For pull requests, the repository must resolve to GitHub from local `origin` and/or `GITHUB_REPOSITORY`:
 
@@ -226,12 +243,17 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 
 | Tool | Schema | Behavior |
 | --- | --- | --- |
+| `list_branches` | `{}` | Read up to 200 local and cached remote-tracking branches, commits, current/upstream state, ahead/behind counts, symbolic refs, and worktree occupancy. No fetch. Raw refs are limited to 128 KiB and text to 4,000 characters; omitted entries are reported. Names/paths are display metadata, not guaranteed executable identities. |
+| `track_branch` | `{ "branchName": string, "remote"?: string, "remoteBranch"?: string }` | Fetch one exact remote branch and create/check out a new local tracking branch. Remote defaults to `origin`; remoteBranch defaults to branchName. Requires a clean idle checkout; verifies HEAD and upstream. |
+| `update_from_base` | `{ "baseBranch": string, "remote"?: string }` | Fetch the exact remote base (remote defaults to `origin`) and merge its captured commit into the clean current feature. Uses verified normal-merge policy and automatic conflict abort; never rebases, pushes, or changes upstream configuration. |
+| `pull_request_status` | `{ "number"?: integer, "headBranch"?: string }` | Read exact same-repository PR lifecycle and head/base/merge identities. Number and headBranch are mutually exclusive. Without number, returns the most recently updated PR for headBranch or the current branch. Does not certify CI checks or review approvals. |
+| `init_repository` | `{ "initialBranch"?: string }` | Initializes only pi's exact current working directory as a verified non-bare Git repository with an unborn branch (default `main`). Rejects existing or nested repositories and accepts no path, bare, template, shared, remote, commit, or project-file controls. |
 | `branch_status` | `{ "ancestry"?: { "sourceBranch": string, "targetBranch": string } }` | Explicitly refreshes the same bounded context used at agent start. An optional strict ancestry query captures both exact HEADs and reports whether the source commit is an ancestor of the target commit; each endpoint may be an exact local branch or a remote-tracking ref such as `origin/main` (a local branch of the same name takes precedence). It is read-only and never checks out or resets remote-tracking refs; automatic Git context does not run ancestry queries. |
 | `list_worktrees` | `{}` | Runs a bounded, read-only inventory of the current repository's main and linked worktrees, including path, branch/detached state, `HEAD`, current/main, locked, prunable, and omitted-entry details. Automatic Git context does not include this inventory. |
 | `create_worktree` | `{ "worktreePath": string, "branchName": string, "branchMode": "new" \| "existing", "baseRef"?: string }` | Creates and verifies a linked worktree at an explicitly approved absolute path. `new` creates a local branch from current `HEAD`, or from the optional read-only `baseRef` (an exact local branch, remote-tracking ref such as `origin/main`, or full commit) regardless of the current checkout's branch, dirt, or staleness; `existing` requires an existing local branch not checked out elsewhere and rejects `baseRef`. It returns a ready handoff with the exact canonical absolute cwd and local branch identity. |
-| `remove_worktree` | `{ "worktreePath": string }` | Force-free removal of an explicitly selected, verified clean linked worktree. It rejects the main/current, detached, locked, prunable/missing, dirty, ignored-file-containing, or foreign worktree and verifies that the local branch remains at the same commit. |
+| `remove_worktree` | `{ "worktreePath": string, "deleteIgnored"?: boolean }` | Force-free removal of an explicitly selected, verified clean linked worktree. Ignored residue is refused by default; `deleteIgnored: true` explicitly deletes it and reports its top-level paths. The local branch remains at the same commit. |
 | `retire_branch` | `{ "branchName": string, "expectedHead": string, "targetBranch": string, "force": boolean }` | Deletes only the exact unoccupied local branch ref when its direct ref matches the supplied full commit ID and its relationship to the exact local target has been verified. Unmerged retirement requires explicit `force: true`; remote and remote-tracking refs are untouched. |
-| `land_branch` | `{ "sourceBranch": string, "targetBranch": string, "remote"?: string, "worktreePath"?: string }` | Post-merge fetch, ancestry proof, linked-worktree removal including ignored residue, leased local source deletion, and independent fast-forward target sync. Default remote `origin`; omitted path finds the source's linked worktree. Returns per-step receipts. |
+| `land_branch` | `{ "sourceBranch": string, "targetBranch": string, "remote"?: string, "worktreePath"?: string, "pullRequestNumber"?: integer }` | Post-merge fetch, ancestry or exact merged-PR proof, linked-worktree removal including ignored residue, leased local source deletion, and independent fast-forward target sync. Default remote `origin`; omitted path finds the source's linked worktree. Returns per-step receipts. |
 | `change_branch` | `{ "branchName": string }` | Validates `branchName`, requires `refs/heads/<branchName>` to exist locally, rejects dirty worktrees, and runs `git switch <branchName>`. |
 | `fetch_branch` | `{ "remote"?: string, "branch"?: string }` | With no arguments it requires a current branch with a configured upstream and runs `git fetch --no-tags --no-recurse-submodules <upstream-remote> <upstream-branch-ref>:<remote-tracking-ref>`. With `branch` (and optional `remote`, default `origin`; `remote` requires `branch`) it fetches that exact remote branch into `refs/remotes/<remote>/<branch>` instead. Either way only that tracking ref is refreshed without changing local branches, working-tree files, or upstream configuration. |
 | `pull_branch` | `{}` | Requires a clean current branch with a configured upstream and runs `git pull --ff-only --no-rebase --no-autostash <upstream-remote> <upstream-branch-ref>`; divergence fails without rebasing or creating a merge commit. |
@@ -241,11 +263,17 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | `push_branch` | `{}` | Pushes the current branch to its configured upstream remote with an explicit `HEAD:<upstream-branch-ref>` refspec, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
 | `pull_request` | `{ "headBranch"?: string, "baseBranch"?: string, "title"?: string, "body"?: string, "draft"?: boolean }` | Preflights GitHub branch visibility and verifies the GitHub `headBranch` commit matches the local branch, then creates a pull request in the resolved current repository. Omitted fields require `BRANCHME_PR_AUTOFILL=true`; branch refs must be distinct, exist locally, and cannot use `owner:branch`. |
 
-All schemas reject additional properties. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `fetch_branch` accepts only the optional `remote` and `branch` pair for a targeted remote-tracking refresh (`remote` requires `branch`) and never accepts refspec, tags, prune, or force controls. `pull_branch` and `rebase_branch` have strict empty schemas and never accept a branch, remote, refspec, force, autostash, or arbitrary rebase target. `integrate_branch` requires exactly `sourceBranch` and `targetBranch`; it accepts no repository, path, remote, strategy, message, squash, signing, commit, continuation, abort, force, fetch, push, deletion, or worktree controls. `create_worktree` requires exactly `worktreePath`, `branchName`, and `branchMode`, plus an optional read-only `baseRef` start point for `branchMode: "new"`; `remove_worktree` requires exactly `worktreePath`. No worktree tool accepts force, move, prune, repair, lock, unlock, detached, orphan, remote, or refspec controls. `retire_branch` requires exactly `branchName`, a full 40- or 64-hex-character `expectedHead`, a distinct local `targetBranch`, and the boolean `force` decision; it accepts no repository, path, remote, refspec, pattern, branch list, prune, remote-delete, worktree-removal, or inferred-target control. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`. `continue_merge` and `abort_merge` are not available.
+All schemas reject additional properties. `init_repository` accepts only optional `initialBranch`, never a path or repository-mode controls. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `fetch_branch` accepts only the optional `remote` and `branch` pair for a targeted remote-tracking refresh (`remote` requires `branch`) and never accepts refspec, tags, prune, or force controls. `pull_branch` and `rebase_branch` have strict empty schemas and never accept a branch, remote, refspec, force, autostash, or arbitrary rebase target. `integrate_branch` requires exactly `sourceBranch` and `targetBranch`; it accepts no repository, path, remote, strategy, message, squash, signing, commit, continuation, abort, force, fetch, push, deletion, or worktree controls. `create_worktree` requires exactly `worktreePath`, `branchName`, and `branchMode`, plus an optional read-only `baseRef` start point for `branchMode: "new"`; `remove_worktree` requires `worktreePath` and accepts optional boolean `deleteIgnored`. No worktree tool accepts force, move, prune, repair, lock, unlock, detached, orphan, remote, or refspec controls. `retire_branch` requires exactly `branchName`, a full 40- or 64-hex-character `expectedHead`, a distinct local `targetBranch`, and the boolean `force` decision; it accepts no repository, path, remote, refspec, pattern, branch list, prune, remote-delete, worktree-removal, or inferred-target control. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`. `continue_merge` and `abort_merge` are not available.
 
 ---
 
 ## Workflow and Boundaries
+
+### PR retries and lifecycle inspection
+
+`pull_request` first verifies GitHub branch visibility and head/local commit equality, then looks for an open PR. An exact head-commit/base match returns `outcome: "existing"` without a POST; otherwise creation returns `outcome: "created"`. Existing title, body, and draft state are preserved, not updated. A different base or stale PR head fails closed. A concurrent creation causing HTTP 422 triggers one read-only recheck, never another POST.
+
+`pull_request_status` reads open, closed-unmerged, and merged PRs with a 10-second deadline per API request and a 64 KiB response limit. A successful empty branch lookup returns `pullRequest: null`; authentication, network, or malformed-response failures are errors rather than "no PR". Exact-number lookup is preferred for cleanup evidence. Fork PRs, PR edits/merges, review and required-check policy, clone, remote configuration/deletion, and explicit first-push destination selection remain outside this implementation.
 
 ### Automatic context and freshness
 
@@ -330,11 +358,21 @@ For `branchMode: "new"`, BranchMe creates the requested local branch from the cu
 
 The full details also distinguish requested input from verified before/after state. Successful `handoff.cwd` and `handoff.branch` values are the exact identities verified against Git; BranchMe never substitutes `[REDACTED]`, escaped control sequences, or a truncation ellipsis in these machine-readable fields. Display content, summaries, and worktree inventory remain sanitized and bounded separately. An orchestrator may use `handoff.cwd` only after `ready` is `true`, and must start the next Pi session or subagent itself with that exact working directory. BranchMe never changes the active process's cwd or starts another process/session.
 
-`remove_worktree` canonicalizes the approved absolute path and requires an exact match in a fresh inventory for the current repository. It accepts only a present, unlocked, non-prunable, non-bare, branch-attached linked worktree that is neither main nor current, then rejects staged, unstaged, untracked, unmerged, or ignored entries. The canonical path and retained branch must pass the same pre-mutation lossless-identity checks used for creation. The ignored-entry preflight is bounded and does not return ignored paths. Removal uses `git worktree remove <verified-path>` without force, verifies the entry is gone, and returns the exact retained branch identity after confirming it still points to the captured commit:
+`remove_worktree` canonicalizes the approved absolute path and requires an exact match in a fresh inventory for the current repository. It accepts only a present, unlocked, non-prunable, non-bare, branch-attached linked worktree that is neither main nor current, then rejects staged, unstaged, untracked, or unmerged entries. Ignored entries are refused by default without disclosing their paths. Optional `deleteIgnored: true` explicitly authorizes deleting all ignored files and directories with the worktree; preserve `.env`, `.pi/`, dependency caches, build output, or other valuable residue first:
+
+```json
+{
+  "worktreePath": "/absolute/path/to/branchme-feature",
+  "deleteIgnored": true
+}
+```
+
+The bounded receipt reports only redacted top-level ignored paths in `deletedIgnoredPaths`, never contents. The canonical path and retained branch must pass the same pre-mutation lossless-identity checks used for creation. Removal uses `git worktree remove <verified-path>` without force, verifies the entry is gone, and returns the exact retained branch identity after confirming it still points to the captured commit:
 
 ```json
 {
   "action": "remove_worktree",
+  "deletedIgnoredPaths": [],
   "handoff": {
     "cwd": null,
     "branch": "feature/worktree-docs",
@@ -362,7 +400,7 @@ After the pull request **merged on the host**, run from the repository root:
 
 `remote` defaults to `origin`. Omit `worktreePath` to find the linked worktree holding `sourceBranch`, if any. An explicit path can also select a worktree incorrectly parked on `targetBranch`; unrelated branches, primary/root checkouts, detached, locked, dirty, or foreign worktrees are not removed. Invocation from inside the removal directory (including a nested or symlinked cwd) is refused: **run from the repository root**. Other caller directories in the same repository are supported; every Git command has an explicit `-C` directory, and cleanup runs through the primary checkout without switching any branches.
 
-The tool fetches the exact remote target and requires the captured source tip to be its ancestor before cleanup. Squash/rebase merges that do not preserve ancestry are refused; there is no force escape hatch. Tracked/staged changes and non-ignored untracked files block removal. **Ignored `.env`, `.pi/`, `node_modules/`, `dist/`, and other ignored residue are deleted with the worktree**; preserve anything needed first. Only their top-level path entries, never contents, appear in `deletedIgnoredPaths`. Source retirement uses the captured expected-HEAD lease and the **remote-tracking target**, not local `HEAD` or a stale local target.
+The tool fetches the exact remote target and by default requires the captured source tip to be its ancestor before cleanup. For squash/rebase merges, supply `pullRequestNumber`. BranchMe verifies a closed, merged PR in the same GitHub repository as the configured landing remote, exact head/base branch names, the source SHA, and containment of the reported merge commit in the fetched target. Supplying a PR number requires valid evidence even when ordinary ancestry succeeds. There is no general force escape hatch. This host-merge proof authorizes retiring the original rewritten source history; those original commits may eventually become unreachable. An existing selected source checkout must match the proven PR head exactly; a checkout parked on the target still needs target ancestry. Tracked/staged changes and non-ignored untracked files block removal. **Ignored `.env`, `.pi/`, `node_modules/`, `dist/`, and other ignored residue are deleted with the worktree**; preserve anything needed first. Only their top-level path entries, never contents, appear in `deletedIgnoredPaths`. Source retirement uses the captured expected-HEAD lease and the **remote-tracking target**, not local `HEAD` or a stale local target.
 
 Target sync is last, even when worktree removal or branch retirement is refused:
 
@@ -374,7 +412,7 @@ Target sync is last, even when worktree removal or branch retirement is refused:
 | `noop` | Local target already equals the captured remote head; no sync mutation. |
 | `not-run` / `failed` | Initial safety/ancestry refusal or sync failure; a successful fast-forward is never inferred from Git's prose. |
 
-The structured result contains `repositoryRoot`, `remote`, `targetBranch`, `remoteTargetHead`, `sourceBranch`, `sourceHead`, `ancestry.isAncestor`, `worktree`, `branch`, `targetSync`, and ordered `steps`, plus a one-line summary. Worktree outcomes are `removed`/`absent`/`refused`; branch outcomes are `deleted`/`absent`/`refused`. Full target `before`/`after` IDs are read from the exact local ref in this call. Unknown/not-applicable identities and ancestry are `null`, not invented proofs. A second successful call reports absent cleanup and `noop` sync. An already-missing directory is reported absent without pruning a remaining registration; such occupancy can still block branch deletion.
+The structured result contains `repositoryRoot`, `remote`, `targetBranch`, `remoteTargetHead`, `sourceBranch`, `sourceHead`, `ancestry.isAncestor`, `mergeProof`, `pullRequest`, `worktree`, `branch`, `targetSync`, and ordered `steps`, plus a one-line summary. Worktree outcomes are `removed`/`absent`/`refused`; branch outcomes are `deleted`/`absent`/`refused`. Full target `before`/`after` IDs are read from the exact local ref in this call. Unknown/not-applicable identities and ancestry are `null`, not invented proofs. A second successful call reports absent cleanup and `noop` sync. An already-missing directory is reported absent without pruning a remaining registration; such occupancy can still block branch deletion.
 
 `land_branch` never stashes, resets, checks out/switches branches, force-updates, pushes, prunes, or deletes remote/tracking refs. It holds one process-local primary-root mutation queue; it cannot lock other Pi/external Git processes. Inspect each receipt outcome before declaring landing complete. Standalone `remove_worktree` and `retire_branch` retain their original contracts.
 
@@ -425,7 +463,7 @@ BranchMe operates only on the repository where pi is running:
 - `pull_request` creates PRs only for the resolved current GitHub repository, requires resolved `headBranch` and `baseBranch` values to be distinct and exist locally, requires the GitHub `headBranch` commit to match the local branch, queues behind in-flight same-repository git mutation windows when possible, and rejects `owner:branch` head refs. Missing PR fields fail unless `BRANCHME_PR_AUTOFILL=true`.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
-BranchMe intentionally does **not** stage files, create user-authored commits, accept or generate commit messages, force checkout, stash changes, discard changes, force-push, reset, edit files directly, copy ignored/untracked files between worktrees, or delete branches during standalone `remove_worktree`. Rebase-driven rewriting occurs only through explicit `rebase_branch`; a Git-generated standard merge commit is possible only through explicit `integrate_branch` for divergent histories; one exact local ref can be deleted only through explicit `retire_branch` or merged-only `land_branch` under the leased boundaries above.
+BranchMe intentionally does **not** stage files, create user-authored commits, accept or generate commit messages, force checkout, stash changes, discard changes, force-push, reset, edit files directly, copy ignored/untracked files between worktrees, or delete branches during standalone `remove_worktree`. Rebase-driven rewriting occurs only through explicit `rebase_branch`; a Git-generated standard merge commit is possible through explicit `integrate_branch` or `update_from_base` for divergent histories; one exact local ref can be deleted only through explicit `retire_branch` or merged-only `land_branch` under the leased boundaries above.
 
 ---
 
@@ -467,13 +505,13 @@ Ensure the token and Git credentials have permission for the branch and pull req
 
 | Problem | Try |
 | --- | --- |
-| Not a git repository | Start pi from inside a git checkout. |
+| Not a git repository | Start pi from inside a git checkout, or explicitly request `init_repository` for a new project directory. |
 | Detached `HEAD` | Use `change_branch` to switch to an existing local branch, or checkout a branch before `fetch_branch`, `pull_branch`, `rebase_branch`, `create_branch`, or `push_branch`. |
 | Branch already exists | Choose a new local branch name for `create_branch`, or use `change_branch` to switch to it. |
-| Branch does not exist locally | Create a local branch first; `change_branch` and `create_worktree` existing mode do not infer local branches from remote branches. |
+| Branch does not exist locally | Use `track_branch` for an existing remote branch; `change_branch` and `create_worktree` existing mode still require local branches. |
 | Worktree destination rejected | Provide an exact absolute path whose immediate parent exists; the destination must not exist or be inside another registered worktree or the repository's common Git directory. Its canonical path and branch identity must also fit the documented limits without credential-like token text or characters that require escaping. |
 | Existing worktree branch is occupied | Choose another existing local branch or remove its other linked checkout after cleaning it; BranchMe does not force multiple checkouts. |
-| Worktree removal rejected | Use `list_worktrees`, select a non-main/non-current linked worktree, and remove or preserve staged, unstaged, untracked, unmerged, and ignored files outside the checkout. Locked, detached, prunable/missing, bare, and foreign paths are not removable. |
+| Worktree removal rejected | Use `list_worktrees` and select a non-main/non-current linked worktree. Remove or preserve staged, unstaged, untracked, and unmerged files. Preserve valuable ignored files, then retry with `deleteIgnored: true` if deleting the remaining ignored residue is intended. Locked, detached, prunable/missing, bare, and foreign paths are not removable. |
 | Linked-worktree agent cannot find credentials | Pass credentials through the process environment. BranchMe does not copy repository-root `.env` or other ignored/untracked files. |
 | Dirty worktree before branch switch, pull, rebase, or integration | Commit, stash, or discard changes outside BranchMe before using `change_branch`, `pull_branch`, `rebase_branch`, or a target control worktree for `integrate_branch`. |
 | Fetch, pull, or rebase has no upstream | Configure the current branch upstream outside BranchMe, then retry the tool. |
@@ -495,7 +533,7 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | PR branch does not exist locally | Create or fetch/check out the local `headBranch` and `baseBranch` branches first; BranchMe does not use remote-only or cross-repository PR refs. |
 | PR branch is not visible or is stale on GitHub | Run `push_branch`, wait for it to complete, then retry `pull_request`; do not batch `push_branch` and `pull_request` in the same assistant tool call. |
 | Repository mismatch | Make `origin` and `GITHUB_REPOSITORY` refer to the same `owner/repo`. |
-| Need a user-authored commit | Use CommitMe or normal Git commands. BranchMe does not stage files, accept commit messages, or create user-authored commits; only `integrate_branch` may let Git create a standard merge commit. |
+| Need a user-authored commit | Use CommitMe or normal Git commands. BranchMe does not stage files, accept commit messages, or create user-authored commits; `integrate_branch` and `update_from_base` may let Git create a standard merge commit. |
 | Other extensions interfere | Test with `pi --no-extensions -e .`. |
 
 ---
@@ -510,7 +548,7 @@ npm run check:pack
 printf '/branchme help\n/quit\n' | pi --no-extensions -e .
 ```
 
-Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, isolated real-Git worktree, branch-integration, and leased branch-retirement lifecycle tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all fourteen BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata, including `integrate_branch`, `retire_branch`, and targeted `branch_status.ancestry`, with no merge-continuation tool. Runtime smoke inspects retirement and landing registration/schema but never executes either cleanup tool. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
+Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, isolated real-Git worktree, branch-integration, and leased branch-retirement lifecycle tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all nineteen BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata, including `integrate_branch`, `retire_branch`, and targeted `branch_status.ancestry`, with no merge-continuation tool. Runtime smoke inspects retirement and landing registration/schema but never executes either cleanup tool. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
 
 Refresh TUI captures intentionally with:
 

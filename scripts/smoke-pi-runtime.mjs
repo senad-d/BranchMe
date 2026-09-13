@@ -15,6 +15,10 @@ const smokeTimeoutMs = 20_000;
 const runtimeVerifierCommandName = "branchmeverify";
 const runtimeVerifierMarker = "BRANCHME_RUNTIME_VERIFY:";
 const expectedBranchMeTools = [
+  { name: "list_branches", properties: [], required: [] },
+  { name: "track_branch", properties: ["branchName", "remote", "remoteBranch"], required: ["branchName"] },
+  { name: "update_from_base", properties: ["baseBranch", "remote"], required: ["baseBranch"] },
+  { name: "pull_request_status", properties: ["headBranch", "number"], required: [] },
   {
     name: "branch_status",
     properties: ["ancestry"],
@@ -27,6 +31,7 @@ const expectedBranchMeTools = [
     },
   },
   { name: "change_branch", properties: ["branchName"], required: ["branchName"] },
+  { name: "init_repository", properties: ["initialBranch"], required: [] },
   { name: "create_branch", properties: ["branchName"], required: ["branchName"] },
   { name: "fetch_branch", properties: ["branch", "remote"], required: [] },
   { name: "pull_branch", properties: [], required: [] },
@@ -41,7 +46,7 @@ const expectedBranchMeTools = [
   },
   {
     name: "land_branch",
-    properties: ["remote", "sourceBranch", "targetBranch", "worktreePath"],
+    properties: ["pullRequestNumber", "remote", "sourceBranch", "targetBranch", "worktreePath"],
     required: ["sourceBranch", "targetBranch"],
   },
   { name: "list_worktrees", properties: [], required: [] },
@@ -51,7 +56,7 @@ const expectedBranchMeTools = [
     required: ["worktreePath", "branchName", "branchMode"],
     enums: { branchMode: ["new", "existing"] },
   },
-  { name: "remove_worktree", properties: ["worktreePath"], required: ["worktreePath"] },
+  { name: "remove_worktree", properties: ["deleteIgnored", "worktreePath"], required: ["worktreePath"] },
 ];
 
 function isTruthy(value) {
@@ -229,7 +234,7 @@ export default function branchMeRuntimeVerifier(pi) {
       const failures = [];
       const tools = [];
 
-      if (expectedTools.length !== 14) failures.push("runtime verifier did not expect exactly fourteen BranchMe tools");
+      if (expectedTools.length !== 19) failures.push("runtime verifier did not expect exactly nineteen BranchMe tools");
       for (const forbiddenName of ["continue_merge", "abort_merge"]) {
         if (byName.has(forbiddenName) || activeTools.has(forbiddenName)) {
           failures.push(forbiddenName + " must not be registered or active");

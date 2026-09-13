@@ -557,3 +557,36 @@ The checkout validation suite does not run `smoke:pi:packed`. Worktree tool regi
 - The active changelog heading matches package version `0.1.8` and remains unreleased until an actual release date is known.
 - Documentation tests inspect the packaged project brief and all three worktree tool names.
 - Formatting, documentation tests, and package-content checks pass.
+
+### 16. Allow explicit ignored-residue deletion during standalone removal
+
+- [x] Add an explicit opt-in that lets `remove_worktree` delete ignored files and directories while preserving its safe default and retained-branch contract.
+
+#### Why
+
+Requiring every ignored entry to be removed manually leaves ordinary local-integration cleanup blocked by generated dependencies, build output, `.env`, and agent state. The combined `land_branch` path already supports this deletion, but its remote-ancestry workflow is not appropriate for every standalone worktree lifecycle.
+
+#### How
+
+- Add optional boolean `deleteIgnored`, defaulting to `false`, to the strict `remove_worktree` schema.
+- Keep ignored residue protected unless `deleteIgnored` is exactly `true`.
+- Continue rejecting tracked, staged, non-ignored untracked, and unmerged changes regardless of the option.
+- Report only redacted top-level deleted ignored paths and never file contents.
+- Preserve force-free removal, exact canonical-path verification, and retained-branch postconditions.
+- Require prompt guidance to obtain explicit user authorization before enabling deletion.
+
+#### Where
+
+- `src/git.ts`
+- `src/types.ts`
+- `src/tools/branchme-tools.ts`
+- `test/`
+- `scripts/smoke-pi-runtime.mjs`
+- Public worktree and security documentation
+
+#### Acceptance criteria
+
+- Omitted or false `deleteIgnored` preserves the worktree when ignored residue exists.
+- `deleteIgnored: true` removes an otherwise-clean linked worktree containing ignored residue.
+- The result lists redacted top-level ignored paths, retains the local branch, and uses no force or prune operation.
+- Strict schema, tool execution, real-Git integration, documentation, formatting, and type checks pass.

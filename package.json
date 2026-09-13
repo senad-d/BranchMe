@@ -1,8 +1,8 @@
 {
   "name": "@senad-d/branchme",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
-  "description": "Pi extension for verified current-repository Git branch, worktree, integration, retirement, push, and pull request workflows.",
+  "description": "Pi extension for verified Git repository initialization, branch, worktree, integration, retirement, push, and pull request workflows.",
   "license": "MIT",
   "author": "Senad Dizdarević <112484166+senad-d@users.noreply.github.com>",
   "repository": {
@@ -20,6 +20,7 @@
     "pi-coding-agent",
     "branchme",
     "git",
+    "git-init",
     "git-branch",
     "git-worktree",
     "git-workflow",

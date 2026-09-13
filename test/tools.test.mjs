@@ -16,6 +16,7 @@ import {
   GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
   GIT_RETIREMENT_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
+  INIT_REPOSITORY_TOOL_NAME,
   INTEGRATE_BRANCH_TOOL_NAME,
   LAND_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
@@ -28,6 +29,7 @@ import {
 } from "../src/constants.ts";
 import {
   formatCreateWorktree,
+  formatInitRepository,
   formatIntegrateBranch,
   formatListWorktrees,
   formatRemoveWorktree,
@@ -39,8 +41,13 @@ const LOCAL_HEAD_SHA = "a".repeat(40);
 const REMOTE_BASE_SHA = "b".repeat(40);
 const STALE_REMOTE_HEAD_SHA = "c".repeat(40);
 const EXPECTED_BRANCHME_TOOL_NAMES = [
+  "list_branches",
+  "track_branch",
+  "update_from_base",
+  "pull_request_status",
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
+  INIT_REPOSITORY_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
@@ -368,7 +375,7 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 14);
+  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 19);
   assert.deepEqual([...BRANCHME_TOOL_NAMES].sort(), [...EXPECTED_BRANCHME_TOOL_NAMES].sort());
   assert.equal(pi.tools.length, EXPECTED_BRANCHME_TOOL_NAMES.length);
   assert.equal(new Set(pi.tools.map((tool) => tool.name)).size, EXPECTED_BRANCHME_TOOL_NAMES.length);
@@ -396,6 +403,38 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
   assert.equal(pi.commands.some((command) => /template/i.test(command.name)), false);
   assert.equal(pi.tools.some((tool) => /template|greet|hello/i.test(tool.name)), false);
   assert.equal(pi.tools.some((tool) => /continue_merge|abort_merge|ancestry/i.test(tool.name)), false);
+});
+
+test("init_repository exposes a strict current-directory schema and initialization guidance", () => {
+  const pi = makePi();
+  registerBranchMeTools(pi);
+  const tool = toolByName(pi, INIT_REPOSITORY_TOOL_NAME);
+
+  assert.equal(tool.parameters.required, undefined);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["initialBranch"]);
+  assert.equal(tool.parameters.additionalProperties, false);
+  for (const unsupported of ["path", "directory", "bare", "template", "shared", "remote", "commit"]) {
+    assert.equal(unsupported in tool.parameters.properties, false);
+  }
+
+  assert.match(tool.description, /current working directory.*new non-bare Git repository/iu);
+  const guidance = tool.promptGuidelines.join(" ");
+  assert.match(guidance, /explicitly asks to initialize the current working directory/iu);
+  assert.match(guidance, /defaults to main.*never accepts or infers a path/iu);
+  assert.match(guidance, /rejects reinitialization and nested repositories/iu);
+  assert.match(guidance, /by itself.*before using repository-dependent Git tools/iu);
+
+  const content = formatInitRepository({
+    action: "init_repository",
+    request: { initialBranch: "main" },
+    repoRoot: "/tmp/new-repository",
+    gitDirectory: "/tmp/new-repository/.git",
+    initialBranch: "main",
+    bare: false,
+    unborn: true,
+  });
+  assert.match(content, /Initialized non-bare Git repository.*unborn initial branch main/iu);
+  assert.match(content, /No files were staged or committed/iu);
 });
 
 test("integrate_branch exposes a strict schema and explicit sequencing guidance", () => {
@@ -695,7 +734,8 @@ test("worktree tools expose strict schemas and named handoff-oriented prompt gui
   assert.equal(createTool.parameters.additionalProperties, false);
 
   assert.deepEqual(removeTool.parameters.required, ["worktreePath"]);
-  assert.deepEqual(Object.keys(removeTool.parameters.properties), ["worktreePath"]);
+  assert.deepEqual(Object.keys(removeTool.parameters.properties), ["worktreePath", "deleteIgnored"]);
+  assert.equal(removeTool.parameters.properties.deleteIgnored.type, "boolean");
   assert.equal(removeTool.parameters.additionalProperties, false);
 
   const unsupported = ["force", "remote", "detach", "orphan", "move", "prune", "repair", "lock", "unlock"];
@@ -718,6 +758,7 @@ test("worktree tools expose strict schemas and named handoff-oriented prompt gui
   assert.match(createTool.promptGuidelines.join(" "), /Do not batch.*wait.*handoff\.cwd/i);
   assert.match(removeTool.promptGuidelines.join(" "), /explicitly requests.*exact absolute worktreePath/i);
   assert.match(removeTool.promptGuidelines.join(" "), /never infer a filesystem path silently/i);
+  assert.match(removeTool.promptGuidelines.join(" "), /deleteIgnored: true.*explicitly authorizes deleting all ignored files/iu);
   assert.match(removeTool.promptGuidelines.join(" "), /Do not batch.*non-ready handoff/i);
 });
 
@@ -885,7 +926,7 @@ test("create_worktree and remove_worktree return verified mutation summaries and
         { stdout: mainRecord },
       ],
       [detailedStatusArgs.join("\0")]: { stdout: "" },
-      [ignoredWorktreeStatusArgs.join("\0")]: { stdout: "" },
+      [ignoredWorktreeStatusArgs.join("\0")]: { stdout: "!! .env\0" },
       [`rev-parse\0--verify\0refs/heads/${removeBranch}^{commit}`]: [
         { stdout: `${removeHead}\n` },
         { stdout: `${removeHead}\n` },
@@ -897,12 +938,14 @@ test("create_worktree and remove_worktree return verified mutation summaries and
 
     const removed = await removeTool.execute(
       "call-remove-worktree",
-      { worktreePath: removeTarget },
+      { worktreePath: removeTarget, deleteIgnored: true },
       removeController.signal,
       undefined,
       { ...ctx, cwd: repoRoot },
     );
 
+    assert.deepEqual(removed.details.request, { worktreePath: removeTarget, deleteIgnored: true });
+    assert.deepEqual(removed.details.deletedIgnoredPaths, [".env"]);
     assert.equal(removed.details.handoff.cwd, null);
     assert.equal(removed.details.handoff.ready, false);
     assert.equal(removed.details.verified.after.branchRetained, true);
@@ -1603,6 +1646,7 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
   const requests = [];
   const fetchImpl = async (url, init) => {
     requests.push({ url, init });
+    if (url.includes("/pulls?")) return jsonResponse([]);
     if (init.method === "GET") return jsonResponse(branchPayload(url.endsWith("/branches/feature%2Fsignal-pr") ? LOCAL_HEAD_SHA : REMOTE_BASE_SHA));
     return jsonResponse(pullRequestPayload({ head: { ref: "feature/signal-pr" } }), 201);
   };
@@ -1625,10 +1669,10 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
   );
 
   assert.ok(pi.calls.every((call) => call.options.signal === signal));
-  assert.deepEqual(
-    requests.map((request) => request.init.signal),
-    [signal, signal, signal],
-  );
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every((request) => request.init.signal instanceof AbortSignal));
+  controller.abort();
+  assert.ok(requests.every((request) => request.init.signal.aborted));
 });
 
 test("public BranchMe tools fail on killed status, switch, fetch, pull, rebase, and push operations", async () => {
@@ -1726,7 +1770,8 @@ test("pull_request stops after abort-like GitHub fetch failures", async () => {
   const scenarios = [
     { name: "head preflight", failAt: 1, expectedMethods: ["GET"] },
     { name: "base preflight", failAt: 2, expectedMethods: ["GET", "GET"] },
-    { name: "pull request creation", failAt: 3, expectedMethods: ["GET", "GET", "POST"] },
+    { name: "existing PR lookup", failAt: 3, expectedMethods: ["GET", "GET", "GET"] },
+    { name: "pull request creation", failAt: 4, expectedMethods: ["GET", "GET", "GET", "POST"] },
   ];
 
   for (const scenario of scenarios) {
@@ -1734,6 +1779,7 @@ test("pull_request stops after abort-like GitHub fetch failures", async () => {
     const fetchImpl = async (url, init) => {
       requests.push({ url, init });
       if (requests.length === scenario.failAt) throw abortLikeError();
+      if (url.includes("/pulls?")) return jsonResponse([]);
       if (init.method === "GET") return jsonResponse(branchPayload(url.endsWith("/branches/feature%2Fabort") ? LOCAL_HEAD_SHA : REMOTE_BASE_SHA));
       return jsonResponse(pullRequestPayload({ head: { ref: "feature/abort" } }), 201);
     };
@@ -1818,6 +1864,7 @@ test("pull_request autofills omitted fields when enabled without copying the act
   const requests = [];
   const fetchImpl = async (url, init) => {
     requests.push({ url, init });
+    if (url.includes("/pulls?")) return jsonResponse([]);
     if (init.method === "GET") return jsonResponse(branchPayload());
     return jsonResponse(
       pullRequestPayload({
@@ -2129,6 +2176,7 @@ test("pull_request queues behind an in-flight push_branch for the same repositor
   };
   const fetchImpl = async (url, init) => {
     events.push(`fetch:${init.method}:${url}`);
+    if (url.includes("/pulls?")) return jsonResponse([]);
     if (init.method === "GET") return jsonResponse(branchPayload());
     return jsonResponse(pullRequestPayload(), 201);
   };
@@ -2230,6 +2278,7 @@ test("pull_request creates a PR in the resolved current repository without leaki
   const requests = [];
   const fetchImpl = async (url, init) => {
     requests.push({ url, init });
+    if (url.includes("/pulls?")) return jsonResponse([]);
     if (init.method === "GET") return jsonResponse(branchPayload());
     return jsonResponse(pullRequestPayload(), 201);
   };
@@ -2259,17 +2308,19 @@ test("pull_request creates a PR in the resolved current repository without leaki
     head: "feature/current",
     base: "main",
     draft: false,
+    outcome: "created",
   });
   assert.deepEqual(
     requests.map((request) => [request.init.method, request.url]),
     [
       ["GET", "https://api.github.com/repos/senad-d/branchme/branches/feature%2Fcurrent"],
       ["GET", "https://api.github.com/repos/senad-d/branchme/branches/main"],
+      ["GET", "https://api.github.com/repos/senad-d/branchme/pulls?state=open&head=senad-d%3Afeature%2Fcurrent&sort=updated&direction=desc&per_page=2"],
       ["POST", "https://api.github.com/repos/senad-d/branchme/pulls"],
     ],
   );
-  assert.equal(requests[2].init.headers.Authorization, "Bearer ghp_secret123");
-  assert.deepEqual(JSON.parse(requests[2].init.body), {
+  assert.equal(requests[3].init.headers.Authorization, "Bearer ghp_secret123");
+  assert.deepEqual(JSON.parse(requests[3].init.body), {
     title: "Title",
     head: "feature/current",
     base: "main",
@@ -2287,6 +2338,7 @@ test("pull_request can use a local .env token fallback", async () => {
     const requests = [];
     const fetchImpl = async (url, init) => {
       requests.push({ url, init });
+      if (url.includes("/pulls?")) return jsonResponse([]);
       if (init.method === "GET") return jsonResponse(branchPayload());
       return jsonResponse(
         pullRequestPayload({
@@ -2332,6 +2384,7 @@ test("pull_request resolves .env token fallback from the verified git root", asy
     const requests = [];
     const fetchImpl = async (url, init) => {
       requests.push({ url, init });
+      if (url.includes("/pulls?")) return jsonResponse([]);
       if (init.method === "GET") return jsonResponse(branchPayload());
       return jsonResponse(
         pullRequestPayload({
@@ -2367,7 +2420,8 @@ test("pull_request resolves .env token fallback from the verified git root", asy
 });
 
 test("pull_request redacts GitHub API errors", async () => {
-  const fetchImpl = async (_url, init) => {
+  const fetchImpl = async (url, init) => {
+    if (url.includes("/pulls?")) return jsonResponse([]);
     if (init.method === "GET") return jsonResponse(branchPayload());
     return jsonResponse({ message: "bad token ghp_secret123" }, 401);
   };

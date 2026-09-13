@@ -370,7 +370,7 @@ test("registration is lazy and exposes strict landing schema and safety guidance
   assert.ok(BRANCHME_TOOL_NAMES.includes(LAND_BRANCH_TOOL_NAME));
   assert.ok(tool);
   assert.deepEqual(tool.parameters.required, ["sourceBranch", "targetBranch"]);
-  assert.deepEqual(Object.keys(tool.parameters.properties), ["sourceBranch", "targetBranch", "remote", "worktreePath"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["sourceBranch", "targetBranch", "remote", "worktreePath", "pullRequestNumber"]);
   assert.equal(tool.parameters.additionalProperties, false);
   const guidance = tool.promptGuidelines.join(" ");
   assert.match(guidance, /cwd-independent/u);
@@ -378,6 +378,105 @@ test("registration is lazy and exposes strict landing schema and safety guidance
   assert.match(guidance, /deletes ignored files/u);
   assert.match(guidance, /never touches a dirty checkout/u);
   assert.match(guidance, /pull request merged on the host/u);
+});
+
+async function rewrittenFixture(t, mode = "squash") {
+  const f = await fixture(false);
+  t.after(() => rm(f.temporaryRoot, { recursive: true, force: true }));
+  await writeFile(join(f.root, "base-only.txt"), "base\n");
+  await git(f.root, ["add", "."]);
+  await git(f.root, ["commit", "-m", "base advanced"]);
+  if (mode === "squash") {
+    await git(f.root, ["merge", "--squash", sourceBranch]);
+    await git(f.root, ["commit", "-m", "squash feature"]);
+  } else {
+    await git(f.root, ["cherry-pick", f.sourceHead]);
+  }
+  f.mergeHead = await head(f.root);
+  await git(f.root, ["push", "origin", "main"]);
+  f.remoteRefs = await git(f.origin, ["show-ref"]);
+  f.pr = {
+    number: 7, html_url: "https://github.com/example/project/pull/7", title: "Feature",
+    state: "closed", draft: false, merged: true, merged_at: "2026-01-02T12:00:00Z", merge_commit_sha: f.mergeHead,
+    head: { ref: sourceBranch, sha: f.sourceHead, repo: { full_name: "example/project" } },
+    base: { ref: targetBranch, sha: f.before, repo: { full_name: "example/project" } },
+  };
+  return f;
+}
+
+function prLandingPi(f, remoteUrl = "https://github.com/example/project.git") {
+  const delegate = realGitPi(f);
+  return { ...delegate, async exec(command, args, options) {
+    if (args.includes("get-url")) return { stdout: `${remoteUrl}\n`, stderr: "", code: 0, killed: false };
+    return delegate.exec(command, args, options);
+  } };
+}
+
+async function prLand(f, pr = f.pr, pi = prLandingPi(f)) {
+  return landBranch(pi, { cwd: f.root }, { sourceBranch, targetBranch, pullRequestNumber: 7 }, undefined, {
+    env: { GITHUB_TOKEN: "test-private-token", GITHUB_REPOSITORY: "example/project" },
+    fetchImpl: async () => new Response(JSON.stringify(pr)),
+  });
+}
+
+test("PR landing refuses a symbolic fetch destination before changing local refs", async (t) => {
+  const f = await rewrittenFixture(t);
+  await git(f.root, ["branch", "victim", f.before]);
+  await git(f.root, ["symbolic-ref", "refs/remotes/origin/main", "refs/heads/victim"]);
+  const before = await git(f.root, ["show-ref"]);
+  const pi = prLandingPi(f);
+  const receipt = await prLand(f, f.pr, pi);
+  assert.equal(receipt.worktree.outcome, "refused");
+  assert.equal(receipt.branch.outcome, "refused");
+  assert.equal(receipt.targetSync.mode, "not-run");
+  assert.match(receipt.branch.reason, /symbolic/);
+  assert.equal(await git(f.root, ["show-ref"]), before);
+  assert.ok(pi.calls.every((args) => !args.includes("fetch")));
+});
+
+test("squash and rebase landing requires exact PR evidence and preserves false graph ancestry", async (t) => {
+  for (const mode of ["squash", "rebase"]) {
+    const f = await rewrittenFixture(t, mode);
+    const refused = await land(f);
+    assert.equal(refused.branch.outcome, "refused");
+    await ignoredResidue(f.worktree);
+    const receipt = await prLand(f);
+    assert.equal(receipt.ancestry.isAncestor, false);
+    assert.equal(receipt.mergeProof, "pull-request");
+    assert.equal(receipt.pullRequest.headSha, f.sourceHead);
+    assert.equal(receipt.worktree.outcome, "removed", JSON.stringify(receipt));
+    assert.equal(receipt.branch.outcome, "deleted", JSON.stringify(receipt));
+    assert.equal(await git(f.origin, ["show-ref"]), f.remoteRefs);
+    assert.equal((await prLand(f)).branch.outcome, "absent");
+  }
+});
+
+test("PR landing refuses open, unmerged, wrong-identity and unreachable-merge evidence", async (t) => {
+  const f = await rewrittenFixture(t);
+  const invalid = [
+    { state: "open", merged: false, merged_at: null },
+    { merged: false, merged_at: null },
+    { head: { ...f.pr.head, sha: f.before } },
+    { head: { ...f.pr.head, ref: "unrelated" } },
+    { base: { ...f.pr.base, ref: "release" } },
+    { merge_commit_sha: null },
+    { merge_commit_sha: f.sourceHead },
+  ];
+  for (const overrides of invalid) {
+    const receipt = await prLand(f, { ...f.pr, ...overrides });
+    assert.equal(receipt.worktree.outcome, "refused");
+    assert.equal(receipt.branch.outcome, "refused");
+    assert.equal(receipt.targetSync.mode, "not-run");
+    assert.equal(await head(f.worktree), f.sourceHead);
+  }
+  const mismatch = await prLand(f, f.pr, prLandingPi(f, "https://github.com/other/project.git"));
+  assert.equal(mismatch.branch.outcome, "refused");
+  await writeFile(join(f.worktree, "extra.txt"), "extra\n");
+  await git(f.worktree, ["add", "."]);
+  await git(f.worktree, ["commit", "-m", "after merge"]);
+  const moved = await prLand(f);
+  assert.equal(moved.worktree.outcome, "refused");
+  assert.equal(moved.branch.outcome, "refused");
 });
 
 function unexpectedExec() {

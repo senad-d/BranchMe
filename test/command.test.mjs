@@ -141,6 +141,7 @@ test("/branchme help returns concise workflow and requirements through UI modes"
 
   assert.match(ctx.notifications[0].message, /## Workflow/);
   assert.match(ctx.notifications[0].message, /## Requirements/);
+  assert.match(ctx.notifications[0].message, /init_repository/);
   assert.match(ctx.notifications[0].message, /branch_status/);
   assert.match(ctx.notifications[0].message, /change_branch/);
   assert.match(ctx.notifications[0].message, /create_branch/);
@@ -165,6 +166,7 @@ test("/branchme help returns concise workflow and requirements through UI modes"
   assert.match(ctx.notifications[0].message, /list_worktrees/);
   assert.match(ctx.notifications[0].message, /create_worktree/);
   assert.match(ctx.notifications[0].message, /remove_worktree/);
+  assert.match(ctx.notifications[0].message, /deleteIgnored: true.*ignored residue/);
   assert.match(ctx.notifications[0].message, /absolute `handoff\.cwd`/);
   assert.match(ctx.notifications[0].message, /separate orchestrator starts the next Pi session or subagent/);
   assert.match(ctx.notifications[0].message, /does not change cwd, start Pi, or copy `\.env`.*remove_worktree.*never removes its retained branch automatically/);
@@ -605,5 +607,6 @@ test("BranchMe panel renderer does not leak ANSI escape bodies into visible text
   assert.match(visibleText, /STATUS/);
   assert.match(visibleText, /Workflow/);
   assert.doesNotMatch(visibleText, /Safety/);
+  assert.match(visibleText, /init_repository/);
   assert.doesNotMatch(visibleText, /WORKFLOW\s*\n/);
 });

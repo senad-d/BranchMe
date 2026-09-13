@@ -15,6 +15,7 @@ import {
   createWorktree,
   getRecentCommits,
   getWorkingTreeStatus,
+  initializeRepository,
   listWorktrees,
   pullCurrentBranch,
   removeWorktree,
@@ -706,6 +707,113 @@ test("real git integrateBranch leaves a dirty linked source worktree untouched",
   });
 });
 
+test("real git initializeRepository creates only a verified non-bare unborn repository", async (t) => {
+  const temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), "branchme-git-init-")));
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const repositoryPath = join(temporaryRoot, "new-repository");
+  await mkdir(repositoryPath);
+  await writeFile(join(repositoryPath, "existing.txt"), "preserve me\n", "utf8");
+  const pi = makeRealGitPi(repositoryPath);
+
+  const details = await initializeRepository(pi, { cwd: repositoryPath }, "trunk");
+
+  assert.deepEqual(details, {
+    action: "init_repository",
+    request: { initialBranch: "trunk" },
+    repoRoot: repositoryPath,
+    gitDirectory: join(repositoryPath, ".git"),
+    initialBranch: "trunk",
+    bare: false,
+    unborn: true,
+  });
+  assert.equal(await currentBranch(repositoryPath), "trunk");
+  assert.equal((await runGit(repositoryPath, ["rev-parse", "--is-bare-repository"])).stdout.trim(), "false");
+  assert.equal(await readFile(join(repositoryPath, "existing.txt"), "utf8"), "preserve me\n");
+  assert.equal((await execFileResult("git", ["rev-parse", "--verify", "HEAD"], { cwd: repositoryPath })).code !== 0, true);
+  assert.deepEqual(
+    pi.calls.filter((call) => call.args[0] === "init").map((call) => call.args),
+    [["init", "--no-template", "--initial-branch", "trunk"]],
+  );
+
+  await assert.rejects(
+    () => initializeRepository(pi, { cwd: repositoryPath }),
+    /already contains a \.git entry.*reinitialization is not allowed/iu,
+  );
+  const nestedPath = join(repositoryPath, "nested");
+  await mkdir(nestedPath);
+  await assert.rejects(
+    () => initializeRepository(pi, { cwd: nestedPath }),
+    /already inside a Git repository.*nested initialization is not allowed/iu,
+  );
+  assert.equal(pi.calls.filter((call) => call.args[0] === "init").length, 1);
+
+  const defaultRepositoryPath = join(temporaryRoot, "default-repository");
+  await mkdir(defaultRepositoryPath);
+  const defaultPi = makeRealGitPi(defaultRepositoryPath);
+  const defaultDetails = await initializeRepository(defaultPi, { cwd: defaultRepositoryPath });
+  assert.equal(defaultDetails.initialBranch, "main");
+  assert.equal(await currentBranch(defaultRepositoryPath), "main");
+});
+
+test("repository initialization refuses Git path overrides before executing Git", async (t) => {
+  const temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), "branchme-git-init-env-")));
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const pi = makeRealGitPi(temporaryRoot);
+  for (const key of ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_INDEX_FILE", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) {
+    const previous = process.env[key];
+    process.env[key] = join(temporaryRoot, "outside-target");
+    try {
+      await assert.rejects(initializeRepository(pi, { cwd: temporaryRoot }), /Git environment.*initialization/);
+      assert.equal(pi.calls.length, 0);
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  }
+  await assert.rejects(access(join(temporaryRoot, ".git")));
+});
+
+test("repository initialization refuses failed discovery instead of assuming a non-repository", async (t) => {
+  const temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), "branchme-git-init-probe-")));
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const delegate = makeRealGitPi(temporaryRoot);
+  const pi = { async exec(command, args, options) {
+    if (args.join(" ") === "rev-parse --git-dir") {
+      return { stdout: "", stderr: "fatal: detected dubious ownership in repository\n", code: 128, killed: false };
+    }
+    return delegate.exec(command, args, options);
+  } };
+  await assert.rejects(initializeRepository(pi, { cwd: temporaryRoot }), /discovery.*failed/);
+  assert.ok(delegate.calls.every((call) => call.args[0] !== "init"));
+  await assert.rejects(access(join(temporaryRoot, ".git")));
+});
+
+test("repository initialization preserves partial state and explains failed postconditions", async (t) => {
+  const temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), "branchme-git-init-postconditions-")));
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const delegate = makeRealGitPi(temporaryRoot);
+  const pi = { async exec(command, args, options) {
+    if (args.join(" ") === "rev-parse --is-bare-repository") {
+      return { stdout: "true\n", stderr: "", code: 0, killed: false };
+    }
+    return delegate.exec(command, args, options);
+  } };
+  await assert.rejects(initializeRepository(pi, { cwd: temporaryRoot }), /did not complete with verified postconditions.*Inspect the current directory.*no automatic cleanup/);
+  await access(join(temporaryRoot, ".git"));
+});
+
+test("repository initialization refuses nesting below invalid Git metadata", async (t) => {
+  const temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), "branchme-git-init-nesting-")));
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  await writeFile(join(temporaryRoot, ".git"), "gitdir: missing\n");
+  const nested = join(temporaryRoot, "nested");
+  await mkdir(nested);
+  const pi = makeRealGitPi(nested);
+  await assert.rejects(initializeRepository(pi, { cwd: nested }), /nested initialization is not allowed/);
+  assert.ok(pi.calls.every((call) => call.args[0] !== "init"));
+  await assert.rejects(access(join(nested, ".git")));
+});
+
 test("real git getBranchStatus reports a clean local repository", async () => {
   await withTempGitRepo(async (repoRoot) => {
     const pi = makeRealGitPi(repoRoot);
@@ -853,7 +961,7 @@ test("real git worktree lifecycle preserves a dirty source and retained branch",
   });
 });
 
-test("real git removeWorktree preserves a linked checkout containing an ignored local file", async () => {
+test("real git removeWorktree preserves ignored residue by default and deletes it with explicit authorization", async () => {
   await withTempGitRepo(async (repoRoot, temporaryRoot) => {
     const worktreePath = join(temporaryRoot, "feature-ignored-removal");
     const ignoredPath = join(worktreePath, ".env");
@@ -883,6 +991,13 @@ test("real git removeWorktree preserves a linked checkout containing an ignored 
       pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "remove"),
       false,
     );
+
+    const removed = await removeWorktree(pi, { cwd: repoRoot }, worktreePath, undefined, true);
+
+    assert.deepEqual(removed.request, { worktreePath, deleteIgnored: true });
+    assert.deepEqual(removed.deletedIgnoredPaths, [".env"]);
+    assert.equal(removed.verified.after.branchRetained, true);
+    await assert.rejects(() => realpath(worktreePath), { code: "ENOENT" });
   });
 });
 

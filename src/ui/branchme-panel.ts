@@ -179,7 +179,7 @@ function sectionFooter(section: BranchMePanelSection, data: BranchMePanelData): 
 
   switch (section) {
     case "status":
-      return "status • current repository only • tools perform actions";
+      return "status • init or current repository • tools perform actions";
     case "workflow":
       return "workflow • inspect → change → fetch/pull/rebase → create → push → PR";
     case "integration":
@@ -196,6 +196,7 @@ function sectionRows(section: BranchMePanelSection, data: BranchMePanelData): Pa
     case "status":
       return [
         heading("STATUS"),
+        workflowDetailRow("init_repository", "new current directory"),
         statusDetailRow("Current branch:", values.branch),
         statusDetailRow("GitHub repository:", values.repository),
         statusDetailRow("GitHub token:", values.token),
@@ -258,7 +259,7 @@ function renderNarrow(data: BranchMePanelData, width: number, selectedSection: B
   const counter = `${sectionIndex(section) + 1}/${PANEL_SECTIONS.length}`;
   const lines = [
     titleBorder(width, sectionLabel(section), theme),
-    framedLine("current repo only • informational", width, theme),
+    framedLine("init or current repo • informational", width, theme),
     framedLine(layoutCell(" ↑↓ section • q quit • /branchme help"), width, theme),
     horizontal(width, "├", "─", "┤", theme),
   ];

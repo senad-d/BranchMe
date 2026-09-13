@@ -8,6 +8,7 @@ import {
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  INIT_REPOSITORY_TOOL_NAME,
   INTEGRATE_BRANCH_TOOL_NAME,
   LAND_BRANCH_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
@@ -77,6 +78,8 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
   assertValid(tools.get(BRANCH_STATUS_TOOL_NAME), {
     ancestry: { sourceBranch: "feature/runtime-schema", targetBranch: "main" },
   });
+  assertValid(tools.get(INIT_REPOSITORY_TOOL_NAME), {});
+  assertValid(tools.get(INIT_REPOSITORY_TOOL_NAME), { initialBranch: "trunk" });
   assertValid(tools.get(CREATE_BRANCH_TOOL_NAME), { branchName: "feature/runtime-schema" });
   assertValid(tools.get(CHANGE_BRANCH_TOOL_NAME), { branchName: "feature/runtime-schema" });
   assertValid(tools.get(FETCH_BRANCH_TOOL_NAME), {});
@@ -119,6 +122,10 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
     baseRef: "origin/main",
   });
   assertValid(tools.get(REMOVE_WORKTREE_TOOL_NAME), { worktreePath: "/tmp/branchme-runtime-schema" });
+  assertValid(tools.get(REMOVE_WORKTREE_TOOL_NAME), {
+    worktreePath: "/tmp/branchme-runtime-schema-ignored",
+    deleteIgnored: true,
+  });
   assertValid(tools.get(PULL_REQUEST_TOOL_NAME), {
     headBranch: "feature/runtime-schema",
     baseBranch: "main",
@@ -128,11 +135,26 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
   });
 });
 
+test("runtime schema validation enforces strict init_repository inputs", () => {
+  const tool = registeredTools().get(INIT_REPOSITORY_TOOL_NAME);
+
+  assertValid(tool, {});
+  assertValid(tool, { initialBranch: "main" });
+  assertInvalid(tool, null);
+  assertInvalid(tool, { initialBranch: "" });
+  assertInvalid(tool, { initialBranch: [] });
+  for (const forbidden of ["path", "directory", "bare", "template", "shared", "remote", "commit"]) {
+    assertInvalid(tool, { [forbidden]: "forbidden" });
+  }
+});
+
 test("runtime schema validation enforces exact land_branch inputs", () => {
   const tool = registeredTools().get(LAND_BRANCH_TOOL_NAME);
   const required = { sourceBranch: "feature/merged", targetBranch: "main" };
   assertValid(tool, required);
-  assertValid(tool, { ...required, remote: "origin", worktreePath: "/tmp/linked" });
+  assertValid(tool, { ...required, remote: "origin", worktreePath: "/tmp/linked", pullRequestNumber: 7 });
+  assertInvalid(tool, { ...required, pullRequestNumber: 0 });
+  assertInvalid(tool, { ...required, pullRequestNumber: "invalid" });
   for (const args of [{}, { sourceBranch: "feature/merged" }, { targetBranch: "main" },
     { ...required, sourceBranch: "" }, { ...required, targetBranch: "" },
     { ...required, remote: "" }, { ...required, worktreePath: "" }]) {
@@ -313,6 +335,9 @@ test("runtime schema validation enforces strict create_worktree and remove_workt
   assertInvalid(removeTool, {});
   assertInvalid(removeTool, { worktreePath: "" });
   assertInvalid(removeTool, { worktreePath: [] });
+  assertValid(removeTool, { ...validRemove, deleteIgnored: true });
+  assertValid(removeTool, { ...validRemove, deleteIgnored: false });
+  assertInvalid(removeTool, { ...validRemove, deleteIgnored: {} });
 
   assertValid(createTool, { ...validCreate, baseRef: "origin/main" });
   assertValid(createTool, { ...validCreate, baseRef: "a".repeat(40) });

@@ -16,6 +16,8 @@ import {
   getCurrentBranch,
   getGitOperationState,
   getLocalBranchCommit,
+  getRemoteTrackingRefCommit,
+  inspectDirectRemoteTrackingRef,
   isCommitAncestor,
   isLosslessGitMetadata,
   parseWorkingTreeStatus,
@@ -44,6 +46,7 @@ export interface PreparedBranchIntegration {
   sourceHead: string;
   targetHead: string;
   sourceAlreadyIntegrated: boolean;
+  remoteSource?: true;
 }
 
 interface IntegrationStateSnapshot {
@@ -186,6 +189,20 @@ function parseConflictPaths(output: string): CapturedConflictPaths {
   };
 }
 
+async function integrationSourceHead(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  sourceBranch: string,
+  signal?: AbortSignal,
+  remoteSource = false,
+): Promise<string> {
+  if (!remoteSource) return getLocalBranchCommit(pi, ctx, sourceBranch, signal);
+  const ref = await inspectDirectRemoteTrackingRef(pi, ctx, sourceBranch, signal);
+  const head = await getRemoteTrackingRefCommit(pi, ctx, sourceBranch, signal);
+  if (ref.status !== "present" || ref.objectId !== head) throw new Error("Integration source must be a direct remote-tracking commit ref.");
+  return head;
+}
+
 async function inspectIntegrationState(
   pi: Pick<ExtensionAPI, "exec">,
   prepared: PreparedBranchIntegration,
@@ -195,7 +212,7 @@ async function inspectIntegrationState(
   const worktreeRoot = await getCanonicalGitWorktreeRoot(pi, rootCtx, signal);
   const canonicalCommonGitDirectory = await getCanonicalCommonGitDirectory(pi, rootCtx, signal);
   const current = await getCurrentBranch(pi, rootCtx, signal);
-  const sourceHead = await getLocalBranchCommit(pi, rootCtx, prepared.sourceBranch, signal);
+  const sourceHead = await integrationSourceHead(pi, rootCtx, prepared.sourceBranch, signal, prepared.remoteSource);
   const targetHead = await getLocalBranchCommit(pi, rootCtx, prepared.targetBranch, signal);
   const operationState = await getGitOperationState(pi, rootCtx, signal);
   const statusResult = await runGit(pi, rootCtx, INTEGRATION_STATUS_ARGS, {
@@ -357,7 +374,7 @@ async function runMerge(
   prepared: PreparedBranchIntegration,
   signal?: AbortSignal,
 ): Promise<Error | null> {
-  const args = mergeArgs(prepared.sourceBranch);
+  const args = prepared.remoteSource ? [...INTEGRATION_MERGE_POLICY_ARGS, prepared.sourceHead] : mergeArgs(prepared.sourceBranch);
   let result: GitExecResult;
   try {
     result = await runGit(pi, { cwd: prepared.worktreeRoot }, args, {
@@ -544,14 +561,16 @@ async function recoverFailedMerge(
   throw mergeFailure;
 }
 
-async function integrateBranchWithinQueue(
+// Caller holds the mutation queue. Remote sources are internal to update_from_base only.
+export async function integrateBranchWithinQueue(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   request: IntegrateBranchToolInput,
   queuedWorktreeRoot: string,
   signal?: AbortSignal,
+  remoteSource = false,
 ): Promise<IntegrateBranchDetails> {
-  const prepared = await prepareBranchIntegration(pi, ctx, request, signal);
+  const prepared = await prepareBranchIntegration(pi, ctx, request, signal, remoteSource);
   if (prepared.worktreeRoot !== queuedWorktreeRoot) {
     throw new Error("The control worktree changed while preparing branch integration.");
   }
@@ -591,6 +610,7 @@ export async function prepareBranchIntegration(
   ctx: GitCommandContext,
   request: IntegrateBranchToolInput,
   signal?: AbortSignal,
+  remoteSource = false,
 ): Promise<PreparedBranchIntegration> {
   validateBranchNameInput(request.sourceBranch, "Source branch");
   validateBranchNameInput(request.targetBranch, "Target branch");
@@ -604,9 +624,9 @@ export async function prepareBranchIntegration(
 
   await validateBranchName(pi, rootCtx, request.sourceBranch, signal);
   await validateBranchName(pi, rootCtx, request.targetBranch, signal);
-  await requireExistingLocalBranch(pi, rootCtx, request.sourceBranch, "Source", signal);
+  if (!remoteSource) await requireExistingLocalBranch(pi, rootCtx, request.sourceBranch, "Source", signal);
   await requireExistingLocalBranch(pi, rootCtx, request.targetBranch, "Target", signal);
-  const sourceHead = await getLocalBranchCommit(pi, rootCtx, request.sourceBranch, signal);
+  const sourceHead = await integrationSourceHead(pi, rootCtx, request.sourceBranch, signal, remoteSource);
   const targetHead = await getLocalBranchCommit(pi, rootCtx, request.targetBranch, signal);
 
   const current = await getCurrentBranch(pi, rootCtx, signal);
@@ -651,6 +671,7 @@ export async function prepareBranchIntegration(
     sourceHead,
     targetHead,
     sourceAlreadyIntegrated,
+    ...(remoteSource ? { remoteSource: true as const } : {}),
   };
 }
 

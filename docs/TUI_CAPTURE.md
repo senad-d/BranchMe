@@ -16,12 +16,13 @@ UPDATE_TUI_CAPTURE=1 node --test test/tui-capture.test.mjs
 ```text
 # BranchMe
 
-Current-repository Git workflow tools for Pi.
+Git repository initialization and current-repository workflow tools for Pi.
 
 Commands only show info; BranchMe tools perform actions.
 
 ## Workflow
 
+0. `init_repository` — initialize the current directory when it is not already inside a Git repository.
 1. `branch_status` — inspect repo and branch state.
 2. `change_branch` — switch to a clean existing local branch.
 3. `fetch_branch` — fetch its configured upstream remote (or an explicit `remote`/`branch`) without changing local files.
@@ -30,6 +31,15 @@ Commands only show info; BranchMe tools perform actions.
 6. Commit outside BranchMe.
 7. `push_branch` — push the current branch.
 8. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.
+
+## Discovery and PR lifecycle
+
+- `list_branches` — discover local/cached remote refs, upstream counts, and worktree occupancy without fetching.
+- `track_branch` — fetch an existing remote branch and verify a new clean local tracking checkout.
+- `update_from_base` — fetch and merge an explicit base into the current clean feature, preserving published history and upstream.
+- `pull_request_status` — inspect a PR by number, or the latest PR for a head branch; not a CI/review verdict.
+- `pull_request` — reuses an exact matching open PR without changing its title, body, or draft state.
+- `land_branch` — after host merge, clean up from the primary checkout; use `pullRequestNumber` for squash/rebase evidence.
 
 ## Branch integration
 
@@ -50,12 +60,12 @@ Commands only show info; BranchMe tools perform actions.
 - `list_worktrees` — inspect the main and linked worktrees in the current repository.
 - `create_worktree` — create a linked worktree and return a ready handoff with an absolute `handoff.cwd`.
 - A separate orchestrator starts the next Pi session or subagent in `handoff.cwd`.
-- `remove_worktree` — remove a verified clean linked worktree while retaining its local branch.
+- `remove_worktree` — remove a verified clean linked worktree while retaining its local branch; `deleteIgnored: true` explicitly deletes ignored residue.
 - BranchMe does not change cwd, start Pi, or copy `.env`; `remove_worktree` never removes its retained branch automatically.
 
 ## Requirements
 
-- Run inside a Git repo with `git` available.
+- Keep `git` available. Existing-repository tools run inside a Git repo; `init_repository` targets only the exact current non-repository directory.
 - For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN` (environment or `.env`).
 - Optional: set `BRANCHME_PR_AUTOFILL=true` in the environment or `.env` to generate omitted PR fields.
 - `fetch_branch` without `branch`, `pull_branch`, and `rebase_branch` require a configured upstream.
@@ -81,10 +91,11 @@ Width: 40
 
 ```text
 ╭ BranchMe ──────────────────── Status ╮
-│current repo only • informational     │
+│init or current repo • informational  │
 │ ↑↓ section • q quit • /branchme help │
 ├──────────────────────────────────────┤
 │ STATUS                               │
+│  init_repository  -> new current dir…│
 │  Current branch:    feature/current  │
 │  GitHub repository: senad-d/branchme │
 │  GitHub token:      present          │
@@ -92,9 +103,8 @@ Width: 40
 │                                      │
 │                                      │
 │                                      │
-│                                      │
 ├──────────────────────────────────────┤
-│ 1/4 • status • current repository on…│
+│ 1/4 • status • init or current repos…│
 ╰──────────────────────────────────────╯
 ```
 
@@ -104,7 +114,7 @@ Width: 40
 
 ```text
 ╭ BranchMe ───────────────── Lifecycle ╮
-│current repo only • informational     │
+│init or current repo • informational  │
 │ ↑↓ section • q quit • /branchme help │
 ├──────────────────────────────────────┤
 │ LIFECYCLE                            │
@@ -130,16 +140,16 @@ Width: 80
 │ ↑↓ section • q quit • /branchme help                                         │
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │▶  Status            │ STATUS                                                 │
-│   Workflow          │  Current branch:    feature/current                    │
-│   Lifecycle         │  GitHub repository: senad-d/branchme                   │
-│   Worktrees         │  GitHub token:      present                            │
-│                     │                                                        │
+│   Workflow          │  init_repository  -> new current directory             │
+│   Lifecycle         │  Current branch:    feature/current                    │
+│   Worktrees         │  GitHub repository: senad-d/branchme                   │
+│                     │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
-│ 1/4 • status • current repository only • tools perform actions               │
+│ 1/4 • status • init or current repository • tools perform actions            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -218,16 +228,16 @@ Width: 112
 │ ↑↓ section • q quit • /branchme help                                                         │
 ├──────────────────────┬───────────────────────────────────────────────────────────────────────┤
 │▶  Status             │ STATUS                                                                │
-│   Workflow           │  Current branch:    main                                              │
-│   Lifecycle          │  GitHub repository: senad-d/BranchMe                                  │
-│   Worktrees          │  GitHub token:      not set                                           │
-│                      │                                                                       │
+│   Workflow           │  init_repository  -> new current directory                            │
+│   Lifecycle          │  Current branch:    main                                              │
+│   Worktrees          │  GitHub repository: senad-d/BranchMe                                  │
+│                      │  GitHub token:      not set                                           │
 │                      │                                                                       │
 │                      │                                                                       │
 │                      │                                                                       │
 │                      │                                                                       │
 ├──────────────────────┴───────────────────────────────────────────────────────────────────────┤
-│ 1/4 • status • current repository only • tools perform actions                               │
+│ 1/4 • status • init or current repository • tools perform actions                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -237,14 +247,14 @@ Width: 50
 
 ```text
 ╭ BranchMe ────────────────────────────── Status ╮
-│current repo only • informational               │
+│init or current repo • informational            │
 │ ↑↓ section • q quit • /branchme help           │
 ├────────────────────────────────────────────────┤
 │ STATUS                                         │
+│  init_repository  -> new current directory     │
 │  Current branch:    detached HEAD              │
 │  GitHub repository: not resolved               │
 │  GitHub token:      not set                    │
-│                                                │
 │                                                │
 │                                                │
 │                                                │
@@ -263,10 +273,10 @@ Width: 80
 │ ↑↓ section • q quit • /branchme help                                         │
 ├─────────────────────┬────────────────────────────────────────────────────────┤
 │▶  Status            │ STATUS                                                 │
-│   Workflow          │  Current branch:    main                               │
-│   Lifecycle         │  GitHub repository: warning: Repository boundary misma…│
-│   Worktrees         │  GitHub token:      present                            │
-│                     │                                                        │
+│   Workflow          │  init_repository  -> new current directory             │
+│   Lifecycle         │  Current branch:    main                               │
+│   Worktrees         │  GitHub repository: warning: Repository boundary misma…│
+│                     │  GitHub token:      present                            │
 │                     │                                                        │
 │                     │                                                        │
 │                     │                                                        │
@@ -285,10 +295,10 @@ Width: 72
 │ ↑↓ section • q quit • /branchme help                                 │
 ├───────────────────┬──────────────────────────────────────────────────┤
 │▶  Status          │ STATUS                                           │
-│   Workflow        │  Current branch:    main                         │
-│   Lifecycle       │  GitHub repository: senad-d/branchme             │
-│   Worktrees       │  GitHub token:      warning: Unable to read .env…│
-│                   │                                                  │
+│   Workflow        │  init_repository  -> new current directory       │
+│   Lifecycle       │  Current branch:    main                         │
+│   Worktrees       │  GitHub repository: senad-d/branchme             │
+│                   │  GitHub token:      warning: Unable to read .env…│
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │
@@ -307,10 +317,10 @@ Width: 72
 │ ↑↓ section • q quit • /branchme help                                 │
 ├───────────────────┬──────────────────────────────────────────────────┤
 │▶  Status          │ STATUS                                           │
-│   Workflow        │  Current branch:    feature/super-long-branch-na…│
-│   Lifecycle       │  GitHub repository: very-long-owner-name/very-lo…│
-│   Worktrees       │  GitHub token:      present                      │
-│                   │                                                  │
+│   Workflow        │  init_repository  -> new current directory       │
+│   Lifecycle       │  Current branch:    feature/super-long-branch-na…│
+│   Worktrees       │  GitHub repository: very-long-owner-name/very-lo…│
+│                   │  GitHub token:      present                      │
 │                   │                                                  │
 │                   │                                                  │
 │                   │                                                  │

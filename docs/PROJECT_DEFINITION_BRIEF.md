@@ -14,25 +14,29 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` p
 - Display name: `BranchMe`
 - Exported extension function: `branchMeExtension`
 - Repository URL: `https://github.com/senad-d/branchme`
-- One-sentence pitch: Verified current-repository Pi tools for branch, integration, retirement, linked-worktree, push, and GitHub pull request workflows.
-- Tool count: fourteen strict agent-callable tools.
+- One-sentence pitch: Verified Pi tools for Git repository initialization plus current-repository branch, integration, retirement, linked-worktree, push, and GitHub pull request workflows.
+- Tool count: nineteen strict agent-callable tools.
 
 ## 3. Users and use cases
 
 - Primary users: Pi users, specialized Git subagents, orchestrators, and CI/GitHub Actions workflows.
 - Primary use cases:
+  - Initialize pi's exact current directory as a verified non-bare Git repository with an unborn initial branch.
   - Inspect bounded current-repository branch, upstream, working-tree, related-PR, and recent-commit state, with an optional explicit local source/target ancestry proof.
   - Integrate one exact existing local source branch into the already-current clean local target, returning verified no-op, fast-forward, merge-commit, or restored-conflict details.
   - List the current repository's main and linked worktrees explicitly.
-  - Create and verify a linked worktree for a new branch from current `HEAD` or an unoccupied existing local branch.
+  - Discover local/remote-tracking branches, upstream counts, and worktree occupancy with `list_branches`.
+  - Join an existing remote branch with verified `track_branch`, or merge a fresh remote base into the current feature with `update_from_base`.
+  - Create and verify a linked worktree from current `HEAD`, optional read-only `baseRef`, or an unoccupied existing local branch.
   - Return an exact, absolute, machine-readable worktree handoff for a caller-managed separate Pi session or subagent.
-  - Remove an exact verified linked worktree only when it is clean and contains no ignored entries, while retaining its local branch.
+  - Remove an exact verified clean linked worktree while retaining its local branch; protect ignored residue by default and delete it only with explicit `deleteIgnored: true` authorization.
   - Land a host-merged feature in one cwd-independent call: fetch/prove remote ancestry, remove a clean linked checkout including ignored residue, lease-delete the source branch, and sync the target independently without touching a dirty checkout.
   - Retire one exact unoccupied local branch ref only when it matches a full expected `HEAD` and its relationship to one exact local target has been verified; unmerged retirement requires explicit force authorization.
   - Switch to an existing local branch after a clean-worktree preflight or create a new branch from current `HEAD`.
   - Fetch a configured upstream tracking ref, fast-forward the current branch, or explicitly rebase it.
   - Push the current branch to its configured upstream, or publish it to `origin` when no upstream exists.
-  - Create a pull request in the resolved current GitHub repository through the REST API.
+  - Create or reuse an exact matching open PR in the resolved current GitHub repository; inspect lifecycle/commit identities with `pull_request_status`.
+  - Verify exact host-merge evidence through `land_branch.pullRequestNumber` for squash/rebase cleanup without falsifying graph ancestry.
 - Non-goals:
   - No staging, direct working-tree edits, user-authored commits, commit-message input/generation, diff generation, stashing, resets, or force pushes. Explicit `integrate_branch` may let Git create its standard merge commit for divergent histories.
   - No automatic Pi cwd changes, process/session creation, or copying of `.env` and other ignored/untracked files into linked worktrees.
@@ -46,15 +50,20 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` p
 | --- | --- | --- | --- |
 | Command | `/branchme` | Compact TUI status and workflow panel | Informational; no Git or GitHub mutations |
 | Command | `/branchme help` | Runtime requirements and workflow guidance | Informational; no actions |
-| Tool | `branch_status` | Refresh bounded current-worktree Git and related-PR context; optionally prove captured local-branch ancestry | Read-only; targeted ancestry is absent from automatic context |
+| Tool | `list_branches` | Discover local and cached remote-tracking refs | Bounded, read-only; includes upstream counts and worktree occupancy |
+| Tool | `track_branch` | Join an existing remote branch | Narrow fetch, clean idle checkout, verified HEAD/upstream |
+| Tool | `update_from_base` | Fetch and merge an explicit remote base | Preserves published history; fixed merge policy and automatic conflict abort |
+| Tool | `pull_request_status` | Read exact PR or latest PR for a head | Open/closed/merged state and commit identities; not a CI/review verdict |
+| Tool | `init_repository` | Initialize the exact current directory as a new non-bare Git repository | Optional initial branch; rejects reinitialization/nesting; no path, commit, or project-file controls |
+| Tool | `branch_status` | Refresh bounded current-worktree Git and related-PR context; optionally prove captured local or remote-tracking ancestry | Read-only; targeted ancestry is absent from automatic context |
 | Tool | `integrate_branch` | Integrate one exact local source into the already-current clean local target | Fixed normal-merge policy; verified automatic abort/restoration on conflict |
 | Tool | `list_worktrees` | List bounded main/linked worktree inventory | Read-only and explicit |
 | Tool | `create_worktree` | Create and verify a linked worktree | Exact absolute handoff cwd; new/existing local branch modes only |
-| Tool | `remove_worktree` | Remove an exact verified clean linked worktree | Force-free; ignored entries block removal; branch retained |
+| Tool | `remove_worktree` | Remove an exact verified clean linked worktree | Force-free; ignored entries protected by default and deletable with explicit `deleteIgnored: true`; branch retained |
 | Tool | `retire_branch` | Delete one exact verified local branch ref | Expected-`HEAD` lease; exact target ancestry; explicit force for unmerged history; local-only |
-| Tool | `land_branch` | Post-host-merge cleanup and final target sync in one call | Remote ancestry gate, ignored-residue deletion, leased local source deletion, per-step receipts; run from repository root |
+| Tool | `land_branch` | Post-host-merge cleanup and final target sync in one call | Remote ancestry or exact merged-PR evidence gate, ignored-residue deletion, leased local source deletion, per-step receipts; run from repository root |
 | Tool | `change_branch` | Switch to an existing local branch | Rejects dirty worktrees |
-| Tool | `fetch_branch` | Refresh the current branch's configured tracking ref | Explicit fetch refspec; no checkout change |
+| Tool | `fetch_branch` | Refresh a configured upstream or explicit remote branch's tracking ref | Explicit fetch refspec; no checkout change |
 | Tool | `pull_branch` | Fast-forward the clean current branch | No rebase, merge commit, or autostash |
 | Tool | `rebase_branch` | Rebase the clean current branch onto its upstream | Explicit history rewrite; automatic abort attempt on failure |
 | Tool | `create_branch` | Create and check out a new branch from current `HEAD` | Fails when invalid or already present |
@@ -81,11 +90,12 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` p
   - `src/github.ts`
   - `src/ui/branchme-panel.ts`
 - Module boundaries:
-  - The extension entry point registers the informational command, fourteen tools, and automatic context hook.
+  - The extension entry point registers the informational command, nineteen tools, and automatic context hook.
+  - `src/git-workflow.ts` and `src/tools/workflow-tools.ts` own verified remote tracking, base updates, and the new PR status registration.
   - The context module owns bounded read-only collection, prompt formatting, targeted ancestry rendering, and the `before_agent_start` hook; automatic context never runs ancestry queries.
   - The command and UI modules own mode-safe informational help/status behavior and never invoke mutations.
   - The tools module owns strict TypeBox schemas, descriptions, prompt metadata, bounded display content, and serializable result details.
-  - The general Git helper owns reusable argv-style current-repository inspection, branch/ref/ancestry and operation-state primitives, branch/upstream workflows, worktree parsing/path validation/create/remove verification, and process-local same-repository mutation serialization.
+  - The general Git helper owns verified current-directory initialization plus reusable argv-style current-repository inspection, branch/ref/ancestry and operation-state primitives, branch/upstream workflows, worktree parsing/path validation/create/remove verification, and process-local same-repository mutation serialization.
   - The integration module owns the clean-control preflight, fixed merge mutation, automatic conflict abort, outcome classification, and repository/ref/worktree/ancestry verification without absorbing that state machine into the general helper.
   - The retirement module owns exact request validation, direct-ref and expected-`HEAD` preflight, complete worktree occupancy checks, target ancestry, leased local-ref deletion, cancellation-safe verification, and bounded uncertain outcomes without absorbing that state machine into the general helper.
   - The GitHub helper owns repository resolution, token/autofill configuration, related-PR lookup, branch visibility and commit preflight, and pull request REST calls.
@@ -101,21 +111,22 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` p
 
 - Config source: no separate BranchMe config file. `GITHUB_TOKEN`, `GH_TOKEN`, and `BRANCHME_PR_AUTOFILL` use process-environment values first and may fall back to supported keys in a hardened regular `.env` file at the verified Git root.
 - Session state: no persisted BranchMe state. Tool calls return serializable details, and mutation/PR coordination is in-memory and process-local only; other Pi sessions and external Git processes are not locked.
+- Repository initialization: `init_repository` creates in-place `.git` metadata only in pi's canonical current directory after rejecting existing or nested repositories; it creates an unborn branch but no commit or project file.
 - Active-checkout mutations: explicit branch switching, creation, pull, rebase, and integration operations can update Git metadata and working-tree files through Git. Explicit retirement can delete one exact local branch ref. Push and fetch operations can update remote or remote-tracking refs through Git.
 - Linked-worktree mutations: `create_worktree` can create a checkout directory outside the active checkout after canonical destination and repository-boundary validation. `remove_worktree` can recursively remove only an exact verified linked-worktree directory after clean and ignored-entry preflights.
 - BranchMe does not directly edit project files, stage content, create user-authored commits, accept commit messages, copy local-only files into new worktrees, delete the retained branch during removal, or mutate worktrees through slash commands. `integrate_branch` may cause Git to create a standard merge commit under the verified boundary below; `retire_branch` may delete one exact local branch ref only under the separate leased boundary below.
 
-The standalone worktree-removal/retirement contracts below remain unchanged. `land_branch` is an explicit combined post-merge alternative: it authorizes deletion of ignored residue, uses the fetched remote-tracking target for leased retirement, reports each outcome, and syncs the local target last. See [README landing contract](../README.md#post-merge-cleanup-in-one-call) and [security boundary](../SECURITY.md#post-merge-landing-boundary).
+Standalone removal retains its branch and requires explicit `deleteIgnored: true` authorization to delete ignored residue. `land_branch` is a combined post-merge alternative: it authorizes deletion of ignored residue, uses the fetched remote-tracking target for leased retirement, reports each outcome, and syncs the local target last. See [README landing contract](../README.md#post-merge-cleanup-in-one-call) and [security boundary](../SECURITY.md#post-merge-landing-boundary).
 
 ## 7. Worktree handoff contract
 
 - `list_worktrees` reads bounded NUL-delimited porcelain inventory and keeps worktree discovery out of automatic active-worktree context.
 - `create_worktree` requires an explicitly approved absolute destination whose immediate parent exists. It rejects existing destinations and locations inside registered worktrees or the repository's common Git directory.
-- New mode creates a local branch from current `HEAD` only. Existing mode accepts only an existing local branch not checked out in another worktree; no remote branch is inferred.
+- New mode creates a local branch from current `HEAD` or an explicit read-only `baseRef` (local branch, remote-tracking ref, or full commit). Existing mode accepts only an existing local branch not checked out in another worktree; no remote branch is inferred.
 - Before mutation, canonical cwd and branch identity must fit documented limits and remain unchanged by redaction, escaping, Unicode handling, or truncation.
 - Successful creation verifies canonical path, local branch, full `HEAD`, and clean state, then returns the exact canonical absolute cwd and local branch in `handoff: { cwd, branch, head, ready: true, summary }`.
 - Removal accepts only an exact fresh inventory match that is linked, present, unlocked, non-prunable, non-bare, branch-attached, and neither main nor current.
-- Staged, unstaged, untracked, unmerged, and ignored entries all block removal. The bounded ignored-entry preflight does not disclose ignored paths or contents.
+- Staged, unstaged, untracked, and unmerged entries block removal. Ignored entries block removal by default; `deleteIgnored: true` authorizes their deletion, and the bounded result reports only redacted top-level paths, never contents.
 - Successful force-free removal verifies that the worktree entry is absent and the retained local branch still points to its captured commit, then returns `handoff: { cwd: null, branch: <exact retained branch>, head, ready: false, summary }`.
 - BranchMe never returns a ready handoff containing `[REDACTED]`, escaped control sequences, or a BranchMe-introduced truncation ellipsis in machine-readable cwd or branch identity fields.
 
@@ -145,8 +156,8 @@ The standalone worktree-removal/retirement contracts below remain unchanged. `la
 - Every Git command uses `pi.exec("git", args, { cwd, signal, timeout })` with an argv array rather than shell interpolation.
 - Paths, branch names, Git output, commit subjects, and pull request metadata are treated as untrusted. Display and prompt surfaces are escaped, redacted, and bounded separately from prevalidated exact handoff identities.
 - Worktree paths are canonicalized and checked against a fresh current-repository inventory or the common Git directory before mutation. User-supplied removal paths are never passed directly to Git.
-- Worktree removal has no force path and rejects dirty, ignored-entry-containing, detached, locked, prunable/missing, bare, main, current, and foreign entries before mutation.
-- Worktree tools expose no force, move, prune, repair, lock, unlock, detached, orphan, remote-inference, arbitrary refspec, or arbitrary start-point controls. Git's incomplete submodule worktree support is not bypassed with force cleanup.
+- Worktree removal has no force path and rejects dirty, detached, locked, prunable/missing, bare, main, current, and foreign entries before mutation. Ignored entries require explicit `deleteIgnored: true` authorization.
+- Worktree tools expose no force, move, prune, repair, lock, unlock, detached, orphan, remote-inference, or arbitrary refspec controls; new-mode `baseRef` is explicitly read-only. Git's incomplete submodule worktree support is not bypassed with force cleanup.
 - Retirement requires exact direct local refs, full expected-`HEAD` leasing, complete worktree occupancy inspection, captured target ancestry, and explicit unmerged force authorization. Final verification is cancellation-safe and bounded; uncertain state requires manual inspection and no rollback mutation.
 - Automatic context and `branch_status` never collect diffs or file contents. Related-PR lookup may make a bounded authenticated GitHub request only when credentials and repository identity resolve; there is no unauthenticated fallback.
 - `pull_request` uses the resolved current GitHub repository, preflights local and GitHub branch identity, and rejects cross-repository head refs. Git fetch/pull/push use the user's normal Git credentials.
@@ -160,7 +171,7 @@ The standalone worktree-removal/retirement contracts below remain unchanged. `la
 - `SECURITY.md` documents local filesystem, Git, GitHub, credential, and prompt-insertion boundaries.
 - `docs/STRUCTURE.md` describes the implemented source and test layout.
 - `docs/SMOKE_TEST.md` records isolated checkout, handoff, and installed-package smoke behavior.
-- `CHANGELOG.md` tracks the active `0.2.0` unreleased changes.
+- `CHANGELOG.md` tracks the active `0.3.0` unreleased changes.
 - npm distribution uses package `@senad-d/branchme`; package-content checks exclude private specs, credentials, generated files, caches, and local state.
 
 ## 12. Validation plan
@@ -180,8 +191,8 @@ The standalone worktree-removal/retirement contracts below remain unchanged. `la
 - Slash commands remain informational; tools perform all Git and GitHub actions.
 - Automatic context remains focused on the active worktree; inventory is available only through `list_worktrees`.
 - `create_worktree` returns a verified target for a caller-managed session but does not change cwd or create processes.
-- `integrate_branch` is the only merge surface; it uses normal local merge semantics, automatically aborts initial conflicts, and exposes no merge continuation or semantic-resolution workflow.
-- Worktree removal remains force-free, blocks ignored entries, and preserves the local branch.
+- `integrate_branch` and `update_from_base` use the verified normal-merge state machine, automatically abort initial conflicts, and expose no merge continuation or semantic-resolution workflow. Only `update_from_base` fetches an explicit remote base before merging its captured commit.
+- Worktree removal remains force-free, protects ignored entries by default, requires explicit authorization to delete them, and preserves the local branch.
 - Local branch retirement remains a separate explicit operation requiring a fresh expected `HEAD`, exact target ancestry, zero complete-inventory occupancy, and an explicit boolean force decision; it deletes only the leased local ref and leaves branch configuration and remote/remote-tracking refs untouched.
 - `push_branch` uses `origin` only when the current branch has no configured upstream.
 - `pull_request` infers owner/repository from the current checkout or matching `GITHUB_REPOSITORY`, never accepts owner/repository tool inputs, and requires local branch refs with the head matching GitHub.

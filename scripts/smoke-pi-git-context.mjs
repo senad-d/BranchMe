@@ -87,11 +87,16 @@ import { join } from "node:path";
 import { createAssistantMessageEventStream } from ${JSON.stringify(piAiModuleUrl)};
 
 const expectedTools = [
+  "list_branches",
+  "track_branch",
+  "update_from_base",
+  "pull_request_status",
   "branch_status",
   "change_branch",
   "create_branch",
   "create_worktree",
   "fetch_branch",
+  "init_repository",
   "integrate_branch",
   "land_branch",
   "list_worktrees",
@@ -103,8 +108,12 @@ const expectedTools = [
   "retire_branch",
 ];
 const forbiddenSmokeTools = new Set([
+  "track_branch",
+  "update_from_base",
+  "pull_request_status",
   "create_worktree",
   "fetch_branch",
+  "init_repository",
   "integrate_branch",
   "land_branch",
   "pull_branch",
@@ -177,7 +186,7 @@ function fail(model, message) {
 
 function verifyTools(context) {
   const available = new Set((context.tools ?? []).map((tool) => tool.name));
-  return expectedTools.length === 14 &&
+  return expectedTools.length === 19 &&
     expectedTools.every((name) => available.has(name)) &&
     !available.has("git_context") &&
     !available.has("continue_merge") &&

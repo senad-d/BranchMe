@@ -16,6 +16,7 @@ import {
   getCurrentBranch,
   getGitRoot,
   getOriginUrl,
+  requireLosslessWorktreeIdentity,
   validateBranchNameInput,
   type GitCommandContext,
 } from "./git.ts";
@@ -23,6 +24,8 @@ import type {
   GitHubRepository,
   PullRequestDetails,
   PullRequestInput,
+  PullRequestStatusDetails,
+  PullRequestToolDetails,
   RelatedPullRequest,
   RelatedPullRequestDetails,
 } from "./types.ts";
@@ -982,6 +985,118 @@ export async function ensureGitHubBranchExists(
   }
 
   return readGitHubBranchDetails(response, options.signal, token, branchName, field, branchLabel);
+}
+
+function requirePullRequestCommit(value: unknown): string {
+  if (typeof value !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(value)) {
+    throw new Error("GitHub pull request has an invalid commit identity.");
+  }
+  return value.toLowerCase();
+}
+
+function parsePullRequestStatus(repository: GitHubRepository, number: number, payload: Record<string, unknown>, token: string): PullRequestStatusDetails {
+  if (pullRequestNumberField(payload.number) !== number) throw new Error("GitHub returned a different pull request number.");
+  if (!["open", "closed"].includes(String(payload.state)) || typeof payload.merged !== "boolean" || typeof payload.draft !== "boolean") {
+    throw new Error("GitHub pull request state is malformed.");
+  }
+  const head = requireGitHubResponseObject(payload.head, "head");
+  const base = requireGitHubResponseObject(payload.base, "base");
+  requireRelatedPullRequestRepository(head.repo, repository);
+  requireRelatedPullRequestRepository(base.repo, repository);
+  const headRef = stringField(head.ref, "head.ref");
+  const baseRef = stringField(base.ref, "base.ref");
+  validatePullRequestBranchRef(headRef, "headBranch");
+  validatePullRequestBranchRef(baseRef, "baseBranch");
+  requireLosslessWorktreeIdentity(headRef, "branch");
+  requireLosslessWorktreeIdentity(baseRef, "branch");
+  if (redactSecrets(headRef, [token]) !== headRef || redactSecrets(baseRef, [token]) !== baseRef) {
+    throw new Error("GitHub branch identities cannot be returned safely.");
+  }
+  const mergedAt = payload.merged_at;
+  if (mergedAt !== null && (typeof mergedAt !== "string" || mergedAt.length > 40 || !Number.isFinite(Date.parse(mergedAt)))) {
+    throw new Error("GitHub pull request merge timestamp is malformed.");
+  }
+  const mergeCommitSha = payload.merge_commit_sha === null ? null : requirePullRequestCommit(payload.merge_commit_sha);
+  if (payload.merged && (payload.state !== "closed" || mergedAt === null || mergeCommitSha === null)) {
+    throw new Error("GitHub merged pull request evidence is incomplete.");
+  }
+  if (!payload.merged && mergedAt !== null) throw new Error("GitHub merge state is contradictory.");
+  return {
+    repository, number, url: requireRelatedPullRequestUrl(payload.html_url, repository, number),
+    title: boundedRelatedPullRequestValue(redactSecrets(stringField(payload.title, "title"), [token])),
+    state: payload.state as "open" | "closed", draft: payload.draft, merged: payload.merged,
+    mergedAt: mergedAt as string | null, head: headRef, base: baseRef,
+    headSha: requirePullRequestCommit(head.sha), baseSha: requirePullRequestCommit(base.sha), mergeCommitSha,
+  };
+}
+
+async function requestPullRequestJson(repository: GitHubRepository, suffix: string, token: string, options: PullRequestFetchOptions): Promise<unknown> {
+  // Bound both transport and body consumption; the same signal covers the complete request.
+  const controller = new AbortController();
+  const timer = setTimeout(controller.abort.bind(controller), 10_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+  try {
+    signal.throwIfAborted();
+    const response = await fetchGitHubResponse(requireFetchImplementation(options.fetchImpl ?? globalThis.fetch),
+      `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/pulls${suffix}`,
+      { method: "GET", headers: gitHubJsonHeaders(token), signal }, "GitHub pull request lookup failed", token);
+    if (!response.ok) throw new Error(`GitHub pull request lookup returned HTTP ${response.status}.`);
+    const body = await readGitHubResponseBody(response, signal, "GitHub pull request lookup response failed", token);
+    if (body.truncated) throw new Error("GitHub pull request lookup exceeded the response byte limit.");
+    return parseGitHubJson(body.text, "GitHub pull request lookup response", token);
+  } catch (error) {
+    throw new Error(truncate(redactSecrets(error instanceof Error ? error.message : String(error), [token])).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, " "));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function getGitHubPullRequest(repository: GitHubRepository, number: number, token: string, options: PullRequestFetchOptions = {}): Promise<PullRequestStatusDetails> {
+  validateGitHubRepository(repository);
+  pullRequestNumberField(number);
+  const payload = await requestPullRequestJson(repository, `/${number}`, token, options);
+  return parsePullRequestStatus(repository, number, requireGitHubResponseObject(payload, "Pull request"), token);
+}
+
+export async function findGitHubPullRequest(repository: GitHubRepository, headBranch: string, token: string, options: PullRequestFetchOptions = {}, state: "open" | "all" = "all"): Promise<PullRequestStatusDetails | null> {
+  validateGitHubRepository(repository);
+  validatePullRequestBranchRef(headBranch, "headBranch");
+  requireLosslessWorktreeIdentity(headBranch, "branch");
+  const query = new URLSearchParams({ state, head: `${repository.owner}:${headBranch}`, sort: "updated", direction: "desc", per_page: state === "open" ? "2" : "1" });
+  const payload = requireGitHubResponseArray(await requestPullRequestJson(repository, `?${query}`, token, options), "Pull request lookup");
+  if (payload.length === 0) return null;
+  if (payload.length > 1) throw new Error("Multiple open pull requests use this head; select a pull request by number.");
+  const row = requireGitHubResponseObject(payload[0], "Pull request lookup item");
+  const result = await getGitHubPullRequest(repository, pullRequestNumberField(row.number), token, options);
+  if (result.head !== headBranch || (state === "open" && result.state !== "open")) {
+    throw new Error("Pull request lookup no longer matches the requested head/state; retry after inspection.");
+  }
+  return result;
+}
+
+function existingPullRequestDetails(existing: PullRequestStatusDetails, input: PullRequestInput, expectedHead: string): PullRequestToolDetails {
+  if (existing.base !== input.baseBranch || existing.headSha !== expectedHead.toLowerCase()) {
+    throw new Error("Existing pull request base or head commit does not match the requested branches; inspect it before retrying.");
+  }
+  const { repository, number, url, state, head, base, draft } = existing;
+  return { repository, number, url, state, head, base, draft, outcome: "existing" };
+}
+
+export async function createOrReuseGitHubPullRequest(repository: GitHubRepository, input: PullRequestInput, expectedHead: string, token: string, options: PullRequestFetchOptions = {}): Promise<PullRequestToolDetails> {
+  validatePullRequestInput(input);
+  requirePullRequestCommit(expectedHead);
+  const existing = await findGitHubPullRequest(repository, input.headBranch, token, options, "open");
+  if (existing) return existingPullRequestDetails(existing, input, expectedHead);
+  try {
+    return { ...await createGitHubPullRequest(repository, input, token, options), outcome: "created" };
+  } catch (error) {
+    // A concurrent creator may win after our lookup. Recheck only a validation conflict,
+    // never hide network/authentication/cancellation errors or retry the POST.
+    if (!(error instanceof Error) || !error.message.startsWith("GitHub pull request request failed with HTTP 422:")) throw error;
+    const raced = await findGitHubPullRequest(repository, input.headBranch, token, options, "open");
+    if (raced) return existingPullRequestDetails(raced, input, expectedHead);
+    throw error;
+  }
 }
 
 export async function createGitHubPullRequest(

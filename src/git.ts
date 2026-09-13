@@ -1,7 +1,9 @@
 import { lstat, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  GIT_BRANCH_ENTRY_LIMIT,
+  GIT_BRANCH_RAW_OUTPUT_LIMIT_BYTES,
   GIT_CONTEXT_CHANGE_LIMIT,
   GIT_CONTEXT_RECENT_COMMIT_LIMIT,
   GIT_CONTEXT_VALUE_LIMIT_CHARS,
@@ -24,6 +26,7 @@ import {
 import { redactSecrets } from "./redaction.ts";
 import type {
   AheadBehindCount,
+  BranchEntry,
   BranchAncestryDetails,
   BranchStatusAncestryQuery,
   BranchStatusDetails,
@@ -37,6 +40,8 @@ import type {
   GitExecResult,
   GitFileChange,
   GitFileChangeSummary,
+  InitRepositoryDetails,
+  ListBranchesDetails,
   ListWorktreesDetails,
   PullBranchDetails,
   PushBranchDetails,
@@ -142,6 +147,196 @@ export async function runGit(
   }
 
   return result;
+}
+
+function requireSafeInitializationEnvironment(): void {
+  for (const key of [
+    "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY",
+    "GIT_INDEX_FILE", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_IMPLICIT_WORK_TREE",
+    "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  ]) {
+    if (process.env[key] !== undefined) {
+      throw new Error(`Git environment override ${key} must be unset before repository initialization.`);
+    }
+  }
+}
+
+function requireLosslessRepositoryPath(value: string, label: string): string {
+  if (isLosslessGitMetadata(value, GIT_WORKTREE_PATH_LIMIT_CHARS)) return value;
+  throw new Error(
+    `The canonical ${label} cannot be returned safely and losslessly. ` +
+    `Use a path of at most ${GIT_WORKTREE_PATH_LIMIT_CHARS} characters without credential-like token text or control/format characters.`,
+  );
+}
+
+async function resolveRepositoryInitializationDirectory(ctx: GitCommandContext): Promise<string> {
+  let canonicalPath: string;
+  try {
+    canonicalPath = await realpath(ctx.cwd);
+  } catch {
+    throw new Error("The current working directory does not exist or cannot be resolved.");
+  }
+
+  let directoryStats;
+  try {
+    directoryStats = await stat(canonicalPath);
+  } catch {
+    throw new Error("The current working directory cannot be inspected.");
+  }
+  if (!directoryStats.isDirectory()) throw new Error("The current working directory is not a directory.");
+  if (dirname(canonicalPath) === canonicalPath) throw new Error("The filesystem root cannot be initialized as a repository.");
+  return requireLosslessRepositoryPath(canonicalPath, "repository path");
+}
+
+async function gitMetadataEntryExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw new Error("The target directory's .git entry cannot be inspected.");
+  }
+}
+
+async function requireUninitializedRepositoryDirectory(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  canonicalPath: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  requireSafeInitializationEnvironment();
+  const currentPath = await resolveRepositoryInitializationDirectory(ctx);
+  if (currentPath !== canonicalPath) throw new Error("The current working directory changed while preparing git init.");
+  if (await gitMetadataEntryExists(join(canonicalPath, ".git"))) {
+    throw new Error("The current working directory already contains a .git entry; reinitialization is not allowed.");
+  }
+
+  // Do not let failed discovery (including invalid metadata or filesystem
+  // boundaries) hide an enclosing checkout.
+  for (let parent = dirname(canonicalPath); ; parent = dirname(parent)) {
+    if (await gitMetadataEntryExists(join(parent, ".git"))) {
+      throw new Error("The current working directory is already inside a Git repository; nested initialization is not allowed.");
+    }
+    if (dirname(parent) === parent) break;
+  }
+
+  const probe = await runGit(pi, { cwd: canonicalPath }, ["rev-parse", "--git-dir"], {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+    allowFailure: true,
+  });
+  if (probe.code === 0) {
+    throw new Error("The current working directory is already inside a Git repository; nested initialization is not allowed.");
+  }
+  // Only Git's explicit absence diagnostic permits initialization. Ownership,
+  // permission, configuration and unrecognized/localized failures stay closed.
+  if (probe.code !== 128 || probe.stdout ||
+      !/^fatal: not a git repository \(or any (?:of the parent directories\): \.git|parent up to mount point [^\r\n]+\))/u.test(probe.stderr)) {
+    throw new Error("Git repository discovery failed; inspect the current directory and Git configuration before initialization.");
+  }
+}
+
+async function verifyInitializedRepository(
+  pi: Pick<ExtensionAPI, "exec">,
+  canonicalPath: string,
+  initialBranch: string,
+): Promise<InitRepositoryDetails> {
+  const verificationCtx = { cwd: canonicalPath };
+  const repoRoot = await getCanonicalGitWorktreeRoot(pi, verificationCtx);
+  if (repoRoot !== canonicalPath) throw new Error("git init produced an unexpected repository root.");
+
+  const current = await getCurrentBranch(pi, verificationCtx);
+  if (current.detached || current.currentBranch !== initialBranch) {
+    throw new Error("git init did not create the requested unborn initial branch.");
+  }
+
+  const gitDirectoryResult = await runGit(
+    pi,
+    verificationCtx,
+    ["rev-parse", "--path-format=absolute", "--git-dir"],
+  );
+  const gitDirectoryOutput = trimOutput(gitDirectoryResult.stdout);
+  let gitDirectory: string;
+  try {
+    gitDirectory = await realpath(gitDirectoryOutput);
+  } catch {
+    throw new Error("The initialized Git directory could not be resolved.");
+  }
+  if (gitDirectory !== join(canonicalPath, ".git")) {
+    throw new Error("git init produced an unexpected or separate Git directory.");
+  }
+
+  const bareResult = await runGit(pi, verificationCtx, ["rev-parse", "--is-bare-repository"]);
+  if (trimOutput(bareResult.stdout) !== "false") throw new Error("git init produced an unexpected bare repository.");
+
+  const headResult = await runGit(pi, verificationCtx, ["rev-parse", "--verify", "HEAD"], {
+    allowFailure: true,
+  });
+  if (headResult.code === 0) throw new Error("The initialized repository unexpectedly contains a commit.");
+
+  return {
+    action: "init_repository",
+    request: { initialBranch },
+    repoRoot,
+    gitDirectory: requireLosslessRepositoryPath(gitDirectory, "Git directory path"),
+    initialBranch,
+    bare: false,
+    unborn: true,
+  };
+}
+
+async function initializeRepositoryWithinQueue(
+  pi: Pick<ExtensionAPI, "exec">,
+  targetCtx: GitCommandContext,
+  canonicalPath: string,
+  initialBranch: string,
+  signal?: AbortSignal,
+): Promise<InitRepositoryDetails> {
+  await requireUninitializedRepositoryDirectory(pi, targetCtx, canonicalPath, signal);
+  await validateBranchName(pi, targetCtx, initialBranch, signal);
+  try {
+    await runGit(pi, targetCtx, ["init", "--no-template", "--initial-branch", initialBranch], {
+      signal,
+      timeout: GIT_MUTATION_TIMEOUT_MS,
+    });
+    return await verifyInitializedRepository(pi, canonicalPath, initialBranch);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Repository initialization did not complete with verified postconditions. ${safeOutput(reason)} ` +
+      "Inspect the current directory before retrying; no automatic cleanup was attempted.",
+    );
+  }
+}
+
+async function queueRepositoryInitialization(
+  canonicalPath: string,
+  initialize: () => Promise<InitRepositoryDetails>,
+): Promise<InitRepositoryDetails> {
+  return withRepositoryMutationQueue(canonicalPath, initialize);
+}
+
+export async function initializeRepository(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  initialBranch: unknown = "main",
+  signal?: AbortSignal,
+): Promise<InitRepositoryDetails> {
+  requireSafeInitializationEnvironment();
+  validateBranchNameInput(initialBranch, "Initial branch name");
+  requireLosslessWorktreeIdentity(initialBranch, "branch");
+  const canonicalPath = await resolveRepositoryInitializationDirectory(ctx);
+  const targetCtx = { cwd: canonicalPath };
+  const initialize: () => Promise<InitRepositoryDetails> = initializeRepositoryWithinQueue.bind(
+    undefined,
+    pi,
+    targetCtx,
+    canonicalPath,
+    initialBranch,
+    signal,
+  );
+  const queueRepositoryMutation = queueRepositoryInitialization.bind(undefined, canonicalPath, initialize);
+  return withFileMutationQueue<InitRepositoryDetails>(join(canonicalPath, ".git"), queueRepositoryMutation);
 }
 
 export async function getGitRoot(
@@ -1000,6 +1195,85 @@ export async function validateWorktreeRemovalPath(
   };
 }
 
+const GIT_BRANCH_FORMAT = "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream)%00%(symref)%00%(upstream:track)";
+
+function branchTrackingCounts(upstream: string, track: string): AheadBehindCount {
+  if (!upstream || track === "[gone]") return { ahead: null, behind: null };
+  if (track !== "" && !/^\[(?:ahead \d+(?:, behind \d+)?|behind \d+)\]$/u.test(track)) {
+    throw new TypeError("Unable to parse branches: malformed upstream counts.");
+  }
+  const ahead = Number(/ahead (\d+)/u.exec(track)?.[1] ?? 0);
+  const behind = Number(/behind (\d+)/u.exec(track)?.[1] ?? 0);
+  if (!Number.isSafeInteger(ahead) || !Number.isSafeInteger(behind)) throw new TypeError("Unable to parse branches: invalid upstream counts.");
+  return { ahead, behind };
+}
+
+function parseBranchRecord(record: string): BranchEntry {
+  const fields = record.split(NUL_SEPARATOR);
+  if (fields.length !== 6) throw new TypeError("Unable to parse branches: malformed ref output.");
+  const [fullRef, head, current, upstream, symbolicTarget, track] = fields;
+  const kind = fullRef.startsWith("refs/heads/") ? "local" : "remote-tracking";
+  const prefix = kind === "local" ? "refs/heads/" : "refs/remotes/";
+  if (!fullRef.startsWith(prefix) || fullRef.length === prefix.length ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(head) || !["*", " "].includes(current)) {
+    throw new TypeError("Unable to parse branches: malformed ref output.");
+  }
+  return {
+    name: safeGitContextValue(fullRef.slice(prefix.length)),
+    fullRef: safeGitContextValue(fullRef),
+    kind,
+    head,
+    current: current === "*",
+    upstream: upstream ? safeGitContextValue(upstream) : null,
+    ...branchTrackingCounts(upstream, track),
+    symbolicTarget: symbolicTarget ? safeGitContextValue(symbolicTarget) : null,
+    worktreePaths: [],
+  };
+}
+
+export function parseBranchRefs(output: string): Pick<ListBranchesDetails, "branches" | "omitted"> {
+  if (Buffer.byteLength(output, "utf8") > GIT_BRANCH_RAW_OUTPUT_LIMIT_BYTES) {
+    throw new TypeError("Unable to parse branches: ref output exceeded the safety limit.");
+  }
+  const records = output.endsWith("\n") ? output.slice(0, -1).split("\n") : output.split("\n");
+  if (records.length === 1 && records[0] === "") return { branches: [], omitted: 0 };
+  const branches: BranchEntry[] = [];
+  const seen = new Set<string>();
+  for (const record of records) {
+    const branch = parseBranchRecord(record);
+    const rawRef = record.split(NUL_SEPARATOR, 1)[0];
+    if (seen.has(rawRef)) throw new TypeError("Unable to parse branches: duplicate ref output.");
+    seen.add(rawRef);
+    if (branches.length < GIT_BRANCH_ENTRY_LIMIT) branches.push(branch);
+  }
+  return { branches, omitted: records.length - branches.length };
+}
+
+export async function listBranches(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<ListBranchesDetails> {
+  const repoRoot = await getGitRoot(pi, ctx, signal);
+  const rootCtx = { cwd: repoRoot };
+  const result = await runGit(pi, rootCtx, [
+    "for-each-ref", "--sort=refname", `--format=${GIT_BRANCH_FORMAT}`, "refs/heads/", "refs/remotes/",
+  ], { signal });
+  const parsed = parseBranchRefs(result.stdout);
+  const inventory = await collectWorktreeInventory(pi, rootCtx, signal);
+  const rawRecords = result.stdout.split("\n");
+  for (const [index, branch] of parsed.branches.entries()) {
+    if (branch.kind !== "local") continue;
+    const rawName = rawRecords[index].split(NUL_SEPARATOR, 1)[0].slice("refs/heads/".length);
+    for (const entry of inventory.entries) {
+      if (entry.record.branch === rawName) {
+        branch.worktreePaths.push(safeWorktreeValue(entry.record.rawPath, GIT_WORKTREE_PATH_LIMIT_CHARS));
+      }
+    }
+  }
+  return { action: "list_branches", repoRoot: safeGitContextValue(repoRoot), ...parsed };
+}
+
 export async function listWorktrees(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
@@ -1487,6 +1761,7 @@ export async function removeWorktree(
   ctx: GitCommandContext,
   worktreePath: unknown,
   signal?: AbortSignal,
+  deleteIgnored = false,
 ): Promise<RemoveWorktreeDetails> {
   const requestedWorktreePath = validateWorktreePathInput(worktreePath);
   const repoRoot = await getGitRoot(pi, ctx, signal);
@@ -1494,11 +1769,11 @@ export async function removeWorktree(
 
   return withRepositoryMutationQueue(
     repoRoot,
-    removeWorktreeWithinQueue.bind(undefined, pi, rootCtx, requestedWorktreePath, signal),
+    removeWorktreeWithinQueue.bind(undefined, pi, rootCtx, requestedWorktreePath, signal, deleteIgnored),
   );
 }
 
-// Caller must hold the repository mutation queue. Standalone removal still refuses ignored residue.
+// Caller must hold the repository mutation queue. Ignored residue requires explicit authorization.
 export async function removeWorktreeWithinQueue(
   pi: Pick<ExtensionAPI, "exec">,
   rootCtx: GitCommandContext,
@@ -1567,6 +1842,7 @@ export async function removeWorktreeWithinQueue(
         repoRoot: safeWorktreeValue(repoRoot, GIT_WORKTREE_PATH_LIMIT_CHARS),
         request: {
           worktreePath: safeWorktreeValue(requestedWorktreePath, GIT_WORKTREE_PATH_LIMIT_CHARS),
+          ...(allowIgnored ? { deleteIgnored: true } : {}),
         },
         verified: {
           before: {
