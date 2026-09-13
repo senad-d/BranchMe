@@ -20,7 +20,7 @@ Implemented git mutations are limited to:
 - `create_branch`: `git switch -c <branchName>` from current `HEAD` after branch-name validation and existing-branch checks.
 - `track_branch`: narrow fetch followed by `git switch --no-overwrite-ignore --track=direct -c <branchName> refs/remotes/<remote>/<remoteBranch>`. Requires a new local branch, clean idle checkout, direct fetched commit ref, and verified final HEAD/upstream.
 - `update_from_base`: narrow fetch followed by the fixed integration merge policy against a captured remote-base commit. Reuses verified outcomes and automatic conflict abort; does not rewrite published history or change upstream. Both new fetch workflows explicitly disable pruning, extra ref mappings, tags, and submodule recursion, and reject symbolic remote-tracking destinations before fetching so Git cannot dereference them into unrelated refs. Base updates compare stored upstream configuration, not whether cached upstream refs happen to resolve.
-- `fetch_branch`: `git fetch --no-tags --no-recurse-submodules <upstreamRemote> <upstreamBranchRef>:<remoteTrackingRef>` after validating the current branch's configured upstream target. The explicit destination is limited to that upstream's remote-tracking ref, so local branches and working-tree files are not changed.
+- `fetch_branch`: `git fetch --no-tags --no-recurse-submodules <remote> <remoteBranchRef>:<remoteTrackingRef>`. With no arguments it validates and fetches the current branch's configured upstream; with explicit `branch` and optional configured `remote` (default `origin`) it fetches that exact remote branch. The explicit destination is limited to the selected remote-tracking ref, so local branches and working-tree files are not changed.
 - `pull_branch`: `git pull --ff-only --no-rebase --no-autostash <upstreamRemote> <upstreamBranchRef>` for the clean current branch after validating its configured upstream target.
 - `rebase_branch`: `git rebase --no-autostash --no-update-refs <upstream>` for the clean current branch after validating its configured upstream target. It rewrites local commits and automatically attempts `git rebase --abort` without the cancelled caller signal if the rebase fails or is killed.
 - `integrate_branch`: after rejecting a non-empty `branch.<targetBranch>.mergeOptions` setting, runs `git -c rerere.enabled=false merge --ff --no-edit --no-autostash --no-rerere-autoupdate --no-overwrite-ignore refs/heads/<sourceBranch>` from the verified clean control worktree, which must already have the distinct existing local `targetBranch` checked out. It uses normal merge semantics: no-op, fast-forward, or a Git-generated standard two-parent merge commit for divergent histories.
@@ -55,7 +55,7 @@ GET  https://api.github.com/repos/{owner}/{repo}/pulls/{number}
 GET  https://api.github.com/repos/{owner}/{repo}/pulls?state={open|all}&head={owner}:{branch}&sort=updated&direction=desc&per_page={1|2}
 ```
 
-Explicit `pull_request_status`, idempotent `pull_request` lookup, and PR-aware `land_branch` use the last two read-only endpoints. Each request has a 10-second transport/body deadline and 64 KiB response limit. Exact PR number, repository, branch identities, and commit IDs are validated. Status does not certify CI checks or review approvals. Idempotent creation preserves existing PR fields and reuses only an exact head-SHA/base match; HTTP 422 races get one read-only recheck.
+Explicit `pull_request_status`, idempotent `pull_request` lookup, and PR-aware `land_branch` use the last two read-only endpoints. Each request has a 10-second transport/body deadline and 64 KiB response limit. Exact PR number, repository, branch identities, and commit IDs are validated. Status does not certify CI checks or review approvals. Idempotent creation preserves existing PR fields and reuses only an exact head-SHA/base match; HTTP 422 races get one read-only recheck. All of these operations require `GITHUB_TOKEN` or `GH_TOKEN` from the process environment or verified-root `.env` fallback.
 
 `list_branches` is an explicit read-only local inventory, limited to 200 returned refs, 128 KiB raw ref output, and 4,000 characters of text. Paths and names are display-safe metadata, not executable handoffs. Upstream counts reflect cached refs, not a fresh remote fetch.
 
@@ -126,7 +126,7 @@ Only the local branch ref is deleted. Local `branch.<branchName>.*` configuratio
 
 Git fetch, pull, and push authentication is handled by the user's configured Git credential and transport setup. BranchMe never passes GitHub API tokens to Git commands.
 
-`pull_request` and related-PR lookup check `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`. If neither process token is set, BranchMe reads a local `.env` file from the verified git root and checks:
+Automatic related-PR lookup, `pull_request_status`, PR-aware `land_branch`, and `pull_request` check `process.env.GITHUB_TOKEN`, then `process.env.GH_TOKEN`. If neither process token is set, BranchMe reads a local `.env` file from the verified git root and checks:
 
 - `GITHUB_TOKEN` (preferred)
 - `GH_TOKEN` (fallback)
@@ -143,7 +143,7 @@ The automatic snapshot can become stale after a Git or filesystem mutation durin
 
 ## Telemetry
 
-BranchMe does not collect telemetry. Related-PR lookup sends only the resolved repository owner/name and current branch in the authenticated GitHub API URL. PR creation sends only the resolved GitHub pull request fields described above. When autofill supplies title or body, those fields can contain bounded, redacted local commit subjects. BranchMe does not send diff contents, filenames, or local file contents to GitHub during context collection.
+BranchMe does not collect telemetry. Related-PR lookup and explicit PR lifecycle reads send only the resolved repository owner/name plus the current/requested branch or PR number in authenticated GitHub API URLs. PR-aware landing additionally reads the supplied PR number to verify host-merge evidence. PR creation sends only the resolved GitHub pull request fields described above. When autofill supplies title or body, those fields can contain bounded, redacted local commit subjects. BranchMe does not send diff contents, filenames, or local file contents to GitHub during context collection or PR lifecycle verification.
 
 ## Reporting vulnerabilities
 

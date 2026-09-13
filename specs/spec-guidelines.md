@@ -1,6 +1,6 @@
 # Plan: BranchMe Implementation Guidelines
 
-> Historical note (superseded, updated 2026-08-23): this preparation guideline is retained for context, but current behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Current implementation has thirteen tools, including verified local `integrate_branch`, leased local `retire_branch`, and optional targeted `branch_status` ancestry verification. The original blanket rules against all merge behavior and all branch deletion are superseded: BranchMe still has no staging or user-authored commit tool, explicit integration may let Git create its standard merge commit, and explicit retirement may delete one exact expected local branch ref. Bulk, inferred-target, remote, and remote-tracking deletion remain prohibited.
+> Historical note (superseded, updated 2026-09-13): this preparation guideline is retained for context, but current behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Version `0.3.1` implements nineteen tools, including bounded branch discovery, remote tracking and base updates, PR lifecycle inspection/reuse, PR-aware landing, verified local integration and retirement, linked-worktree management, and optional targeted `branch_status` ancestry verification. Original blanket rules against all merge behavior and all branch deletion are superseded; the current security boundaries in `SECURITY.md` are authoritative.
 
 ## Task Description
 

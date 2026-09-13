@@ -1,5 +1,7 @@
 # Plan: Git Worktree Management Tasks
 
+> Historical note (superseded, updated 2026-09-13): this implemented plan preserves the original worktree contract and later task amendments. Version `0.3.1` additionally supports new-mode `baseRef`, explicit `deleteIgnored`, and combined `land_branch`; use `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md` for current behavior.
+
 ## Task description
 
 Implement safe Git worktree management in BranchMe for a specialized Git subagent. The Git subagent manages worktrees and returns structured handoff data; an orchestrator then starts a separate Pi session or subagent with the created worktree as its working directory.

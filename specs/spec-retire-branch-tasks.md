@@ -1,5 +1,7 @@
 # Plan: Branch Retirement Tasks
 
+> Historical note (completed, updated 2026-09-13): this task plan is retained as implementation history. Version `0.3.1` has nineteen tools and also provides merged-only `land_branch`; use `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md` for current behavior.
+
 ## Task description
 
 Add a bounded `retire_branch` tool that deletes one exact local branch only when its current commit matches an explicit expected `HEAD`, it is not occupied by any registered worktree, and its relationship to one exact local target branch has been verified. Unmerged retirement requires explicit force authorization. The tool never directly deletes a remote or remote-tracking branch.

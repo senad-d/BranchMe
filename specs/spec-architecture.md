@@ -1,6 +1,6 @@
 # Plan: BranchMe Architecture
 
-> Historical note (superseded, updated 2026-08-23): this preparation plan is retained for implementation history, not as active guidance. Current BranchMe behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Implemented behavior now includes thirteen tools, targeted `branch_status` ancestry checks, linked-worktree management, verified local `integrate_branch`, and leased local `retire_branch`. The original blanket prohibitions on merge behavior and all branch deletion are superseded: BranchMe still does not stage files or create user-authored commits, explicit integration may let Git create a standard merge commit, and explicit retirement may delete one exact expected local branch ref. Bulk, inferred-target, remote, and remote-tracking deletion remain out of scope. Tool-specific statements that `pull_branch` remains fast-forward-only and that integration/worktree operations do not themselves delete branches are still current.
+> Historical note (superseded, updated 2026-09-13): this preparation plan is retained for implementation history, not as active guidance. Current BranchMe behavior is documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`. Version `0.3.1` implements nineteen tools, including bounded branch discovery, remote tracking and base updates, PR lifecycle inspection/reuse, PR-aware landing, targeted `branch_status` ancestry checks, linked-worktree management, verified local integration, and leased local retirement. The original blanket prohibitions on merge behavior and all branch deletion are superseded: BranchMe still does not stage files or create user-authored commits, explicit integration may let Git create a standard merge commit, and explicit retirement or merged-only landing may delete one exact expected local branch ref. Bulk, inferred-target, remote, and remote-tracking deletion remain out of scope.
 
 ## Task Description
 
@@ -16,7 +16,7 @@ Pi users and CI workflows need a small, automation-friendly extension that can c
 
 ## Solution Approach
 
-Historically, this plan proposed a help/config slash command and five custom tools. The implemented package exposes an informational slash command and thirteen strict tools; see the active documentation.
+Historically, this plan proposed a help/config slash command and five custom tools. The implemented package exposes an informational slash command and nineteen strict tools; see the active documentation.
 
 ## Approved Project Definition
 
@@ -254,7 +254,7 @@ pi --no-extensions -e .
 
 - The later implementation keeps `src/extension.ts` small and delegates to feature modules.
 - The slash command remains informational only.
-- Historical count (superseded): the original five planned tools required precise schemas, descriptions, `promptSnippet`, and named tool-specific `promptGuidelines`; the implemented package applies that rule to thirteen tools.
+- Historical count (superseded): the original five planned tools required precise schemas, descriptions, `promptSnippet`, and named tool-specific `promptGuidelines`; the implemented package applies that rule to nineteen tools.
 - BranchMe does not stage files or create user-authored commits. Superseding the original blanket no-commit statement, explicit `integrate_branch` may let Git create a standard merge commit.
 - PR creation cannot target a repository supplied by tool arguments.
 - GitHub token values are never surfaced in content, details, or thrown errors.

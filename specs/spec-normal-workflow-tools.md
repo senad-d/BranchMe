@@ -1,5 +1,7 @@
 # Plan: Complete the Normal Branch and Pull Request Workflow
 
+> Completed for version `0.3.1` on 2026-09-13. This task plan and validation receipt are retained as implementation history; `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md` are the current behavior references.
+
 ## Scope
 
 Implement the core reviewed gaps. Optional clone support, remote configuration/deletion, fork PRs, and force-pushing remain deferred. Branch listing includes upstream ahead/behind counts; CI-check/review-policy inspection is separate from PR lifecycle status. Feature-base updates use a verified normal merge, so published history is not rewritten.

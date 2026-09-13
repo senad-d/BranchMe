@@ -1,6 +1,6 @@
 # Plan: BranchMe Implementation Tasks
 
-> Historical note (updated 2026-06-30): this checklist records the original implementation path. Current BranchMe behavior includes five tools (`branch_status`, `change_branch`, `create_branch`, `push_branch`, `pull_request`), hardened repository-root `.env` token fallback, explicit upstream push targets, PR branch-ref validation, and the updated validation path with `format:check`.
+> Historical note (superseded, updated 2026-09-13): this checklist records the original five-tool implementation path. Version `0.3.1` now implements nineteen tools; current behavior and security boundaries are documented in `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md`.
 
 ## Task Description
 
@@ -10,9 +10,9 @@ Task checklist for a later, separate implementation session for BranchMe.
 
 Implement BranchMe one task at a time after preparation is complete. Keep all checkboxes unchecked until the implementation session performs and validates the work.
 
-## Important Boundary
+## Historical Boundary
 
-This file is a future implementation plan. During preparation, do not complete any checkbox and do not implement runtime behavior.
+This file preserves the original preparation and implementation checklist. Its completed checkboxes are historical evidence, not current implementation guidance.
 
 ### 1. Apply source module layout
 

@@ -91,9 +91,9 @@ A typical BranchMe flow is:
 4. Update it from its configured upstream with `pull_branch`, which requires a clean worktree and uses fast-forward-only semantics.
 5. Create from the updated `HEAD` with `create_branch`.
 6. Make edits and commit outside BranchMe.
-7. Push the current branch with `push_branch`.
-8. After `push_branch` completes and GitHub can see the branches, create or reuse a matching open pull request with `pull_request`.
-9. While working, use `update_from_base({ baseBranch: "main" })` to fetch and merge the remote base into the clean feature branch without rewriting published history or changing its upstream.
+7. While working, use `update_from_base({ baseBranch: "main" })` to fetch and merge the remote base into the clean feature branch without rewriting published history or changing its upstream.
+8. Push the current branch with `push_branch`.
+9. After `push_branch` completes and GitHub can see the branches, create or reuse a matching open pull request with `pull_request`.
 10. Inspect the PR with `pull_request_status({ number: 123 })`. Merge it on GitHub outside BranchMe, then use `land_branch` from the primary checkout. Supply `pullRequestNumber: 123` for squash/rebase merge evidence.
 
 For isolated work, a specialized Git subagent can use the explicit worktree workflow:
@@ -175,7 +175,7 @@ git remote set-url origin git@github.com:OWNER/REPO.git
 export GITHUB_REPOSITORY=OWNER/REPO
 ```
 
-For automatic related-PR lookup and `pull_request`, set a token in the process environment before starting pi:
+For automatic related-PR lookup, `pull_request_status`, PR-aware `land_branch`, and `pull_request`, set a token in the process environment before starting pi:
 
 ```bash
 export GITHUB_TOKEN=github_pat_...
@@ -205,8 +205,8 @@ BranchMe has no separate project config file. It reads process environment varia
 
 | Variable | Meaning |
 | --- | --- |
-| `GITHUB_TOKEN` | Preferred token for automatic related-PR lookup and `pull_request`; process environment first, then local `.env` fallback. |
-| `GH_TOKEN` | Fallback token for automatic related-PR lookup and `pull_request`; process environment first, then local `.env` fallback. |
+| `GITHUB_TOKEN` | Preferred token for automatic related-PR lookup, `pull_request_status`, PR-aware `land_branch`, and `pull_request`; process environment first, then local `.env` fallback. |
+| `GH_TOKEN` | Fallback token for the same GitHub API operations; process environment first, then local `.env` fallback. |
 | `BRANCHME_PR_AUTOFILL=true` | Allow `pull_request` to fill omitted PR fields. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`; disabled by default. |
 | `GITHUB_REPOSITORY=owner/repo` | Optional CI fallback and boundary check for the current GitHub repository; process environment only. |
 
@@ -261,7 +261,7 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | `integrate_branch` | `{ "sourceBranch": string, "targetBranch": string }` | Integrates one exact existing local source branch into one distinct existing local target branch. The clean active control worktree must already have the target checked out. It returns `already_integrated`, `fast_forward`, `merge_commit`, or a `conflict` only after automatic abort and verified restoration. It never fetches or pushes. |
 | `create_branch` | `{ "branchName": string }` | Validates `branchName`, rejects existing local branches, and runs `git switch -c <branchName>` from current `HEAD`. |
 | `push_branch` | `{}` | Pushes the current branch to its configured upstream remote with an explicit `HEAD:<upstream-branch-ref>` refspec, or publishes it with `git push --set-upstream origin <currentBranch>` when no upstream exists. |
-| `pull_request` | `{ "headBranch"?: string, "baseBranch"?: string, "title"?: string, "body"?: string, "draft"?: boolean }` | Preflights GitHub branch visibility and verifies the GitHub `headBranch` commit matches the local branch, then creates a pull request in the resolved current repository. Omitted fields require `BRANCHME_PR_AUTOFILL=true`; branch refs must be distinct, exist locally, and cannot use `owner:branch`. |
+| `pull_request` | `{ "headBranch"?: string, "baseBranch"?: string, "title"?: string, "body"?: string, "draft"?: boolean }` | Preflights GitHub branch visibility and verifies the GitHub `headBranch` commit matches the local branch, then reuses an exact matching open PR or creates one in the resolved current repository. Existing PR metadata is preserved. Omitted fields require `BRANCHME_PR_AUTOFILL=true`; branch refs must be distinct, exist locally, and cannot use `owner:branch`. |
 
 All schemas reject additional properties. `init_repository` accepts only optional `initialBranch`, never a path or repository-mode controls. `change_branch` never accepts `baseRef`, `force`, `stash`, `discard`, `create`, `owner`, `repo`, or path inputs. `fetch_branch` accepts only the optional `remote` and `branch` pair for a targeted remote-tracking refresh (`remote` requires `branch`) and never accepts refspec, tags, prune, or force controls. `pull_branch` and `rebase_branch` have strict empty schemas and never accept a branch, remote, refspec, force, autostash, or arbitrary rebase target. `integrate_branch` requires exactly `sourceBranch` and `targetBranch`; it accepts no repository, path, remote, strategy, message, squash, signing, commit, continuation, abort, force, fetch, push, deletion, or worktree controls. `create_worktree` requires exactly `worktreePath`, `branchName`, and `branchMode`, plus an optional read-only `baseRef` start point for `branchMode: "new"`; `remove_worktree` requires `worktreePath` and accepts optional boolean `deleteIgnored`. No worktree tool accepts force, move, prune, repair, lock, unlock, detached, orphan, remote, or refspec controls. `retire_branch` requires exactly `branchName`, a full 40- or 64-hex-character `expectedHead`, a distinct local `targetBranch`, and the boolean `force` decision; it accepts no repository, path, remote, refspec, pattern, branch list, prune, remote-delete, worktree-removal, or inferred-target control. `pull_request` never accepts `owner`, `repo`, or owner-prefixed branch refs; BranchMe resolves the repository from local `origin` and/or matching `GITHUB_REPOSITORY`. `continue_merge` and `abort_merge` are not available.
 

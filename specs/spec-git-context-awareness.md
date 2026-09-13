@@ -1,5 +1,7 @@
 # Plan: Add Git Context Awareness
 
+> Historical note (superseded, updated 2026-09-13): this implemented feature plan is retained for development history. Version `0.3.1` has nineteen tools and later context/ancestry refinements; use `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md` for current behavior.
+
 ## Task Description
 
 Add automatic Git context awareness to BranchMe so Pi receives a concise, current-repository Git snapshot before each agent run. The snapshot must include the branch, working-tree state, unstaged changes, an open pull request related to the current branch, and recent commits. The existing read-only `branch_status` tool must expose the same current information when the model needs an explicit refresh.

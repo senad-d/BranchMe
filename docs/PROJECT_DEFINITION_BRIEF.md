@@ -1,6 +1,6 @@
 # Project Definition Brief
 
-Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` package.
+Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` package.
 
 ## 1. Bootstrap history
 
@@ -83,7 +83,9 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` p
   - `src/git-context.ts`
   - `src/commands/branchme-command.ts`
   - `src/tools/branchme-tools.ts`
+  - `src/tools/workflow-tools.ts`
   - `src/git.ts`
+  - `src/git-workflow.ts`
   - `src/git-integration.ts`
   - `src/git-retirement.ts`
   - `src/git-landing.ts`
@@ -98,7 +100,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` p
   - The general Git helper owns verified current-directory initialization plus reusable argv-style current-repository inspection, branch/ref/ancestry and operation-state primitives, branch/upstream workflows, worktree parsing/path validation/create/remove verification, and process-local same-repository mutation serialization.
   - The integration module owns the clean-control preflight, fixed merge mutation, automatic conflict abort, outcome classification, and repository/ref/worktree/ancestry verification without absorbing that state machine into the general helper.
   - The retirement module owns exact request validation, direct-ref and expected-`HEAD` preflight, complete worktree occupancy checks, target ancestry, leased local-ref deletion, cancellation-safe verification, and bounded uncertain outcomes without absorbing that state machine into the general helper.
-  - The GitHub helper owns repository resolution, token/autofill configuration, related-PR lookup, branch visibility and commit preflight, and pull request REST calls.
+  - The GitHub helper owns repository resolution, token/autofill configuration, related-PR and PR-lifecycle lookup, branch visibility and commit preflight, idempotent pull request creation/reuse, and merged-PR evidence used by landing.
   - The redaction module owns shared credential redaction for display and prompt-bound metadata.
   - Shared public details remain JSON-serializable and contain no runtime objects or abort signals.
 - Dependencies:
@@ -109,7 +111,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.0` p
 
 ## 6. Configuration, state, and filesystem boundary
 
-- Config source: no separate BranchMe config file. `GITHUB_TOKEN`, `GH_TOKEN`, and `BRANCHME_PR_AUTOFILL` use process-environment values first and may fall back to supported keys in a hardened regular `.env` file at the verified Git root.
+- Config source: no separate BranchMe config file. `GITHUB_TOKEN`, `GH_TOKEN`, and `BRANCHME_PR_AUTOFILL` use process-environment values first and may fall back to supported keys in a hardened regular `.env` file at the verified Git root. Tokens authenticate automatic related-PR lookup, explicit PR status, PR-aware landing evidence, and PR creation/reuse.
 - Session state: no persisted BranchMe state. Tool calls return serializable details, and mutation/PR coordination is in-memory and process-local only; other Pi sessions and external Git processes are not locked.
 - Repository initialization: `init_repository` creates in-place `.git` metadata only in pi's canonical current directory after rejecting existing or nested repositories; it creates an unborn branch but no commit or project file.
 - Active-checkout mutations: explicit branch switching, creation, pull, rebase, and integration operations can update Git metadata and working-tree files through Git. Explicit retirement can delete one exact local branch ref. Push and fetch operations can update remote or remote-tracking refs through Git.
@@ -171,7 +173,7 @@ Standalone removal retains its branch and requires explicit `deleteIgnored: true
 - `SECURITY.md` documents local filesystem, Git, GitHub, credential, and prompt-insertion boundaries.
 - `docs/STRUCTURE.md` describes the implemented source and test layout.
 - `docs/SMOKE_TEST.md` records isolated checkout, handoff, and installed-package smoke behavior.
-- `CHANGELOG.md` tracks the active `0.3.0` unreleased changes.
+- `CHANGELOG.md` tracks the active `0.3.1` unreleased changes.
 - npm distribution uses package `@senad-d/branchme`; package-content checks exclude private specs, credentials, generated files, caches, and local state.
 
 ## 12. Validation plan

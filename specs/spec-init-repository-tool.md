@@ -1,5 +1,7 @@
 # Git Repository Initialization Tool
 
+> Historical note (completed, updated 2026-09-13): this task records the implemented `init_repository` addition. Use `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md` for the current `0.3.1` package contract.
+
 ### 1. Add verified current-directory repository initialization
 
 - [x] Add a strict `init_repository` tool that initializes and verifies pi's exact current working directory without exposing arbitrary filesystem or repository-mode controls.

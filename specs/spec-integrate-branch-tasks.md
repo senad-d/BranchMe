@@ -1,5 +1,7 @@
 # Plan: Branch Integration Tasks
 
+> Historical note (completed, updated 2026-09-13): this task plan is retained as implementation history. Version `0.3.1` has nineteen tools and later workflow additions; use `README.md`, `SECURITY.md`, and `docs/STRUCTURE.md` for current behavior.
+
 ## Task description
 
 Add a minimal `integrate_branch` tool that merges one exact local source branch into one exact local target branch from a clean control worktree. The operation must verify repository and branch identity, return before/after commit identities, automatically abort conflicts, and never push, delete branches, remove worktrees, or leave an initial conflict-resolution workflow in progress.
