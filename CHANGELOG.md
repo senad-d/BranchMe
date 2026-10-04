@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 - Unreleased
+## 0.3.2 - Unreleased
 
 - Allowed missing worktree parent directories, resolved through the nearest existing directory ancestor without writing during validation. Non-directory and dangling-symlink ancestors remain rejected; Git creates missing parents only after all preflight checks pass.
 - Parallelized independent read-only worktree-path, Git-operation-marker, and upstream-configuration lookups while preserving result order and validation.
