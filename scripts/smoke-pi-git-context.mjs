@@ -9,10 +9,6 @@ const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const localPiBinary = fileURLToPath(
   new URL(process.platform === "win32" ? "../node_modules/.bin/pi.cmd" : "../node_modules/.bin/pi", import.meta.url),
 );
-const piAiModuleUrl = new URL(
-  "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js",
-  import.meta.url,
-).href;
 const smokeTimeoutMs = 30_000;
 const maxBuffer = 1024 * 1024;
 
@@ -84,7 +80,7 @@ function initializeGitFixture(workspace) {
 function verifierSource() {
   return `import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createAssistantMessageEventStream } from ${JSON.stringify(piAiModuleUrl)};
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 
 const expectedTools = [
   "list_branches",
@@ -185,7 +181,7 @@ function fail(model, message) {
 }
 
 function verifyTools(context) {
-  const available = new Set((context.tools ?? []).map((tool) => tool.name));
+  const available = new Set(getCurrentTools(context.messages).map((tool) => tool.name));
   return expectedTools.length === 19 &&
     expectedTools.every((name) => available.has(name)) &&
     !available.has("git_context") &&
@@ -203,7 +199,7 @@ function toolResultText(context) {
 
 function streamSmokeModel(model, context) {
   const scenario = process.env.BRANCHME_SMOKE_SCENARIO;
-  const systemPrompt = context.systemPrompt ?? "";
+  const systemPrompt = getCurrentSystemPrompt(context.messages);
   if (!verifyTools(context)) return fail(model, "unexpected BranchMe tool registration");
   if (fetchCalls !== 0) return fail(model, "a network request was attempted");
   if (forbiddenToolCalls !== 0) return fail(model, "a worktree, remote, integration, or branch-retirement mutation tool was invoked");

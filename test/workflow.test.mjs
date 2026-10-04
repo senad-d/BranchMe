@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { devNull, tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { promisify } from "node:util";
 import test from "node:test";
 import { Compile } from "typebox/compile";
@@ -165,6 +166,31 @@ test("base updates preserve upstream configuration when fetching restores a miss
   assert.equal(result.status, "already_integrated");
   assert.equal(await checked(f.root, ["config", "--get-regexp", "^branch\\.feature\\."]), before);
   assert.equal(await checked(f.root, ["rev-parse", "--abbrev-ref", "@{u}"]), "origin/main");
+});
+
+test("base updates start independent upstream configuration reads together", async (t) => {
+  const f = await fixture(t);
+  await checked(f.root, ["switch", "--track", "-c", "feature", "origin/main"]);
+  const before = await checked(f.root, ["config", "--get-regexp", "^branch\\.feature\\."]);
+  let remoteReads = 0;
+  let mergeReads = 0;
+  const pi = {
+    async exec(command, args, options) {
+      if (args[0] === "config" && args[3] === "branch.feature.remote") {
+        remoteReads += 1;
+        await nextTurn();
+        assert.equal(mergeReads, remoteReads, "both independent config reads must start before either is awaited");
+      }
+      if (args[0] === "config" && args[3] === "branch.feature.merge") mergeReads += 1;
+      return f.pi.exec(command, args, options);
+    },
+  };
+
+  const result = await updateFromBase(pi, { cwd: f.root }, { baseBranch: "main" });
+  assert.equal(result.status, "already_integrated");
+  assert.equal(remoteReads, 2);
+  assert.equal(mergeReads, 2);
+  assert.equal(await checked(f.root, ["config", "--get-regexp", "^branch\\.feature\\."]), before);
 });
 
 test("workflow fetches reject symbolic destinations before changing any refs", async (t) => {

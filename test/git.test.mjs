@@ -16,6 +16,7 @@ import {
   fetchRemoteBranch,
   formatGitFailure,
   getBranchStatus,
+  getGitOperationState,
   getGitRoot,
   getLocalBranchAncestry,
   getPullRequestCommitSubjects,
@@ -96,6 +97,10 @@ const integrationOperationStateArgs = [
   "--path-format=absolute",
   ...integrationOperationMarkers.flatMap((path) => ["--git-path", path]),
 ];
+
+function operationMarkerPath(rootPath, marker) {
+  return join(rootPath, marker);
+}
 
 function recentLogRecord(hash, shortHash, date, subject) {
   return `\0${hash}\u001f${shortHash}\u001f${date}\u001f${subject}\n`;
@@ -1697,6 +1702,31 @@ test("listWorktrees uses read-only Git commands, canonical path comparison, and 
   }
 });
 
+test("getGitOperationState preserves marker order and deduplicates operations after concurrent reads", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-operation-markers-"));
+  try {
+    await writeFile(join(tempRoot, "MERGE_HEAD"), "head\n");
+    await writeFile(join(tempRoot, "AUTO_MERGE"), "head\n");
+    await mkdir(join(tempRoot, "rebase-merge"));
+    await mkdir(join(tempRoot, "sequencer"));
+    const paths = integrationOperationMarkers.map(operationMarkerPath.bind(undefined, tempRoot));
+    const pi = makePi({
+      [integrationOperationStateArgs.join("\0")]: { stdout: `${paths.join("\n")}\n` },
+    });
+    const controller = new AbortController();
+
+    assert.deepEqual(await getGitOperationState(pi, ctx, controller.signal), {
+      active: ["merge", "rebase", "sequencer"],
+      mergeHeadPresent: true,
+      autoMergePresent: true,
+    });
+    assert.equal(pi.calls[0].options.signal, controller.signal);
+    assert.equal(pi.calls[0].options.timeout, 5_000);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("validateWorktreePathInput rejects blank, relative, root, and control-character paths", () => {
   assert.throws(() => validateWorktreePathInput(42), /must be a string/u);
   assert.throws(() => validateWorktreePathInput(""), /required/u);
@@ -1777,7 +1807,38 @@ test("validateWorktreeCreationPath accepts an external destination and uses read
   }
 });
 
-test("validateWorktreeCreationPath rejects missing or non-directory parents and existing destinations", async () => {
+test("validateWorktreeCreationPath resolves missing ancestors through a directory symlink without writing", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-worktree-create-missing-"));
+  const repoRoot = join(tempRoot, "repo");
+  const commonGitDir = join(tempRoot, "common-git");
+  const aliasPath = join(tempRoot, "alias");
+  await mkdir(repoRoot);
+  await mkdir(commonGitDir);
+  await symlink(tempRoot, aliasPath, "dir");
+
+  try {
+    const porcelain = worktreePorcelainRecord(
+      `worktree ${repoRoot}`,
+      `HEAD ${"a".repeat(40)}`,
+      "branch refs/heads/main",
+    );
+    const pi = makeWorktreeValidationPi(repoRoot, porcelain, commonGitDir);
+    const destination = join(aliasPath, "missing", "nested", "linked");
+    const details = await validateWorktreeCreationPath(pi, { cwd: repoRoot }, destination);
+
+    assert.equal(details.canonicalPath, join(await realpath(tempRoot), "missing", "nested", "linked"));
+    assert.deepEqual(pi.calls.map((call) => call.args), [
+      ["rev-parse", "--show-toplevel"],
+      ["worktree", "list", "--porcelain", "-z"],
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ]);
+    await assert.rejects(realpath(join(tempRoot, "missing")), { code: "ENOENT" });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("validateWorktreeCreationPath rejects non-directory or dangling ancestors and existing destinations", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "branchme-worktree-create-invalid-"));
   const repoRoot = join(tempRoot, "repo");
   const commonGitDir = join(tempRoot, "common-git");
@@ -1785,12 +1846,14 @@ test("validateWorktreeCreationPath rejects missing or non-directory parents and 
   const existingFile = join(tempRoot, "existing-file");
   const existingDirectory = join(tempRoot, "existing-directory");
   const existingSymlink = join(tempRoot, "existing-symlink");
+  const danglingSymlink = join(tempRoot, "dangling-symlink");
   await mkdir(repoRoot);
   await mkdir(commonGitDir);
   await writeFile(parentFile, "not a directory\n", "utf8");
   await writeFile(existingFile, "already here\n", "utf8");
   await mkdir(existingDirectory);
   await symlink(repoRoot, existingSymlink, "dir");
+  await symlink(join(tempRoot, "missing-target"), danglingSymlink, "dir");
 
   try {
     const noGitPi = {
@@ -1800,15 +1863,19 @@ test("validateWorktreeCreationPath rejects missing or non-directory parents and 
         throw new Error("Git must not run for an invalid filesystem destination");
       },
     };
-    await assert.rejects(
-      () => validateWorktreeCreationPath(noGitPi, { cwd: repoRoot }, join(tempRoot, "missing", "child")),
-      /parent .* must exist as a directory/u,
-    );
-    await assert.rejects(
-      () => validateWorktreeCreationPath(noGitPi, { cwd: repoRoot }, join(parentFile, "child")),
-      /parent .* must be a directory/u,
-    );
-    for (const destination of [existingFile, existingDirectory, existingSymlink]) {
+    for (const parent of [parentFile, join(parentFile, "missing")]) {
+      await assert.rejects(
+        () => validateWorktreeCreationPath(noGitPi, { cwd: repoRoot }, join(parent, "child")),
+        /parent .* must be a directory/u,
+      );
+    }
+    for (const parent of [danglingSymlink, join(danglingSymlink, "missing")]) {
+      await assert.rejects(
+        () => validateWorktreeCreationPath(noGitPi, { cwd: repoRoot }, join(parent, "child")),
+        /parent .* could not be resolved/u,
+      );
+    }
+    for (const destination of [existingFile, existingDirectory, existingSymlink, danglingSymlink]) {
       await assert.rejects(
         () => validateWorktreeCreationPath(noGitPi, { cwd: repoRoot }, destination),
         /destination .* already exists/u,
@@ -1816,10 +1883,11 @@ test("validateWorktreeCreationPath rejects missing or non-directory parents and 
     }
     assert.equal(noGitPi.calls.length, 0);
 
-    const secretParent = join(tempRoot, "ghp_parentsecret123", "child");
+    const secretFile = join(tempRoot, "ghp_parentsecret123");
+    await writeFile(secretFile, "not a directory\n", "utf8");
     await assert.rejects(
-      () => validateWorktreeCreationPath(noGitPi, { cwd: repoRoot }, secretParent),
-      (error) => error instanceof Error && /must exist/u.test(error.message) && !/parentsecret/u.test(error.message),
+      () => validateWorktreeCreationPath(noGitPi, { cwd: repoRoot }, join(secretFile, "child")),
+      (error) => error instanceof Error && /must be a directory/u.test(error.message) && !/parentsecret/u.test(error.message),
     );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
@@ -1840,16 +1908,22 @@ test("validateWorktreeCreationPath rejects registered-worktree and common-Git-di
       "branch refs/heads/main",
     );
     const nestedPi = makeWorktreeValidationPi(repoRoot, porcelain, commonGitDir);
-    await assert.rejects(
-      () => validateWorktreeCreationPath(nestedPi, { cwd: repoRoot }, join(repoRoot, "nested-worktree")),
-      /inside a registered worktree/u,
-    );
+    for (const destination of [join(repoRoot, "nested-worktree"), join(repoRoot, "missing", "nested-worktree")]) {
+      await assert.rejects(
+        () => validateWorktreeCreationPath(nestedPi, { cwd: repoRoot }, destination),
+        /inside a registered worktree/u,
+      );
+    }
 
     const commonPi = makeWorktreeValidationPi(repoRoot, porcelain, commonGitDir);
-    await assert.rejects(
-      () => validateWorktreeCreationPath(commonPi, { cwd: repoRoot }, join(commonGitDir, "nested-worktree")),
-      /inside the repository common Git directory/u,
-    );
+    for (const destination of [join(commonGitDir, "nested-worktree"), join(commonGitDir, "missing", "nested-worktree")]) {
+      await assert.rejects(
+        () => validateWorktreeCreationPath(commonPi, { cwd: repoRoot }, destination),
+        /inside the repository common Git directory/u,
+      );
+    }
+    await assert.rejects(realpath(join(repoRoot, "missing")), { code: "ENOENT" });
+    await assert.rejects(realpath(join(commonGitDir, "missing")), { code: "ENOENT" });
     assert.equal(
       [...nestedPi.calls, ...commonPi.calls].every((call) =>
         call.args[0] === "rev-parse" || call.args.join("\0") === "worktree\0list\0--porcelain\0-z"),
@@ -1866,14 +1940,14 @@ test("createWorktree rejects a canonical path made unsafe by realpath before mut
   const commonGitDir = join(tempRoot, "common-git");
   const unsafeCanonicalParent = join(tempRoot, "ghp_canonicalparentsecret123");
   const safeParentAlias = join(tempRoot, "safe-parent-alias");
-  const requestedDestination = join(safeParentAlias, "linked");
+  const requestedDestination = join(safeParentAlias, "missing", "linked");
   const branchName = "feature/lossless-canonical";
   const sourceHead = "a".repeat(40);
   await mkdir(repoRoot);
   await mkdir(commonGitDir);
   await mkdir(unsafeCanonicalParent);
   await symlink(unsafeCanonicalParent, safeParentAlias, "dir");
-  const canonicalDestination = join(await realpath(unsafeCanonicalParent), "linked");
+  const canonicalDestination = join(await realpath(unsafeCanonicalParent), "missing", "linked");
 
   try {
     const before = worktreePorcelainRecord(
@@ -1903,6 +1977,7 @@ test("createWorktree rejects a canonical path made unsafe by realpath before mut
     assert.equal(pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "add"), false);
     assert.equal(pi.calls.some((call) => call.args[0] === "check-ref-format"), false);
     assert.equal(pi.calls.some((call) => call.args[0] === "show-ref"), false);
+    await assert.rejects(() => realpath(join(unsafeCanonicalParent, "missing")), { code: "ENOENT" });
     await assert.rejects(() => realpath(canonicalDestination), { code: "ENOENT" });
     assertNoUnsafeWorktreeCreationCommands(pi.calls);
   } finally {

@@ -2,6 +2,9 @@
 
 ## 0.3.1 - Unreleased
 
+- Allowed missing worktree parent directories, resolved through the nearest existing directory ancestor without writing during validation. Non-directory and dangling-symlink ancestors remain rejected; Git creates missing parents only after all preflight checks pass.
+- Parallelized independent read-only worktree-path, Git-operation-marker, and upstream-configuration lookups while preserving result order and validation.
+- Updated the Pi development packages to `1.0.2`, replacing vulnerable transitive `brace-expansion` and `undici` versions with `5.0.12` and `8.10.2`. Updated the Git-context smoke verifier to use host-resolved imports and Pi's transcript APIs instead of the old nested dependency layout.
 - Added bounded `list_branches` discovery with local/remote-tracking identity, cached upstream ahead/behind counts, symbolic refs, and worktree occupancy.
 - Added `track_branch` to fetch and verify a new local tracking checkout, and `update_from_base` to merge a freshly fetched base into the current feature without rewriting published history. Both require clean idle checkouts and narrow fetch scope.
 - Added `pull_request_status` for validated same-repository open/closed/merged PR lifecycle and commit identities. PR creation now returns `created` or `existing`, preserves existing PR fields, and rechecks HTTP 422 creation races without repeating the POST.

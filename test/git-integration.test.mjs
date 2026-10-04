@@ -869,6 +869,50 @@ test("real git listWorktrees reports the main worktree", async () => {
   });
 });
 
+test("real git createWorktree creates missing ancestors after validation for new and existing branches", async () => {
+  await withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    await runGit(repoRoot, ["branch", "feature/existing"]);
+    for (const branchMode of ["new", "existing"]) {
+      const parentPath = join(temporaryRoot, `${branchMode}-worktrees`);
+      const worktreePath = join(parentPath, "nested", "linked");
+      const pi = makeRealGitPi(repoRoot, [worktreePath]);
+      await assert.rejects(access(parentPath), { code: "ENOENT" });
+
+      const created = await createWorktree(pi, { cwd: repoRoot }, worktreePath, `feature/${branchMode}`, branchMode);
+
+      assert.equal(created.action, "create_worktree");
+      assert.equal(created.handoff.cwd, worktreePath);
+      assert.equal(created.handoff.ready, true);
+      assert.equal(created.verified.after.worktree.path, worktreePath);
+      await access(worktreePath);
+    }
+  });
+});
+
+test("real git createWorktree leaves missing parents untouched when branch or base validation fails", async () => {
+  await withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    const parentPath = join(temporaryRoot, "missing-worktrees");
+    const worktreePath = join(parentPath, "nested", "linked");
+    const cases = [
+      { branch: "main", mode: "new", error: /already exists/u },
+      { branch: "feature/absent", mode: "existing", error: /does not exist/u },
+      { branch: "main", mode: "existing", error: /already checked out/u },
+      { branch: "feature/new", mode: "new", base: "absent-base", error: /baseRef .* does not name/u },
+    ];
+    for (const scenario of cases) {
+      const pi = makeRealGitPi(repoRoot, [worktreePath]);
+      await assert.rejects(
+        createWorktree(pi, { cwd: repoRoot }, worktreePath, scenario.branch, scenario.mode, undefined, scenario.base),
+        scenario.error,
+      );
+      await assert.rejects(access(parentPath), { code: "ENOENT" });
+      assert.equal(pi.calls.some((call) => call.args[0] === "worktree" && call.args[1] === "add"), false);
+      assert.equal(await currentBranch(repoRoot), "main");
+      assert.equal(await localRefExists(repoRoot, "refs/heads/feature/new"), false);
+    }
+  });
+});
+
 test("real git worktree lifecycle preserves a dirty source and retained branch", async () => {
   await withTempGitRepo(async (repoRoot, temporaryRoot) => {
     const worktreePath = join(temporaryRoot, "feature-new");

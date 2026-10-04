@@ -954,6 +954,14 @@ export async function canonicalizePathAllowMissing(path: string): Promise<string
   }
 }
 
+async function resolveWorktreeInventoryEntry(
+  record: ParsedWorktreeRecord,
+  index: number,
+): Promise<WorktreeInventoryEntry> {
+  const canonicalPath = await canonicalizePathAllowMissing(record.rawPath);
+  return { record, index, canonicalPath };
+}
+
 export async function collectWorktreeInventory(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
@@ -971,10 +979,11 @@ export async function collectWorktreeInventory(
     throw new Error("Unable to inspect worktrees: current repository path could not be resolved.");
   }
 
-  const entries: WorktreeInventoryEntry[] = [];
+  const entryPromises: Promise<WorktreeInventoryEntry>[] = [];
   for (const [index, record] of records.entries()) {
-    entries.push({ record, index, canonicalPath: await canonicalizePathAllowMissing(record.rawPath) });
+    entryPromises.push(resolveWorktreeInventoryEntry(record, index));
   }
+  const entries = await Promise.all(entryPromises);
   return { repoRoot, canonicalCurrentPath, entries };
 }
 
@@ -983,16 +992,20 @@ export function pathIsInsideOrEqual(candidatePath: string, boundaryPath: string)
   return relation === "" || (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation));
 }
 
-async function requireCanonicalCreationPath(worktreePath: string): Promise<string> {
-  const parentPath = dirname(worktreePath);
-  let parentStats;
+async function requireCanonicalCreationParent(parentPath: string): Promise<string> {
   try {
-    parentStats = await stat(parentPath);
-  } catch {
-    throw new Error(`worktreePath parent ${safeWorktreePathLabel(parentPath)} must exist as a directory.`);
-  }
-  if (!parentStats.isDirectory()) {
-    throw new Error(`worktreePath parent ${safeWorktreePathLabel(parentPath)} must be a directory.`);
+    // lstat distinguishes a missing directory from a dangling symlink.
+    await lstat(parentPath);
+  } catch (error) {
+    if (filesystemErrorCode(error) === "ENOTDIR") {
+      throw new Error(`worktreePath parent ${safeWorktreePathLabel(parentPath)} must be a directory.`);
+    }
+    const ancestorPath = dirname(parentPath);
+    if (filesystemErrorCode(error) !== "ENOENT" || ancestorPath === parentPath) {
+      throw new Error(`worktreePath parent ${safeWorktreePathLabel(parentPath)} could not be inspected.`);
+    }
+    // Resolve missing ancestors without writing; Git creates them after preflight.
+    return join(await requireCanonicalCreationParent(ancestorPath), basename(parentPath));
   }
 
   let canonicalParent: string;
@@ -1001,12 +1014,25 @@ async function requireCanonicalCreationPath(worktreePath: string): Promise<strin
   } catch {
     throw new Error(`worktreePath parent ${safeWorktreePathLabel(parentPath)} could not be resolved.`);
   }
+  let parentStats;
+  try {
+    parentStats = await stat(canonicalParent);
+  } catch {
+    throw new Error(`worktreePath parent ${safeWorktreePathLabel(parentPath)} could not be inspected.`);
+  }
+  if (!parentStats.isDirectory()) {
+    throw new Error(`worktreePath parent ${safeWorktreePathLabel(parentPath)} must be a directory.`);
+  }
+  return canonicalParent;
+}
 
+async function requireCanonicalCreationPath(worktreePath: string): Promise<string> {
+  const canonicalParent = await requireCanonicalCreationParent(dirname(worktreePath));
   const canonicalPath = join(canonicalParent, basename(worktreePath));
   try {
     await lstat(canonicalPath);
   } catch (error) {
-    if (isMissingFilesystemPath(error)) return canonicalPath;
+    if (filesystemErrorCode(error) === "ENOENT") return canonicalPath;
     throw new Error(`worktreePath destination ${safeWorktreePathLabel(canonicalPath)} could not be inspected.`);
   }
   throw new Error(`worktreePath destination ${safeWorktreePathLabel(canonicalPath)} already exists.`);
@@ -1092,10 +1118,8 @@ export async function getGitOperationState(
   }
 
   const active: GitOperationKind[] = [];
-  const presentMarkers: boolean[] = [];
-  for (const [index, path] of paths.entries()) {
-    const present = await gitOperationMarkerExists(path);
-    presentMarkers.push(present);
+  const presentMarkers = await Promise.all(paths.map(gitOperationMarkerExists));
+  for (const [index, present] of presentMarkers.entries()) {
     if (!present) continue;
     const operation = GIT_OPERATION_MARKERS[index][1];
     if (!active.includes(operation)) active.push(operation);

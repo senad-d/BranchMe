@@ -117,7 +117,7 @@ Worktree management intentionally writes outside the active checkout, so path ha
 #### How
 
 - Require `worktreePath` to be a non-empty absolute path with no NUL or control characters.
-- Normalize the path, require its immediate parent to exist as a directory, resolve the parent through `realpath`, and build the canonical destination from that parent plus the requested basename.
+- Normalize the path, resolve its nearest existing directory ancestor through `realpath`, and append missing parent segments and the requested basename without writing. Reject non-directory or dangling-symlink ancestors; Git creates missing parents only after all creation preflight checks succeed.
 - Use `lstat` so an existing file, directory, or symlink at a creation destination is rejected.
 - Reject creation destinations inside any registered worktree or inside the repository's common Git directory.
 - Resolve the common Git directory through Git rather than assuming `.git` is a directory.
@@ -132,7 +132,7 @@ Worktree management intentionally writes outside the active checkout, so path ha
 #### Acceptance criteria
 
 - Relative, blank, control-character, existing, symlink-target, nested-worktree, and common-Git-directory destinations are rejected.
-- Valid sibling or otherwise external absolute destinations with an existing parent are accepted.
+- Valid sibling or otherwise external absolute destinations with existing or missing parents are accepted without filesystem mutation during validation.
 - Removal lookup accepts only a canonical path registered to the current repository.
 - Validation uses Node path/filesystem APIs and argv-style Git calls, not shell interpolation.
 - No filesystem mutation occurs in this task.

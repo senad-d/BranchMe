@@ -123,7 +123,7 @@ Standalone removal retains its branch and requires explicit `deleteIgnored: true
 ## 7. Worktree handoff contract
 
 - `list_worktrees` reads bounded NUL-delimited porcelain inventory and keeps worktree discovery out of automatic active-worktree context.
-- `create_worktree` requires an explicitly approved absolute destination whose immediate parent exists. It rejects existing destinations and locations inside registered worktrees or the repository's common Git directory.
+- `create_worktree` requires an explicitly approved absolute destination with a resolvable directory ancestor. Missing parents are created by Git only after validation. It rejects non-directory or dangling-symlink ancestors, existing destinations, and locations inside registered worktrees or the repository's common Git directory.
 - New mode creates a local branch from current `HEAD` or an explicit read-only `baseRef` (local branch, remote-tracking ref, or full commit). Existing mode accepts only an existing local branch not checked out in another worktree; no remote branch is inferred.
 - Before mutation, canonical cwd and branch identity must fit documented limits and remain unchanged by redaction, escaping, Unicode handling, or truncation.
 - Successful creation verifies canonical path, local branch, full `HEAD`, and clean state, then returns the exact canonical absolute cwd and local branch in `handoff: { cwd, branch, head, ready: true, summary }`.

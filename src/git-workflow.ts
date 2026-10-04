@@ -90,15 +90,23 @@ export interface UpdateFromBaseInput {
   remote?: string;
 }
 
-async function captureUpstreamConfiguration(pi: GitAPI, ctx: GitCommandContext, branch: string, signal?: AbortSignal): Promise<string> {
-  const values: string[] = [];
-  for (const key of ["remote", "merge"]) {
-    const result = await runGit(pi, ctx, ["config", "--null", "--get-all", `branch.${branch}.${key}`], { signal, allowFailure: true });
-    if (result.code !== 0 && (result.code !== 1 || result.stdout || result.stderr)) {
-      throw new Error("Unable to inspect upstream configuration.");
-    }
-    values.push(result.stdout);
+async function readUpstreamConfigurationValue(
+  pi: GitAPI,
+  ctx: GitCommandContext,
+  branch: string,
+  signal: AbortSignal | undefined,
+  key: string,
+): Promise<string> {
+  const result = await runGit(pi, ctx, ["config", "--null", "--get-all", `branch.${branch}.${key}`], { signal, allowFailure: true });
+  if (result.code !== 0 && (result.code !== 1 || result.stdout || result.stderr)) {
+    throw new Error("Unable to inspect upstream configuration.");
   }
+  return result.stdout;
+}
+
+async function captureUpstreamConfiguration(pi: GitAPI, ctx: GitCommandContext, branch: string, signal?: AbortSignal): Promise<string> {
+  const readValue = readUpstreamConfigurationValue.bind(undefined, pi, ctx, branch, signal);
+  const values = await Promise.all(["remote", "merge"].map(readValue));
   return JSON.stringify(values);
 }
 
