@@ -1,6 +1,6 @@
 {
   "name": "@senad-d/branchme",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "description": "Pi extension for verified Git repository initialization, branch, worktree, integration, retirement, push, and pull request workflows.",
   "license": "MIT",
@@ -80,5 +80,10 @@
     "@types/node": "^26.0.1",
     "typebox": "^1.2.18",
     "typescript": "^7.0.2"
+  },
+  "allowScripts": {
+    "@google/genai@2.21.0": true,
+    "esbuild@0.28.2": true,
+    "protobufjs@7.6.6": true
   }
 }
