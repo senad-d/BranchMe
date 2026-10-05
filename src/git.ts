@@ -1,4 +1,4 @@
-import { lstat, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -629,7 +629,7 @@ function truncateWorktreeValue(value: string, limit: number): string {
   return `${value.slice(0, end)}…`;
 }
 
-function safeWorktreeValue(value: string, limit: number): string {
+export function safeWorktreeValue(value: string, limit: number): string {
   const redacted = redactSecrets(value);
   const escaped = redacted.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, escapeGitContextControlCharacter);
   return truncateWorktreeValue(escaped, limit);
@@ -2398,6 +2398,33 @@ async function getVerifiedRefCommit(
   const commit = trimOutput(result.stdout);
   if (!/^[0-9a-f]{40,64}$/iu.test(commit)) {
     throw new Error(`Unable to resolve ${describedRef} to a commit: ${safeOutput(result.stdout) || "empty output"}`);
+  }
+  return commit;
+}
+
+export async function getMergeHeadCommit(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<string> {
+  const result = await runGit(pi, ctx, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"], {
+    signal, timeout: GIT_STATUS_TIMEOUT_MS,
+  });
+  const path = stripSingleLineTerminator(result.stdout);
+  if (!isAbsolute(path) || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(path)) {
+    throw new Error("Unable to inspect MERGE_HEAD: Git returned an invalid state path.");
+  }
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.size > 65) {
+    throw new Error("MERGE_HEAD must contain exactly one commit; multi-head merges are not supported.");
+  }
+  const contents = await readFile(path, { encoding: "utf8", signal });
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})\n?$/iu.test(contents)) {
+    throw new Error("MERGE_HEAD must contain exactly one valid commit identity.");
+  }
+  const commit = await getVerifiedRefCommit(pi, ctx, "MERGE_HEAD", "MERGE_HEAD", signal);
+  if (commit.toLowerCase() !== contents.trimEnd().toLowerCase()) {
+    throw new Error("MERGE_HEAD changed during inspection; inspect the merge before retrying.");
   }
   return commit;
 }

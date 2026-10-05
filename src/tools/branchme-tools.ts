@@ -9,7 +9,6 @@ import {
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
   GIT_BRANCH_SUMMARY_LIMIT_CHARS,
-  GIT_INTEGRATION_SUMMARY_LIMIT_CHARS,
   GIT_RETIREMENT_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
   INIT_REPOSITORY_TOOL_NAME,
@@ -47,7 +46,7 @@ import {
   withRepositoryMutationQueue,
 } from "../git.ts";
 import { collectGitContext, formatGitContext } from "../git-context.ts";
-import { integrateBranch } from "../git-integration.ts";
+import { formatConflictPathList, integrateBranch } from "../git-integration.ts";
 import { retireBranch } from "../git-retirement.ts";
 import { formatLandBranch, landBranch } from "../git-landing.ts";
 import {
@@ -328,42 +327,17 @@ export function formatRemoveWorktree(details: RemoveWorktreeDetails): string {
   return `Removed linked worktree directory ${path}. Verified it is no longer registered and retained local branch ${branch} at HEAD ${shortCommit(details.handoff.head)}; the removed cwd is not ready for handoff.`;
 }
 
-function integrationConflictOmissionLine(omitted: number): string {
-  return `${omitted} conflict path${omitted === 1 ? "" : "s"} omitted.`;
-}
-
-function formatIntegrationConflict(details: Extract<IntegrateBranchDetails, { status: "conflict" }>): string {
+function formatIntegrationConflict(details: Extract<IntegrateBranchDetails, { status: "conflict" | "conflict_kept" }>): string {
   const source = safeWorktreeFormatValue(details.request.sourceBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
   const target = safeWorktreeFormatValue(details.request.targetBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
-  const lines = [
-    `integrate_branch found conflicts while integrating ${source} into ${target}; the merge was automatically aborted and exact restoration was verified at target HEAD ${shortCommit(details.verified.heads.after.targetHead)}.`,
-    "Conflict paths:",
-  ];
-  let omitted = details.conflict.omitted;
-
-  for (const [index, entry] of details.conflict.paths.entries()) {
-    const path = safeWorktreeFormatValue(entry.path, WORKTREE_FORMAT_PATH_LIMIT_CHARS);
-    const line = `- ${path}`;
-    const remaining = details.conflict.paths.length - index - 1;
-    const candidateOmitted = details.conflict.omitted + remaining;
-    const candidate = [
-      ...lines,
-      line,
-      ...(candidateOmitted > 0 ? [integrationConflictOmissionLine(candidateOmitted)] : []),
-    ].join("\n");
-    if (candidate.length > GIT_INTEGRATION_SUMMARY_LIMIT_CHARS) {
-      omitted += details.conflict.paths.length - index;
-      break;
-    }
-    lines.push(line);
-  }
-
-  if (omitted > 0) lines.push(integrationConflictOmissionLine(omitted));
-  return lines.join("\n");
+  const header = details.status === "conflict"
+    ? `integrate_branch found conflicts while integrating ${source} into ${target}; the merge was automatically aborted and exact restoration was verified at target HEAD ${shortCommit(details.verified.heads.after.targetHead)}.`
+    : `integrate_branch found conflicts while integrating ${source} into ${target}; the merge was kept in progress at target HEAD ${shortCommit(details.heads.targetHead)} and must be finished with conclude_merge.`;
+  return formatConflictPathList(header, details.conflict);
 }
 
 export function formatIntegrateBranch(details: IntegrateBranchDetails): string {
-  if (details.status === "conflict") return formatIntegrationConflict(details);
+  if (details.status === "conflict" || details.status === "conflict_kept") return formatIntegrationConflict(details);
 
   const source = safeWorktreeFormatValue(details.request.sourceBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);
   const target = safeWorktreeFormatValue(details.request.targetBranch, WORKTREE_FORMAT_BRANCH_LIMIT_CHARS);

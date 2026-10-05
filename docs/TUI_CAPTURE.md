@@ -36,7 +36,8 @@ Commands only show info; BranchMe tools perform actions.
 
 - `list_branches` — discover local/cached remote refs, upstream counts, and worktree occupancy without fetching.
 - `track_branch` — fetch an existing remote branch and verify a new clean local tracking checkout.
-- `update_from_base` — fetch and merge an explicit base into the current clean feature, preserving published history and upstream.
+- `update_from_base` — fetch and merge an explicit base into the current clean feature, preserving published history and upstream; a conflict is aborted unless `keepConflicts: true` leaves it in progress.
+- `conclude_merge` — `action: "conclude"` commits the kept merge once every conflict marker is removed; `action: "abort"` restores the branch.
 - `pull_request_status` — inspect a PR by number, or the latest PR for a head branch; not a CI/review verdict.
 - `pull_request` — reuses an exact matching open PR without changing its title, body, or draft state.
 - `land_branch` — after host merge, clean up from the primary checkout; use `pullRequestNumber` for squash/rebase evidence.
@@ -71,7 +72,7 @@ Commands only show info; BranchMe tools perform actions.
 - `fetch_branch` without `branch`, `pull_branch`, and `rebase_branch` require a configured upstream.
 - `pull_branch` and `rebase_branch` require a clean working tree.
 - `rebase_branch` rewrites local commits only when explicitly requested and auto-aborts on failure.
-- BranchMe never stages, creates user-authored commits, or force-pushes.
+- BranchMe never creates user-authored commits or force-pushes; only `conclude_merge` stages, and only the resolved conflict paths.
 ```
 
 ## Panel: Tiny mode: clean branch with token

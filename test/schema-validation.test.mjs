@@ -5,6 +5,7 @@ import { Value } from "typebox/value";
 import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
+  CONCLUDE_MERGE_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
@@ -91,6 +92,11 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
   });
   assertValid(tools.get(PULL_BRANCH_TOOL_NAME), {});
   assertValid(tools.get(REBASE_BRANCH_TOOL_NAME), {});
+  assertValid(tools.get(CONCLUDE_MERGE_TOOL_NAME), { action: "conclude" });
+  assertValid(tools.get(CONCLUDE_MERGE_TOOL_NAME), { action: "abort" });
+  assertInvalid(tools.get(CONCLUDE_MERGE_TOOL_NAME), {});
+  assertInvalid(tools.get(CONCLUDE_MERGE_TOOL_NAME), { action: "continue" });
+  assertInvalid(tools.get(CONCLUDE_MERGE_TOOL_NAME), { action: "conclude", message: "resolved" });
   assertValid(tools.get(RETIRE_BRANCH_TOOL_NAME), {
     branchName: "feature/runtime-schema",
     expectedHead: "a".repeat(40),

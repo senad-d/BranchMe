@@ -16,6 +16,7 @@ import {
   getCurrentBranch,
   getGitOperationState,
   getLocalBranchCommit,
+  getMergeHeadCommit,
   getRemoteTrackingRefCommit,
   inspectDirectRemoteTrackingRef,
   isCommitAncestor,
@@ -24,6 +25,7 @@ import {
   requireExistingLocalBranch,
   requireLosslessWorktreeIdentity,
   runGit,
+  safeWorktreeValue,
   validateBranchName,
   validateBranchNameInput,
   withRepositoryMutationQueue,
@@ -31,7 +33,12 @@ import {
 } from "./git.ts";
 import { redactSecrets } from "./redaction.ts";
 import type {
+  ConcludeMergeAbortedDetails,
+  ConcludeMergeConcludedDetails,
+  ConcludeMergeDetails,
+  ConcludeMergeToolInput,
   GitExecResult,
+  IntegrateBranchConflictKeptDetails,
   IntegrateBranchConflictPathEntry,
   IntegrateBranchDetails,
   IntegrateBranchToolInput,
@@ -47,6 +54,8 @@ export interface PreparedBranchIntegration {
   targetHead: string;
   sourceAlreadyIntegrated: boolean;
   remoteSource?: true;
+  /** conclude_merge: the source is MERGE_HEAD, which disappears on abort or commit; trust the captured sourceHead. */
+  sourceHeadFixed?: true;
 }
 
 interface IntegrationStateSnapshot {
@@ -80,6 +89,10 @@ const INTEGRATION_MERGE_POLICY_ARGS = [
 
 const INTEGRATION_STATUS_ARGS = ["status", "--porcelain=v1", "-z", "--untracked-files=normal"];
 const CONFLICT_PATH_ARGS = ["diff", "--name-only", "--diff-filter=U", "-z", "--"];
+// Also inspect the index: manually staging a conflicted file must not bypass the marker check.
+const STAGED_MERGE_PATH_ARGS = ["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z"];
+const CONFLICT_MARKER_SIZE_LIMIT = 4_096;
+const CONFLICT_DISPLAY_PATH_LIMIT_CHARS = 512;
 const COMMIT_PATTERN = /^[0-9a-f]{40,64}$/iu;
 
 function sameCommit(left: string, right: string): boolean {
@@ -167,7 +180,7 @@ function requireLosslessConflictPath(path: string): void {
   }
 }
 
-function parseConflictPaths(output: string): CapturedConflictPaths {
+function parseConflictPaths(output: string, entryLimit = GIT_INTEGRATION_CONFLICT_ENTRY_LIMIT): CapturedConflictPaths {
   if (Buffer.byteLength(output, "utf8") > GIT_INTEGRATION_CONFLICT_RAW_OUTPUT_LIMIT_BYTES) {
     throw new Error("Conflict-path output exceeded the bounded safety limit.");
   }
@@ -182,7 +195,7 @@ function parseConflictPaths(output: string): CapturedConflictPaths {
     seen.add(path);
   }
 
-  const returnedPaths = rawPaths.slice(0, GIT_INTEGRATION_CONFLICT_ENTRY_LIMIT);
+  const returnedPaths = rawPaths.slice(0, entryLimit);
   return {
     paths: returnedPaths.map((path) => ({ path })),
     omitted: rawPaths.length - returnedPaths.length,
@@ -212,7 +225,9 @@ async function inspectIntegrationState(
   const worktreeRoot = await getCanonicalGitWorktreeRoot(pi, rootCtx, signal);
   const canonicalCommonGitDirectory = await getCanonicalCommonGitDirectory(pi, rootCtx, signal);
   const current = await getCurrentBranch(pi, rootCtx, signal);
-  const sourceHead = await integrationSourceHead(pi, rootCtx, prepared.sourceBranch, signal, prepared.remoteSource);
+  const sourceHead = prepared.sourceHeadFixed
+    ? prepared.sourceHead
+    : await integrationSourceHead(pi, rootCtx, prepared.sourceBranch, signal, prepared.remoteSource);
   const targetHead = await getLocalBranchCommit(pi, rootCtx, prepared.targetBranch, signal);
   const operationState = await getGitOperationState(pi, rootCtx, signal);
   const statusResult = await runGit(pi, rootCtx, INTEGRATION_STATUS_ARGS, {
@@ -254,6 +269,7 @@ function integrationStateProblems(
   snapshot: IntegrationStateSnapshot,
   expectedTargetHead: string | null,
   requireIntegratedAncestry: boolean,
+  requireClean = true,
 ): string[] {
   const problems: string[] = [];
   if (snapshot.worktreeRoot !== prepared.worktreeRoot) problems.push("the control worktree root changed");
@@ -268,7 +284,7 @@ function integrationStateProblems(
     problems.push("the target ref did not have the required commit");
   }
   if (snapshot.activeOperations.length > 0) problems.push("a Git operation remains in progress");
-  if (!snapshot.clean) problems.push("the control worktree is not clean");
+  if (requireClean && !snapshot.clean) problems.push("the control worktree is not clean");
   if (requireIntegratedAncestry && !snapshot.sourceIsAncestorOfTarget) {
     problems.push("the captured source is not an ancestor of the resulting target");
   }
@@ -452,11 +468,14 @@ async function verifySuccessfulMerge(
 async function captureConflictPaths(
   pi: Pick<ExtensionAPI, "exec">,
   prepared: PreparedBranchIntegration,
+  entryLimit?: number,
+  signal?: AbortSignal,
 ): Promise<CapturedConflictPaths> {
   const result = await runGit(pi, { cwd: prepared.worktreeRoot }, CONFLICT_PATH_ARGS, {
+    signal,
     timeout: GIT_STATUS_TIMEOUT_MS,
   });
-  return parseConflictPaths(result.stdout);
+  return parseConflictPaths(result.stdout, entryLimit);
 }
 
 async function abortMerge(
@@ -478,6 +497,7 @@ async function recoverFailedMerge(
   pi: Pick<ExtensionAPI, "exec">,
   prepared: PreparedBranchIntegration,
   mergeFailure: Error,
+  keepConflicts = false,
 ): Promise<IntegrateBranchDetails> {
   let mergeStatePresent = false;
   let operationInspectionError: Error | null = null;
@@ -494,6 +514,15 @@ async function recoverFailedMerge(
     conflictPaths = await captureConflictPaths(pi, prepared);
   } catch (error) {
     conflictCaptureError = boundedMergeExecutionError(error, prepared);
+  }
+
+  if (
+    keepConflicts &&
+    mergeStatePresent &&
+    conflictCaptureError === null &&
+    conflictPaths.paths.length + conflictPaths.omitted > 0
+  ) {
+    return verifyKeptConflict(pi, prepared, conflictPaths);
   }
 
   const abortAttempted = mergeStatePresent;
@@ -519,9 +548,10 @@ async function recoverFailedMerge(
     throw uncertainIntegrationError(prepared, restorationProblems.join("; "), snapshot.targetHead);
   }
   if (conflictCaptureError) {
+    const keepNote = keepConflicts ? "keepConflicts could not be honored. " : "";
     throw new Error(
       boundedIntegrationText(
-        `The failed merge was restored, but conflict paths could not be classified safely: ${conflictCaptureError.message}`,
+        `${keepNote}The failed merge was restored, but conflict paths could not be classified safely: ${conflictCaptureError.message}`,
         integrationTokens(prepared),
       ),
     );
@@ -561,6 +591,92 @@ async function recoverFailedMerge(
   throw mergeFailure;
 }
 
+function uncertainKeptConflictError(prepared: PreparedBranchIntegration, reason: unknown): Error {
+  const rawReason = reason instanceof Error ? reason.message : String(reason);
+  const message =
+    `The conflicted merge was kept, but its state could not be verified: ${boundedIntegrationText(rawReason, integrationTokens(prepared)) || "verification was inconclusive"}. ` +
+    `Captured MERGE_HEAD: ${prepared.sourceHead}; captured HEAD: ${prepared.targetHead}. ` +
+    "The merge may still be in progress; inspect the repository, then use conclude_merge with action abort or conclude.";
+  return new Error(boundedIntegrationText(message, integrationTokens(prepared)));
+}
+
+async function verifyKeptConflict(
+  pi: Pick<ExtensionAPI, "exec">,
+  prepared: PreparedBranchIntegration,
+  conflictPaths: CapturedConflictPaths,
+): Promise<IntegrateBranchConflictKeptDetails> {
+  const rootCtx = { cwd: prepared.worktreeRoot };
+  const problems: string[] = [];
+  try {
+    const [worktreeRoot, commonGitDirectory, current, targetHead, mergeHead, operationState] = await Promise.all([
+      getCanonicalGitWorktreeRoot(pi, rootCtx),
+      getCanonicalCommonGitDirectory(pi, rootCtx),
+      getCurrentBranch(pi, rootCtx),
+      getLocalBranchCommit(pi, rootCtx, prepared.targetBranch),
+      getMergeHeadCommit(pi, rootCtx),
+      getGitOperationState(pi, rootCtx),
+    ]);
+    if (worktreeRoot !== prepared.worktreeRoot) problems.push("the control worktree root changed");
+    if (commonGitDirectory !== prepared.canonicalCommonGitDirectory) problems.push("the canonical common Git directory changed");
+    if (current.detached || current.currentBranch !== prepared.targetBranch) problems.push("the current target branch changed");
+    if (!sameCommit(targetHead, prepared.targetHead)) problems.push("the target ref moved");
+    if (!sameCommit(mergeHead, prepared.sourceHead)) problems.push("MERGE_HEAD is not the captured source commit");
+    if (!operationState.mergeHeadPresent || operationState.active.some((operation) => operation !== "merge")) {
+      problems.push("the operation state is not a single in-progress merge");
+    }
+  } catch (error) {
+    throw uncertainKeptConflictError(prepared, error);
+  }
+  if (problems.length > 0) throw uncertainKeptConflictError(prepared, problems.join("; "));
+
+  return {
+    action: "integrate_branch",
+    status: "conflict_kept",
+    mergeExecuted: true,
+    request: { sourceBranch: prepared.sourceBranch, targetBranch: prepared.targetBranch },
+    heads: { sourceHead: prepared.sourceHead, targetHead: prepared.targetHead },
+    conflict: {
+      paths: conflictPaths.paths,
+      omitted: conflictPaths.omitted,
+      kept: true,
+      mergeInProgress: true,
+    },
+  };
+}
+
+function conflictOmissionLine(noun: string, omitted: number): string {
+  return `${omitted} ${noun}${omitted === 1 ? "" : "s"} omitted.`;
+}
+
+/** Bounded, sanitized "header + one path per line" text shared by every conflict-path report. */
+export function formatConflictPathList(
+  header: string,
+  conflict: { paths: IntegrateBranchConflictPathEntry[]; omitted: number },
+  label = "Conflict paths:",
+  noun = "conflict path",
+): string {
+  const lines = [header, label];
+  let omitted = conflict.omitted;
+
+  for (const [index, entry] of conflict.paths.entries()) {
+    const line = `- ${safeWorktreeValue(entry.path, CONFLICT_DISPLAY_PATH_LIMIT_CHARS)}`;
+    const candidateOmitted = conflict.omitted + conflict.paths.length - index - 1;
+    const candidate = [
+      ...lines,
+      line,
+      ...(candidateOmitted > 0 ? [conflictOmissionLine(noun, candidateOmitted)] : []),
+    ].join("\n");
+    if (candidate.length > GIT_INTEGRATION_SUMMARY_LIMIT_CHARS) {
+      omitted += conflict.paths.length - index;
+      break;
+    }
+    lines.push(line);
+  }
+
+  if (omitted > 0) lines.push(conflictOmissionLine(noun, omitted));
+  return lines.join("\n");
+}
+
 // Caller holds the mutation queue. Remote sources are internal to update_from_base only.
 export async function integrateBranchWithinQueue(
   pi: Pick<ExtensionAPI, "exec">,
@@ -569,6 +685,7 @@ export async function integrateBranchWithinQueue(
   queuedWorktreeRoot: string,
   signal?: AbortSignal,
   remoteSource = false,
+  keepConflicts = false,
 ): Promise<IntegrateBranchDetails> {
   const prepared = await prepareBranchIntegration(pi, ctx, request, signal, remoteSource);
   if (prepared.worktreeRoot !== queuedWorktreeRoot) {
@@ -594,7 +711,7 @@ export async function integrateBranchWithinQueue(
   await requireDefaultTargetMergeOptions(pi, prepared, signal);
   const mergeFailure = await runMerge(pi, prepared, signal);
   if (mergeFailure === null) return verifySuccessfulMerge(pi, prepared);
-  return recoverFailedMerge(pi, prepared, mergeFailure);
+  return recoverFailedMerge(pi, prepared, mergeFailure, keepConflicts);
 }
 
 export async function resolveIntegrationWorktreeRoot(
@@ -690,5 +807,270 @@ export async function integrateBranch(
     worktreeRoot,
     signal,
   );
+  return withRepositoryMutationQueue(worktreeRoot, operation);
+}
+
+function uncertainMergeConclusionError(
+  prepared: PreparedBranchIntegration,
+  reason: unknown,
+  observedHead?: string,
+): Error {
+  const rawReason = reason instanceof Error ? reason.message : String(reason);
+  const observed = observedHead && COMMIT_PATTERN.test(observedHead) ? ` Observed HEAD: ${observedHead}.` : "";
+  const message =
+    "conclude_merge postconditions are uncertain. " +
+    `Before the attempt HEAD was ${prepared.targetHead} and MERGE_HEAD was ${prepared.sourceHead}.${observed} ` +
+    "The merge may still be in progress or may have been committed; inspect the repository before retrying. " +
+    `Diagnostic: ${boundedIntegrationText(rawReason, integrationTokens(prepared)) || "verification was inconclusive"}.`;
+  return new Error(boundedIntegrationText(message, integrationTokens(prepared)));
+}
+
+async function prepareMergeInProgress(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  signal?: AbortSignal,
+): Promise<PreparedBranchIntegration> {
+  const worktreeRoot = await getCanonicalGitWorktreeRoot(pi, ctx, signal);
+  const rootCtx = { cwd: worktreeRoot };
+  const operationState = await getGitOperationState(pi, rootCtx, signal);
+  if (!operationState.mergeHeadPresent) {
+    throw new Error("conclude_merge: no merge is in progress (MERGE_HEAD is absent); nothing to conclude or abort.");
+  }
+  if (operationState.active.some((operation) => operation !== "merge")) {
+    throw new Error(
+      `conclude_merge: a ${operationState.active.join(", ")} operation is in progress alongside the merge; finish or abort it outside BranchMe first.`,
+    );
+  }
+  const current = await getCurrentBranch(pi, rootCtx, signal);
+  if (current.detached || current.currentBranch === null) {
+    throw new Error("conclude_merge requires a current local branch; HEAD is detached.");
+  }
+  await requireExistingLocalBranch(pi, rootCtx, current.currentBranch, "Target", signal);
+  const prepared: PreparedBranchIntegration = {
+    worktreeRoot,
+    canonicalCommonGitDirectory: await getCanonicalCommonGitDirectory(pi, rootCtx, signal),
+    sourceBranch: "MERGE_HEAD",
+    targetBranch: current.currentBranch,
+    sourceHead: await getMergeHeadCommit(pi, rootCtx, signal),
+    targetHead: await getLocalBranchCommit(pi, rootCtx, current.currentBranch, signal),
+    sourceAlreadyIntegrated: false,
+    sourceHeadFixed: true,
+  };
+  requireLosslessIntegrationMetadata(prepared);
+  return prepared;
+}
+
+async function abortMergeInProgress(
+  pi: Pick<ExtensionAPI, "exec">,
+  prepared: PreparedBranchIntegration,
+  request: ConcludeMergeToolInput,
+): Promise<ConcludeMergeAbortedDetails> {
+  const abortError = await abortMerge(pi, prepared);
+  let snapshot: IntegrationStateSnapshot;
+  try {
+    snapshot = await inspectIntegrationState(pi, prepared);
+  } catch (error) {
+    throw uncertainMergeConclusionError(prepared, abortError ?? error);
+  }
+  const problems = integrationStateProblems(prepared, snapshot, prepared.targetHead, false);
+  if (abortError) problems.push("git merge --abort did not succeed");
+  if (problems.length > 0) throw uncertainMergeConclusionError(prepared, problems.join("; "), snapshot.targetHead);
+
+  return {
+    action: "conclude_merge",
+    status: "aborted",
+    request,
+    repoRoot: prepared.worktreeRoot,
+    branch: prepared.targetBranch,
+    head: snapshot.targetHead,
+    mergeHead: prepared.sourceHead,
+    restoration: {
+      verified: true,
+      headRestored: true,
+      branchPreserved: true,
+      operationStateCleared: true,
+      cleanWorktree: true,
+    },
+  };
+}
+
+function parseMarkerSizeGroups(output: string, paths: readonly string[]): Map<number, string[]> {
+  if (Buffer.byteLength(output, "utf8") > GIT_INTEGRATION_CONFLICT_RAW_OUTPUT_LIMIT_BYTES || !output.endsWith("\0")) {
+    throw new Error("conclude_merge: conflict-marker-size attributes exceeded the safety limit or were malformed.");
+  }
+  const fields = output.slice(0, -1).split("\0");
+  if (fields.length !== paths.length * 3) throw new Error("conclude_merge: malformed conflict-marker-size attributes.");
+  const groups = new Map<number, string[]>();
+  for (const [index, path] of paths.entries()) {
+    const [reportedPath, attribute, value] = fields.slice(index * 3, index * 3 + 3);
+    if (reportedPath !== path || attribute !== "conflict-marker-size") {
+      throw new Error("conclude_merge: conflict-marker-size attribute identities did not match.");
+    }
+    const configured = /^\d+$/u.test(value) ? Number(value) : 7;
+    if (!Number.isSafeInteger(configured) || configured > CONFLICT_MARKER_SIZE_LIMIT) {
+      throw new Error("conclude_merge: conflict-marker-size exceeds the bounded safety limit.");
+    }
+    // Git falls back to seven for zero/invalid values. Keep recognizing default markers
+    // even if attributes changed after the conflict, plus longer/custom-sized markers.
+    const size = configured > 0 ? Math.min(7, configured) : 7;
+    const group = groups.get(size) ?? [];
+    group.push(path);
+    groups.set(size, group);
+  }
+  return groups;
+}
+
+function markerGrepArgs(size: number, paths: readonly string[], cached: boolean): string[] {
+  return [
+    "--literal-pathspecs", "grep", "--no-color", "--no-ext-grep", "--no-textconv", "-a", "-l", "-z", "-E",
+    ...(cached ? ["--cached"] : []),
+    "-e", `^[<]{${size},}([[:space:]]|$)`, "-e", `^[=]{${size},}[[:space:]]*$`,
+    "-e", `^[>]{${size},}([[:space:]]|$)`, "-e", `^[|]{${size},}([[:space:]]|$)`,
+    "--", ...paths,
+  ];
+}
+
+async function inspectMarkerGroup(
+  pi: Pick<ExtensionAPI, "exec">,
+  prepared: PreparedBranchIntegration,
+  cached: boolean,
+  signal: AbortSignal | undefined,
+  entry: [number, string[]],
+): Promise<string> {
+  const [size, paths] = entry;
+  const tokens = integrationTokens(prepared);
+  const args = markerGrepArgs(size, paths, cached);
+  const result = await runGit(pi, { cwd: prepared.worktreeRoot }, args, {
+    signal, timeout: GIT_INTEGRATION_TIMEOUT_MS, tokens, allowFailure: true,
+  });
+  if (result.code === 1) return "";
+  if (result.code !== 0) throw new Error(boundedIntegrationText(formatGitFailure(args, result, tokens), tokens));
+  return result.stdout;
+}
+
+async function requireNoConflictMarkers(
+  pi: Pick<ExtensionAPI, "exec">,
+  prepared: PreparedBranchIntegration,
+  paths: readonly string[],
+  cached = false,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (paths.length === 0) return;
+  const tokens = integrationTokens(prepared);
+  const options = { signal, timeout: GIT_INTEGRATION_TIMEOUT_MS, tokens };
+  const attributes = await runGit(pi, { cwd: prepared.worktreeRoot }, [
+    "--literal-pathspecs", "check-attr", ...(cached ? ["--cached"] : []), "-z", "conflict-marker-size", "--", ...paths,
+  ], options);
+  const groups = parseMarkerSizeGroups(attributes.stdout, paths);
+  // There are at most seven size groups; these bounded, read-only checks are independent.
+  const outputs = await Promise.all([...groups].map(inspectMarkerGroup.bind(undefined, pi, prepared, cached, signal)));
+  const flaggedOutput = outputs.join("");
+  if (!flaggedOutput) return;
+  const flagged = parseConflictPaths(flaggedOutput);
+  const count = flagged.paths.length + flagged.omitted;
+  throw new Error(formatConflictPathList(
+    `conclude_merge: refused. Conflict markers remain in ${count} path${count === 1 ? "" : "s"}${cached ? " in the index" : ""}; remove every <<<<<<<, |||||||, =======, and >>>>>>> marker line, then retry conclude_merge or abort it.`,
+    flagged,
+    "Paths with markers:",
+    "flagged path",
+  ));
+}
+
+async function requireMarkerFreeIndex(
+  pi: Pick<ExtensionAPI, "exec">,
+  prepared: PreparedBranchIntegration,
+  signal?: AbortSignal,
+): Promise<void> {
+  const result = await runGit(pi, { cwd: prepared.worktreeRoot }, [
+    ...STAGED_MERGE_PATH_ARGS, prepared.targetHead, "--",
+  ], { signal, timeout: GIT_STATUS_TIMEOUT_MS });
+  const staged = parseConflictPaths(result.stdout, Number.POSITIVE_INFINITY);
+  await requireNoConflictMarkers(pi, prepared, staged.paths.map((entry) => entry.path), true, signal);
+}
+
+async function commitResolvedMerge(
+  pi: Pick<ExtensionAPI, "exec">,
+  prepared: PreparedBranchIntegration,
+  request: ConcludeMergeToolInput,
+  signal?: AbortSignal,
+): Promise<ConcludeMergeConcludedDetails> {
+  const rootCtx = { cwd: prepared.worktreeRoot };
+  const tokens = integrationTokens(prepared);
+  const unmerged = await captureConflictPaths(pi, prepared, Number.POSITIVE_INFINITY, signal);
+  const paths = unmerged.paths.map((entry) => entry.path);
+  await requireNoConflictMarkers(pi, prepared, paths, false, signal);
+  await requireMarkerFreeIndex(pi, prepared, signal);
+  signal?.throwIfAborted();
+  if (paths.length > 0) {
+    try {
+      await runGit(pi, rootCtx, ["--literal-pathspecs", "add", "--", ...paths], { timeout: GIT_INTEGRATION_TIMEOUT_MS, tokens });
+    } catch (error) {
+      throw uncertainMergeConclusionError(prepared, error);
+    }
+  }
+  // Filters can change staged content; verify the exact candidate index after staging too.
+  await requireMarkerFreeIndex(pi, prepared);
+  try {
+    await runGit(pi, rootCtx, ["commit", "--no-edit"], { timeout: GIT_INTEGRATION_TIMEOUT_MS, tokens });
+  } catch (error) {
+    throw uncertainMergeConclusionError(prepared, error);
+  }
+
+  let snapshot: IntegrationStateSnapshot;
+  let parents: string[];
+  try {
+    snapshot = await inspectIntegrationState(pi, prepared);
+    parents = await getCommitParents(pi, rootCtx, snapshot.targetHead);
+  } catch (error) {
+    throw uncertainMergeConclusionError(prepared, error);
+  }
+  const problems = integrationStateProblems(prepared, snapshot, null, true, false);
+  if (sameCommit(snapshot.targetHead, prepared.targetHead)) problems.push("HEAD did not move");
+  if (parents.length !== 2 || !sameCommit(parents[0], prepared.targetHead) || !sameCommit(parents[1], prepared.sourceHead)) {
+    problems.push("the resulting HEAD was not an exact two-parent merge of the previous HEAD and MERGE_HEAD");
+  }
+  if (problems.length > 0) throw uncertainMergeConclusionError(prepared, problems.join("; "), snapshot.targetHead);
+
+  return {
+    action: "conclude_merge",
+    status: "concluded",
+    request,
+    repoRoot: prepared.worktreeRoot,
+    branch: prepared.targetBranch,
+    heads: { before: prepared.targetHead, after: snapshot.targetHead },
+    parents: { first: parents[0], second: parents[1] },
+    mergeHead: prepared.sourceHead,
+    resolvedPaths: unmerged.paths,
+  };
+}
+
+async function concludeMergeWithinQueue(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  request: ConcludeMergeToolInput,
+  queuedWorktreeRoot: string,
+  signal?: AbortSignal,
+): Promise<ConcludeMergeDetails> {
+  const prepared = await prepareMergeInProgress(pi, ctx, signal);
+  if (prepared.worktreeRoot !== queuedWorktreeRoot) {
+    throw new Error("The control worktree changed while preparing merge conclusion.");
+  }
+  signal?.throwIfAborted();
+  return request.action === "abort"
+    ? abortMergeInProgress(pi, prepared, request)
+    : commitResolvedMerge(pi, prepared, request, signal);
+}
+
+export async function concludeMerge(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  request: ConcludeMergeToolInput,
+  signal?: AbortSignal,
+): Promise<ConcludeMergeDetails> {
+  if (request.action !== "conclude" && request.action !== "abort") {
+    throw new Error("conclude_merge action must be \"conclude\" or \"abort\".");
+  }
+  const worktreeRoot = await resolveIntegrationWorktreeRoot(pi, ctx, signal);
+  const operation = concludeMergeWithinQueue.bind(undefined, pi, ctx, request, worktreeRoot, signal);
   return withRepositoryMutationQueue(worktreeRoot, operation);
 }

@@ -5,6 +5,7 @@ export const BRANCH_STATUS_TOOL_NAME = "branch_status";
 export const LIST_BRANCHES_TOOL_NAME = "list_branches";
 export const TRACK_BRANCH_TOOL_NAME = "track_branch";
 export const UPDATE_FROM_BASE_TOOL_NAME = "update_from_base";
+export const CONCLUDE_MERGE_TOOL_NAME = "conclude_merge";
 export const INIT_REPOSITORY_TOOL_NAME = "init_repository";
 export const CREATE_BRANCH_TOOL_NAME = "create_branch";
 export const CHANGE_BRANCH_TOOL_NAME = "change_branch";
@@ -27,6 +28,7 @@ export const BRANCHME_TOOL_NAMES = [
   LIST_BRANCHES_TOOL_NAME,
   TRACK_BRANCH_TOOL_NAME,
   UPDATE_FROM_BASE_TOOL_NAME,
+  CONCLUDE_MERGE_TOOL_NAME,
   INIT_REPOSITORY_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,

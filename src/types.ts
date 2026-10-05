@@ -318,7 +318,7 @@ export interface PushBranchDetails {
   output: string;
 }
 
-export type IntegrateBranchStatus = "already_integrated" | "fast_forward" | "merge_commit" | "conflict";
+export type IntegrateBranchStatus = "already_integrated" | "fast_forward" | "merge_commit" | "conflict" | "conflict_kept";
 
 export interface IntegrateBranchHeads {
   sourceHead: string;
@@ -406,11 +406,72 @@ export interface IntegrateBranchConflictDetails extends IntegrateBranchDetailsBa
   };
 }
 
+/** A conflicted merge deliberately left in progress (update_from_base keepConflicts); conclude_merge finishes or abandons it. */
+export interface IntegrateBranchConflictKeptDetails {
+  action: "integrate_branch";
+  status: "conflict_kept";
+  mergeExecuted: true;
+  request: IntegrateBranchToolInput;
+  /** targetHead is the unchanged HEAD; sourceHead is the commit recorded in MERGE_HEAD. */
+  heads: IntegrateBranchHeads;
+  conflict: {
+    paths: IntegrateBranchConflictPathEntry[];
+    omitted: number;
+    kept: true;
+    mergeInProgress: true;
+  };
+}
+
 export type IntegrateBranchDetails =
   | IntegrateBranchAlreadyIntegratedDetails
   | IntegrateBranchFastForwardDetails
   | IntegrateBranchMergeCommitDetails
-  | IntegrateBranchConflictDetails;
+  | IntegrateBranchConflictDetails
+  | IntegrateBranchConflictKeptDetails;
+
+export type ConcludeMergeAction = "conclude" | "abort";
+
+export interface ConcludeMergeToolInput {
+  action: ConcludeMergeAction;
+}
+
+export interface ConcludeMergeConcludedDetails {
+  action: "conclude_merge";
+  status: "concluded";
+  request: ConcludeMergeToolInput;
+  repoRoot: string;
+  branch: string;
+  heads: {
+    before: string;
+    after: string;
+  };
+  parents: {
+    first: string;
+    second: string;
+  };
+  mergeHead: string;
+  /** Exactly the formerly unmerged paths that were staged for the merge commit. */
+  resolvedPaths: IntegrateBranchConflictPathEntry[];
+}
+
+export interface ConcludeMergeAbortedDetails {
+  action: "conclude_merge";
+  status: "aborted";
+  request: ConcludeMergeToolInput;
+  repoRoot: string;
+  branch: string;
+  head: string;
+  mergeHead: string;
+  restoration: {
+    verified: true;
+    headRestored: true;
+    branchPreserved: true;
+    operationStateCleared: true;
+    cleanWorktree: true;
+  };
+}
+
+export type ConcludeMergeDetails = ConcludeMergeConcludedDetails | ConcludeMergeAbortedDetails;
 
 export type RetireBranchMode = "merged" | "forced_unmerged";
 

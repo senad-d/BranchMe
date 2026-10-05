@@ -1,11 +1,57 @@
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { PULL_REQUEST_STATUS_TOOL_NAME, TRACK_BRANCH_TOOL_NAME, UPDATE_FROM_BASE_TOOL_NAME } from "../constants.ts";
-import { getGitRoot, requireCurrentBranch } from "../git.ts";
+import {
+  CONCLUDE_MERGE_TOOL_NAME, GIT_CONTEXT_VALUE_LIMIT_CHARS, PULL_REQUEST_STATUS_TOOL_NAME, TRACK_BRANCH_TOOL_NAME,
+  UPDATE_FROM_BASE_TOOL_NAME,
+} from "../constants.ts";
+import { getGitRoot, requireCurrentBranch, safeWorktreeValue } from "../git.ts";
+import { concludeMerge, formatConflictPathList } from "../git-integration.ts";
 import { findGitHubPullRequest, getGitHubPullRequest, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
-import type { PullRequestStatusDetails } from "../types.ts";
+import type { ConcludeMergeDetails, PullRequestStatusDetails } from "../types.ts";
 import type { BranchMeToolOptions } from "./branchme-tools.ts";
-import { trackBranch, updateFromBase } from "../git-workflow.ts";
+import { trackBranch, updateFromBase, type UpdateFromBaseDetails } from "../git-workflow.ts";
+
+function shortCommit(commit: string): string {
+  return commit.slice(0, 12);
+}
+
+function branchLabel(branch: string): string {
+  return safeWorktreeValue(branch, GIT_CONTEXT_VALUE_LIMIT_CHARS);
+}
+
+export function formatUpdateFromBase(details: UpdateFromBaseDetails): string {
+  const { integration } = details;
+  const source = branchLabel(integration.request.sourceBranch);
+  const target = branchLabel(integration.request.targetBranch);
+  if (integration.status === "conflict") {
+    return formatConflictPathList(
+      `update_from_base: conflict. Merging ${source} into ${target} conflicted; the merge was automatically aborted and restoration was verified at HEAD ${shortCommit(integration.verified.heads.after.targetHead)}. Rerun with keepConflicts: true to keep the conflicted merge in progress for resolution.`,
+      integration.conflict,
+    );
+  }
+  if (integration.status === "conflict_kept") {
+    return formatConflictPathList(
+      `update_from_base: conflict_kept. Merging ${source} (${shortCommit(integration.heads.sourceHead)}) into ${target} conflicted; the merge is in progress with MERGE_HEAD set and HEAD unchanged at ${shortCommit(integration.heads.targetHead)}. Remove the conflict markers in the listed paths, then run conclude_merge with action "conclude" to commit the merge or action "abort" to restore the branch.`,
+      integration.conflict,
+    );
+  }
+  return `update_from_base: ${integration.status}. Base integration verified without rewriting published history.`;
+}
+
+export function formatConcludeMerge(details: ConcludeMergeDetails): string {
+  const branch = branchLabel(details.branch);
+  if (details.status === "aborted") {
+    return `conclude_merge: aborted. git merge --abort restored ${branch} to HEAD ${shortCommit(details.head)}; MERGE_HEAD ${shortCommit(details.mergeHead)} is cleared, no Git operation is in progress, and the working tree is clean.`;
+  }
+  const count = details.resolvedPaths.length;
+  return formatConflictPathList(
+    `conclude_merge: concluded. Committed merge ${shortCommit(details.heads.after)} on ${branch} with parents ${shortCommit(details.parents.first)} (previous HEAD) and ${shortCommit(details.parents.second)} (MERGE_HEAD); MERGE_HEAD is cleared and both parents were verified. Only the ${count} resolved path${count === 1 ? "" : "s"} listed below ${count === 1 ? "was" : "were"} staged during this call; other working-tree changes remain unstaged. The commit includes all previously staged entries.`,
+    { paths: details.resolvedPaths, omitted: 0 },
+    "Resolved paths:",
+    "resolved path",
+  );
+}
 
 function formatPullRequestStatus(pullRequest: PullRequestStatusDetails | null): string {
   if (!pullRequest) return "No matching pull request found.";
@@ -47,20 +93,43 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: UPDATE_FROM_BASE_TOOL_NAME,
     label: "Update From Base",
-    description: "update_from_base fetches one remote base and merges its captured commit into the clean current feature branch with verified no-op, fast-forward, merge-commit, or automatically aborted conflict results. Never rebases, pushes, stashes, or changes upstream configuration.",
-    promptSnippet: "update_from_base: merge a fresh remote base into the current feature without rewriting published history",
+    description: "update_from_base fetches one remote base and merges its captured commit into the clean current feature branch with verified no-op, fast-forward, merge-commit, or conflict results. A conflict is automatically aborted with restoration verified unless keepConflicts is true, which leaves the conflicted merge in progress for conclude_merge. Never rebases, pushes, stashes, or changes upstream configuration.",
+    promptSnippet: "update_from_base: merge a fresh remote base into the current feature without rewriting published history; keepConflicts keeps a conflicted merge in progress",
     promptGuidelines: [
       "Use update_from_base only when asked to update the current feature branch from an explicit baseBranch; remote defaults to origin.",
-      "Run update_from_base by itself. It fetches the base and uses the fixed normal-merge policy; conflicts are automatically aborted with restoration verified.",
-      "update_from_base preserves published history and upstream configuration; committing conflict-resolution changes belongs to a separate workflow.",
+      "Run update_from_base by itself. It fetches the base and uses the fixed normal-merge policy; by default conflicts are automatically aborted with restoration verified and the conflict paths are listed.",
+      "Pass keepConflicts: true to update_from_base only when a file-editing step will resolve the listed paths; the result conflict_kept leaves MERGE_HEAD set, and conclude_merge must then conclude or abort it before any other Git mutation.",
+      "update_from_base preserves published history and upstream configuration; it never resolves conflict content itself.",
     ],
     parameters: Type.Object({
       baseBranch: Type.String({ minLength: 1, description: "Exact base branch on the remote, for example main." }),
       remote: Type.Optional(Type.String({ minLength: 1, description: "Configured remote; defaults to origin." })),
+      keepConflicts: Type.Optional(Type.Boolean({ description: "When true, a conflicted merge is left in progress (MERGE_HEAD set, conflicted paths unmerged) for conclude_merge instead of being aborted; defaults to false." })),
     }, { additionalProperties: false }),
     async execute(_id, params, signal, _update, ctx) {
       const details = await updateFromBase(pi, ctx, params, signal);
-      return { content: [{ type: "text", text: `update_from_base: ${details.status}. ${details.status === "conflict" ? "Merge aborted and restoration verified; inspect conflict paths in details." : "Base integration verified without rewriting published history."}` }], details };
+      return { content: [{ type: "text", text: formatUpdateFromBase(details) }], details };
+    },
+  });
+  pi.registerTool({
+    name: CONCLUDE_MERGE_TOOL_NAME,
+    label: "Conclude Merge",
+    description: "conclude_merge finishes or abandons the in-progress merge on the current checkout, normally one kept by update_from_base with keepConflicts: true. action \"conclude\" checks unmerged working-tree paths and staged blobs for default/custom-sized conflict marker lines, stages exactly the unmerged paths, checks the candidate index again, and commits the full index with Git's prepared merge message, then verifies the two-parent result; action \"abort\" runs git merge --abort and verifies restoration. conclude_merge never stages other changes, accepts no commit message, and never pushes.",
+    promptSnippet: "conclude_merge: commit or abort the kept in-progress merge after conflict markers are removed",
+    promptGuidelines: [
+      "Use conclude_merge only after update_from_base reported conflict_kept, or when a single-head merge is otherwise in progress on the current checkout; run conclude_merge by itself. Multi-head merges are refused before mutation.",
+      "Before conclude_merge with action conclude, a file-editing step must remove every <<<<<<<, |||||||, =======, and >>>>>>> marker line from the listed paths; conclude_merge refuses and names the paths that still contain markers.",
+      "conclude_merge with action conclude stages only the currently unmerged paths and uses Git's prepared merge message; unrelated unstaged edits stay unstaged and are not part of the merge commit. Git commits the entire index, including previously staged entries: do not stage unrelated edits during the merge.",
+      "conclude_merge with action abort restores the branch with git merge --abort and verifies a clean idle checkout; conclude_merge refuses when no merge is in progress.",
+    ],
+    parameters: Type.Object({
+      action: StringEnum(["conclude", "abort"] as const, {
+        description: "conclude stages the resolved formerly unmerged paths and commits the merge; abort runs git merge --abort and verifies restoration.",
+      }),
+    }, { additionalProperties: false }),
+    async execute(_id, params, signal, _update, ctx) {
+      const details = await concludeMerge(pi, ctx, params, signal);
+      return { content: [{ type: "text", text: formatConcludeMerge(details) }], details };
     },
   });
   pi.registerTool({

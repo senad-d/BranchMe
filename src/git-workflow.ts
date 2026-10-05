@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { GIT_MUTATION_TIMEOUT_MS } from "./constants.ts";
 import { integrateBranchWithinQueue } from "./git-integration.ts";
+import type { IntegrateBranchDetails } from "./types.ts";
 import {
   fetchRemoteBranchWithinQueue, getCanonicalGitWorktreeRoot, getCurrentBranch,
   getGitOperationState, getLocalBranchCommit, getRemoteTrackingRefCommit, getUpstreamBranch,
@@ -88,6 +89,15 @@ async function trackBranchWithinQueue(pi: GitAPI, ctx: GitCommandContext, input:
 export interface UpdateFromBaseInput {
   baseBranch: string;
   remote?: string;
+  /** Leave a conflicted merge in progress for conclude_merge instead of aborting it. */
+  keepConflicts?: boolean;
+}
+
+export interface UpdateFromBaseDetails {
+  action: "update_from_base";
+  request: UpdateFromBaseInput;
+  status: IntegrateBranchDetails["status"];
+  integration: IntegrateBranchDetails;
 }
 
 async function readUpstreamConfigurationValue(
@@ -110,7 +120,7 @@ async function captureUpstreamConfiguration(pi: GitAPI, ctx: GitCommandContext, 
   return JSON.stringify(values);
 }
 
-async function updateFromBaseWithinQueue(pi: GitAPI, ctx: GitCommandContext, input: UpdateFromBaseInput, signal?: AbortSignal) {
+async function updateFromBaseWithinQueue(pi: GitAPI, ctx: GitCommandContext, input: UpdateFromBaseInput, signal?: AbortSignal): Promise<UpdateFromBaseDetails> {
   const remote = input.remote ?? "origin";
   requireLosslessWorktreeIdentity(remote, "branch");
   requireLosslessWorktreeIdentity(input.baseBranch, "branch");
@@ -124,14 +134,14 @@ async function updateFromBaseWithinQueue(pi: GitAPI, ctx: GitCommandContext, inp
   await fetchWorkflowBase(pi, ctx, remote, input.baseBranch, signal);
   const integration = await integrateBranchWithinQueue(pi, ctx, {
     sourceBranch: `${remote}/${input.baseBranch}`, targetBranch: current.currentBranch,
-  }, ctx.cwd, signal, true);
+  }, ctx.cwd, signal, true, input.keepConflicts === true);
   if (await captureUpstreamConfiguration(pi, ctx, current.currentBranch) !== upstreamBefore) {
     throw new Error("Upstream configuration changed during update; inspect the repository before retrying.");
   }
-  return { action: "update_from_base" as const, request: input, status: integration.status, integration };
+  return { action: "update_from_base", request: input, status: integration.status, integration };
 }
 
-export async function updateFromBase(pi: GitAPI, ctx: GitCommandContext, input: UpdateFromBaseInput, signal?: AbortSignal) {
+export async function updateFromBase(pi: GitAPI, ctx: GitCommandContext, input: UpdateFromBaseInput, signal?: AbortSignal): Promise<UpdateFromBaseDetails> {
   const root = await getCanonicalGitWorktreeRoot(pi, ctx, signal);
   requireLosslessWorktreeIdentity(root, "cwd");
   return withRepositoryMutationQueue(root, updateFromBaseWithinQueue.bind(undefined, pi, { cwd: root }, input, signal));

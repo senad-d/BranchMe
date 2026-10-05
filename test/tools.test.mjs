@@ -44,6 +44,7 @@ const EXPECTED_BRANCHME_TOOL_NAMES = [
   "list_branches",
   "track_branch",
   "update_from_base",
+  "conclude_merge",
   "pull_request_status",
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
@@ -375,7 +376,7 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 19);
+  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 20);
   assert.deepEqual([...BRANCHME_TOOL_NAMES].sort(), [...EXPECTED_BRANCHME_TOOL_NAMES].sort());
   assert.equal(pi.tools.length, EXPECTED_BRANCHME_TOOL_NAMES.length);
   assert.equal(new Set(pi.tools.map((tool) => tool.name)).size, EXPECTED_BRANCHME_TOOL_NAMES.length);
