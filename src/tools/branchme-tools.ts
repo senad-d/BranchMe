@@ -8,7 +8,10 @@ import {
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  FETCH_REMOTE_TOOL_NAME,
+  GIT_BRANCH_PATTERN_LIMIT,
   GIT_BRANCH_SUMMARY_LIMIT_CHARS,
+  GIT_CONTEXT_VALUE_LIMIT_CHARS,
   GIT_RETIREMENT_SUMMARY_LIMIT_CHARS,
   GIT_WORKTREE_SUMMARY_LIMIT_CHARS,
   INIT_REPOSITORY_TOOL_NAME,
@@ -46,6 +49,7 @@ import {
   withRepositoryMutationQueue,
 } from "../git.ts";
 import { collectGitContext, formatGitContext } from "../git-context.ts";
+import { fetchRemote } from "../git-discovery.ts";
 import { formatConflictPathList, integrateBranch } from "../git-integration.ts";
 import { retireBranch } from "../git-retirement.ts";
 import { formatLandBranch, landBranch } from "../git-landing.ts";
@@ -76,6 +80,28 @@ import type {
 } from "../types.ts";
 
 const EmptyParametersSchema = Type.Object({}, { additionalProperties: false });
+
+const ListBranchesParametersSchema = Type.Object(
+  {
+    kind: Type.Optional(StringEnum(["local", "remote-tracking"] as const, {
+      description: "Limit discovery to local or remote-tracking branches; omit for both.",
+    })),
+    patterns: Type.Optional(Type.Array(Type.String({
+      minLength: 1,
+      maxLength: GIT_CONTEXT_VALUE_LIMIT_CHARS,
+      description: "Git branch-list glob on branch names, including remote prefix (for example origin/feat/23-*).",
+    }), { minItems: 1, maxItems: GIT_BRANCH_PATTERN_LIMIT, description: "Match any of these patterns before output limits; omit to list all selected branches." })),
+  },
+  { additionalProperties: false },
+);
+
+const FetchRemoteParametersSchema = Type.Object(
+  {
+    remote: Type.Optional(Type.String({ minLength: 1, description: "Configured remote name; defaults to origin." })),
+    prune: Type.Optional(Type.Boolean({ description: "Delete stale cached branch refs only for this remote; defaults to false. Never deletes local branches or tags." })),
+  },
+  { additionalProperties: false },
+);
 
 const InitRepositoryParametersSchema = Type.Object(
   {
@@ -522,15 +548,16 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: LIST_BRANCHES_TOOL_NAME,
     label: "List Branches",
-    description: "list_branches reads up to 200 local and remote-tracking branches, including commits, upstream counts, symbolic refs, and worktree occupancy. Read-only; cached remote refs are not fetched. Text is bounded to 4000 characters.",
+    description: "list_branches reads up to 200 local and remote-tracking branches, including commits, upstream counts, symbolic refs, and worktree occupancy. Optional kind and Git branch-list patterns filter before limits. Read-only; cached remote refs are not fetched. Text is bounded to 4000 characters.",
     promptSnippet: "list_branches: discover local and cached remote-tracking branches without mutation",
     promptGuidelines: [
       "Use list_branches to discover names and worktree occupancy before branch operations; it never fetches or mutates Git state.",
       "Treat list_branches names and paths as display metadata; redacted or truncated values are not executable identities.",
+      "Use list_branches with kind: 'remote-tracking' and patterns such as ['origin/feat/23', 'origin/feat/23-*'] for issue branch discovery; wait for fetch_remote to complete first when fresh remote refs are needed.",
     ],
-    parameters: EmptyParametersSchema,
-    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-      const details = await listBranches(pi, ctx, signal);
+    parameters: ListBranchesParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await listBranches(pi, ctx, signal, params);
       const lines = details.branches.map((branch) =>
         `${branch.current ? "*" : "-"} ${JSON.stringify(branch.name)} (${branch.kind}) ${shortCommit(branch.head)}; upstream ${JSON.stringify(branch.upstream)}; ahead ${branch.ahead ?? "?"}, behind ${branch.behind ?? "?"}; worktrees ${JSON.stringify(branch.worktreePaths)}`);
       const text = [`Branches: ${details.branches.length}; omitted: ${details.omitted}.`, ...lines].join("\n");
@@ -665,6 +692,27 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const details = await fetchRemoteBranch(pi, ctx, params.remote ?? "origin", params.branch, signal);
       return {
         content: [{ type: "text", text: `Fetched ${details.remote}/${details.branch} into remote-tracking ref ${details.remoteTrackingRef} without changing local branches.` }],
+        details,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: FETCH_REMOTE_TOOL_NAME,
+    label: "Fetch Remote",
+    description: "fetch_remote refreshes all branch refs for one configured remote (default origin). Optional prune deletes only that remote's stale cached branch refs; default false. Uses an internal atomic heads-to-remote-tracking refspec, ignores configured refmaps, and disables tags, tag pruning, and submodules. Requires the files ref backend and non-overlapping remote namespaces; refuses unsafe symbolic destinations. Preserves safe remote HEAD aliases by excluding the remote branch named HEAD. Never changes local branches, checkout, upstream configuration, or working-tree files.",
+    promptSnippet: "fetch_remote: refresh a configured remote's branch cache with optional remote-tracking-only pruning",
+    promptGuidelines: [
+      "Use fetch_remote when fresh discovery of unknown remote branch names is needed; fetch_branch remains the narrow tool for a known branch.",
+      "Use fetch_remote with prune: true only when stale cached branch deletion is intended; it never deletes local branches, tags, or branches on the server.",
+      "Call fetch_remote by itself and wait for it to complete before list_branches, track_branch, or other dependent Git operations; do not batch Git mutations.",
+      "fetch_remote accepts only a configured remote name and optional prune boolean; never pass URLs, refspecs, force, tags, or checkout controls.",
+    ],
+    parameters: FetchRemoteParametersSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const details = await fetchRemote(pi, ctx, params.remote ?? "origin", params.prune ?? false, signal);
+      return {
+        content: [{ type: "text", text: `Fetched branch cache for remote ${details.remote}${details.prune ? " and pruned its stale remote-tracking branch refs" : " without pruning"}. No local branches or tags changed.` }],
         details,
       };
     },

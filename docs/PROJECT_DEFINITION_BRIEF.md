@@ -15,7 +15,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 - Exported extension function: `branchMeExtension`
 - Repository URL: `https://github.com/senad-d/branchme`
 - One-sentence pitch: Verified Pi tools for Git repository initialization plus current-repository branch, integration, retirement, linked-worktree, push, and GitHub pull request workflows.
-- Tool count: twenty strict agent-callable tools.
+- Tool count: twenty-one strict agent-callable tools.
 
 ## 3. Users and use cases
 
@@ -25,7 +25,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - Inspect bounded current-repository branch, upstream, working-tree, related-PR, and recent-commit state, with an optional explicit local source/target ancestry proof.
   - Integrate one exact existing local source branch into the already-current clean local target, returning verified no-op, fast-forward, merge-commit, or restored-conflict details.
   - List the current repository's main and linked worktrees explicitly.
-  - Discover local/remote-tracking branches, upstream counts, and worktree occupancy with `list_branches`.
+  - Refresh unknown remote branch names with `fetch_remote` and optional remote-tracking-only pruning, then discover issue branches, upstream counts, and worktree occupancy with filtered `list_branches`.
   - Join an existing remote branch with verified `track_branch`, or merge a fresh remote base into the current feature with `update_from_base`; keep a conflicted merge in progress with `keepConflicts: true` and commit or abort it with `conclude_merge` after a file-editing step removes the markers.
   - Create and verify a linked worktree from current `HEAD`, optional read-only `baseRef`, or an unoccupied existing local branch.
   - Return an exact, absolute, machine-readable worktree handoff for a caller-managed separate Pi session or subagent.
@@ -40,7 +40,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 - Non-goals:
   - No staging, direct working-tree edits, user-authored commits, commit-message input/generation, diff generation, stashing, resets, or force pushes. Explicit `integrate_branch` may let Git create its standard merge commit for divergent histories.
   - No automatic Pi cwd changes, process/session creation, or copying of `.env` and other ignored/untracked files into linked worktrees.
-  - No bulk or pattern branch deletion, inferred retirement targets, remote or remote-tracking deletion, automatic worktree removal during retirement, or reset-based retirement rollback.
+  - No bulk or pattern local-branch deletion, inferred retirement targets, server-side remote deletion, arbitrary remote-tracking deletion, automatic worktree removal during retirement, or reset-based retirement rollback. Explicit `fetch_remote.prune` only removes stale cached branch refs for one selected remote.
   - No GitHub CLI dependency or cross-repository pull requests.
   - No labels, reviewers, projects, or issue-linking behavior.
 
@@ -50,7 +50,8 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 | --- | --- | --- | --- |
 | Command | `/branchme` | Compact TUI status and workflow panel | Informational; no Git or GitHub mutations |
 | Command | `/branchme help` | Runtime requirements and workflow guidance | Informational; no actions |
-| Tool | `list_branches` | Discover local and cached remote-tracking refs | Bounded, read-only; includes upstream counts and worktree occupancy |
+| Tool | `list_branches` | Discover local and cached remote-tracking refs | Bounded, read-only; optional kind/glob patterns filter before limits; includes upstream counts and occupancy |
+| Tool | `fetch_remote` | Refresh one remote's full branch cache | Optional stale tracking-ref pruning; no local-ref, tag, checkout, or upstream changes; files ref backend required |
 | Tool | `track_branch` | Join an existing remote branch | Narrow fetch, clean idle checkout, verified HEAD/upstream |
 | Tool | `update_from_base` | Fetch and merge an explicit remote base | Preserves published history; fixed merge policy, listed conflict paths, automatic abort unless `keepConflicts` |
 | Tool | `conclude_merge` | Commit or abort the in-progress kept merge | Refuses remaining markers; stages only formerly unmerged paths; `commit --no-edit`; verified two-parent result or verified abort |
@@ -86,6 +87,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - `src/tools/branchme-tools.ts`
   - `src/tools/workflow-tools.ts`
   - `src/git.ts`
+  - `src/git-discovery.ts`
   - `src/git-workflow.ts`
   - `src/git-integration.ts`
   - `src/git-retirement.ts`
@@ -93,7 +95,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - `src/github.ts`
   - `src/ui/branchme-panel.ts`
 - Module boundaries:
-  - The extension entry point registers the informational command, twenty tools, and automatic context hook.
+  - The extension entry point registers the informational command, twenty-one tools, and automatic context hook.
   - `src/git-workflow.ts` and `src/tools/workflow-tools.ts` own verified remote tracking, base updates, and the new PR status registration.
   - The context module owns bounded read-only collection, prompt formatting, targeted ancestry rendering, and the `before_agent_start` hook; automatic context never runs ancestry queries.
   - The command and UI modules own mode-safe informational help/status behavior and never invoke mutations.

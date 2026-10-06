@@ -10,6 +10,7 @@ export const INIT_REPOSITORY_TOOL_NAME = "init_repository";
 export const CREATE_BRANCH_TOOL_NAME = "create_branch";
 export const CHANGE_BRANCH_TOOL_NAME = "change_branch";
 export const FETCH_BRANCH_TOOL_NAME = "fetch_branch";
+export const FETCH_REMOTE_TOOL_NAME = "fetch_remote";
 export const PULL_BRANCH_TOOL_NAME = "pull_branch";
 export const REBASE_BRANCH_TOOL_NAME = "rebase_branch";
 export const PUSH_BRANCH_TOOL_NAME = "push_branch";
@@ -33,6 +34,7 @@ export const BRANCHME_TOOL_NAMES = [
   CREATE_BRANCH_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  FETCH_REMOTE_TOOL_NAME,
   PULL_BRANCH_TOOL_NAME,
   REBASE_BRANCH_TOOL_NAME,
   INTEGRATE_BRANCH_TOOL_NAME,
@@ -65,6 +67,7 @@ export const PULL_REQUEST_AUTOFILL_COMMIT_LIMIT = 20;
 export const PULL_REQUEST_AUTOFILL_SUBJECT_LIMIT_CHARS = 256;
 export const GIT_BRANCH_RAW_OUTPUT_LIMIT_BYTES = 128 * 1024;
 export const GIT_BRANCH_ENTRY_LIMIT = 200;
+export const GIT_BRANCH_PATTERN_LIMIT = 25;
 export const GIT_BRANCH_SUMMARY_LIMIT_CHARS = 4_000;
 export const GIT_WORKTREE_RAW_OUTPUT_LIMIT_BYTES = 128 * 1024;
 export const GIT_WORKTREE_ENTRY_LIMIT = 100;

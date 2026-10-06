@@ -42,6 +42,7 @@ const REMOTE_BASE_SHA = "b".repeat(40);
 const STALE_REMOTE_HEAD_SHA = "c".repeat(40);
 const EXPECTED_BRANCHME_TOOL_NAMES = [
   "list_branches",
+  "fetch_remote",
   "track_branch",
   "update_from_base",
   "conclude_merge",
@@ -376,7 +377,7 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 20);
+  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 21);
   assert.deepEqual([...BRANCHME_TOOL_NAMES].sort(), [...EXPECTED_BRANCHME_TOOL_NAMES].sort());
   assert.equal(pi.tools.length, EXPECTED_BRANCHME_TOOL_NAMES.length);
   assert.equal(new Set(pi.tools.map((tool) => tool.name)).size, EXPECTED_BRANCHME_TOOL_NAMES.length);

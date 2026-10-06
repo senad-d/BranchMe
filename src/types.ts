@@ -29,7 +29,25 @@ export interface BranchStatusToolInput {
   ancestry?: BranchStatusAncestryQuery;
 }
 
-export type ListBranchesToolInput = Record<string, never>;
+export interface ListBranchesToolInput {
+  kind?: "local" | "remote-tracking";
+  /** Git branch-list glob patterns on names, including the remote prefix for remote-tracking refs. */
+  patterns?: string[];
+}
+
+export interface FetchRemoteToolInput {
+  remote?: string;
+  prune?: boolean;
+}
+
+export interface FetchRemoteDetails {
+  action: "fetch_remote";
+  repoRoot: string;
+  remote: string;
+  prune: boolean;
+  refspec: string;
+  output: string;
+}
 
 export interface BranchEntry {
   name: string;

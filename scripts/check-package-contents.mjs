@@ -25,6 +25,7 @@ const requiredPublicFiles = [
   "src/git-retirement.ts",
   "src/git-landing.ts",
   "src/git.ts",
+  "src/git-discovery.ts",
   "src/github.ts",
   "src/redaction.ts",
   "src/tools/branchme-tools.ts",

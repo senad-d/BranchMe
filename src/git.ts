@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "n
 import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   GIT_BRANCH_ENTRY_LIMIT,
+  GIT_BRANCH_PATTERN_LIMIT,
   GIT_BRANCH_RAW_OUTPUT_LIMIT_BYTES,
   GIT_CONTEXT_CHANGE_LIMIT,
   GIT_CONTEXT_RECENT_COMMIT_LIMIT,
@@ -42,6 +43,7 @@ import type {
   GitFileChangeSummary,
   InitRepositoryDetails,
   ListBranchesDetails,
+  ListBranchesToolInput,
   ListWorktreesDetails,
   PullBranchDetails,
   PushBranchDetails,
@@ -1273,19 +1275,81 @@ export function parseBranchRefs(output: string): Pick<ListBranchesDetails, "bran
   return { branches, omitted: records.length - branches.length };
 }
 
+function validateBranchFilters(filters: ListBranchesToolInput): void {
+  if (filters.kind !== undefined && filters.kind !== "local" && filters.kind !== "remote-tracking") {
+    throw new TypeError("list_branches kind must be 'local' or 'remote-tracking'.");
+  }
+  if (filters.patterns === undefined) return;
+  if (!Array.isArray(filters.patterns) || filters.patterns.length === 0 || filters.patterns.length > GIT_BRANCH_PATTERN_LIMIT) {
+    throw new TypeError(`list_branches patterns must contain 1 to ${GIT_BRANCH_PATTERN_LIMIT} strings.`);
+  }
+  for (const pattern of filters.patterns) {
+    if (typeof pattern !== "string" || !pattern.trim() || pattern.length > GIT_CONTEXT_VALUE_LIMIT_CHARS ||
+        /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(pattern) || pattern.startsWith("-")) {
+      throw new TypeError("list_branches patterns must be nonblank, bounded strings without leading '-' or control characters.");
+    }
+  }
+}
+
+async function readBranchScope(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  patterns: string[],
+  signal: AbortSignal | undefined,
+  kind: string,
+): Promise<string> {
+  const result = await runGit(pi, ctx, [
+    "branch", "--list", "--no-color", "--no-column", "--sort=refname",
+    // Detached/rebasing pseudo-branches are not refs; render them as empty lines.
+    `--format=%(if:equals=refs)%(refname:rstrip=-1)%(then)${GIT_BRANCH_FORMAT}%(end)`,
+    ...(kind === "remote-tracking" ? ["--remotes"] : []), "--", ...patterns,
+  ], { signal });
+  return result.stdout;
+}
+
+async function readFilteredBranchRefs(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  filters: ListBranchesToolInput,
+  signal?: AbortSignal,
+): Promise<string> {
+  const kinds = filters.kind === undefined ? ["local", "remote-tracking"] : [filters.kind];
+  if (filters.patterns === undefined) {
+    const prefixes = kinds.map((kind) => kind === "local" ? "refs/heads/" : "refs/remotes/");
+    const result = await runGit(pi, ctx, [
+      "for-each-ref", "--sort=refname", `--format=${GIT_BRANCH_FORMAT}`, ...prefixes,
+    ], { signal });
+    return result.stdout;
+  }
+
+  // Git applies branch-list glob semantics before the raw-output and entry limits.
+  // Separate scopes keep remote names as origin/topic, not remotes/origin/topic.
+  const outputs = await Promise.all(kinds.map(readBranchScope.bind(undefined, pi, ctx, filters.patterns, signal)));
+  let output = "";
+  for (const scopeOutput of outputs) {
+    if (Buffer.byteLength(output, "utf8") + Buffer.byteLength(scopeOutput, "utf8") > GIT_BRANCH_RAW_OUTPUT_LIMIT_BYTES) {
+      throw new TypeError("Unable to parse branches: ref output exceeded the safety limit.");
+    }
+    for (const record of scopeOutput.split("\n")) {
+      if (record !== "") output += `${record}\n`;
+    }
+  }
+  return output;
+}
+
 export async function listBranches(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   signal?: AbortSignal,
+  filters: ListBranchesToolInput = {},
 ): Promise<ListBranchesDetails> {
+  validateBranchFilters(filters);
   const repoRoot = await getGitRoot(pi, ctx, signal);
   const rootCtx = { cwd: repoRoot };
-  const result = await runGit(pi, rootCtx, [
-    "for-each-ref", "--sort=refname", `--format=${GIT_BRANCH_FORMAT}`, "refs/heads/", "refs/remotes/",
-  ], { signal });
-  const parsed = parseBranchRefs(result.stdout);
+  const output = await readFilteredBranchRefs(pi, rootCtx, filters, signal);
+  const parsed = parseBranchRefs(output);
   const inventory = await collectWorktreeInventory(pi, rootCtx, signal);
-  const rawRecords = result.stdout.split("\n");
+  const rawRecords = output.split("\n");
   for (const [index, branch] of parsed.branches.entries()) {
     if (branch.kind !== "local") continue;
     const rawName = rawRecords[index].split(NUL_SEPARATOR, 1)[0].slice("refs/heads/".length);

@@ -16,6 +16,7 @@ src/
 │   ├── branchme-tools.ts         # main registration, including branch discovery
 │   └── workflow-tools.ts         # tracking, base update, and PR status registration
 ├── git.ts                        # shared argv-style Git primitives and per-repo mutation queue
+├── git-discovery.ts              # bounded remote cache refresh, optional pruning, symbolic-ref safety
 ├── git-workflow.ts               # narrow fetch, tracking checkout, and feature-base update
 ├── git-integration.ts            # integration preflight, merge, cleanup, and verification state machine
 ├── git-retirement.ts             # leased local-ref retirement and postcondition state machine
@@ -27,7 +28,7 @@ src/
 
 ## Module boundaries
 
-1. `src/extension.ts` stays small and registers the command, twenty tools, and one `before_agent_start` context hook.
+1. `src/extension.ts` stays small and registers the command, twenty-one tools, and one `before_agent_start` context hook.
 2. `src/git-context.ts` owns the shared read-only collector, escaped/bounded formatter, automatic system-prompt append, and the current-state output used by `branch_status`.
 3. `src/commands/branchme-command.ts` parses `/branchme`, `/branchme help`, `--help`, and `-h`; it never performs git or GitHub mutations and avoids raw stdout in JSON mode.
 4. `src/tools/branchme-tools.ts` owns strict TypeBox schemas, prompt metadata, bounded tool content, and safe structured details. `branch_status` delegates to the shared context collector and optional ancestry verifier; `integrate_branch` and `retire_branch` delegate to focused mutation state machines; worktree tools expose explicit inventory and verified handoff operations.
@@ -40,6 +41,8 @@ src/
 11. `src/ui/branchme-panel.ts` renders a compact status panel and clips lines to terminal width.
 12. `src/git-workflow.ts` owns tracking and base-update preflight, narrow fetching, and verified checkout/integration including the `keepConflicts` pass-through. `src/tools/workflow-tools.ts` registers those tools, `conclude_merge`, and explicit PR status.
 13. `src/git-landing.ts` owns execution-only `land_branch` orchestration and receipt types. It resolves the primary checkout, routes every Git call with `-C`, and reuses queue-free targeted fetch/removal/retirement helpers under one primary-root mutation window. Remote ancestry or exact merged-PR evidence gates cleanup; final target sync independently reports exact ref observations. No startup work or persistent landing state is added.
+
+14. `src/git-discovery.ts` owns configured-remote-wide branch-cache refresh and optional stale tracking-ref pruning with explicit internal mappings, atomic ref updates, bounded files-backend destination inspection (including dangling symrefs), and active-root/common-directory queues. It never checks out or changes local refs or upstream settings.
 
 ## Pi extension conventions
 
@@ -62,6 +65,7 @@ src/
 - The start-of-run snapshot may be stale after a mutation in that same run; `branch_status` is the explicit read-only refresh. Its optional targeted ancestry proof accepts exact local branches or remote-tracking refs such as `origin/main` as read-only endpoints and must run after `integrate_branch` or `fetch_branch`, not in the same parallel tool batch.
 - `init_repository` canonicalizes pi's exact current directory, rejects filesystem root, existing `.git` entries, reinitialization, and nesting inside another repository, then runs `git init --no-template --initial-branch <name>`. It verifies the exact non-bare repository root, in-place `.git` directory, requested unborn branch, and absence of a commit. It accepts no path or repository-mode controls and performs no automatic cleanup after an uncertain failure.
 - `change_branch` mutates local HEAD and working-tree files only through `git switch <branchName>` for existing local branches after a clean-worktree preflight.
+- `fetch_remote` refreshes all heads for one configured remote into only its tracking namespace. Pruning is opt-in, and configured refmaps, tags, tag pruning, submodules, and maintenance are disabled. Conventional same-namespace HEAD aliases are protected by excluding the remote branch named HEAD; unsafe or dangling symbolic destinations are refused, and non-files ref backends fail closed. Active-root locking interoperates with existing same-checkout tools; a common-directory lock additionally serializes `fetch_remote` calls across linked trees. External Git processes can still race preflight.
 - `fetch_branch` runs `git fetch --no-tags --no-recurse-submodules <remote> <remote-ref>:<remote-tracking-ref>`; its explicit refspec updates only that tracking ref without changing local branches or working-tree files. Without arguments it requires a configured upstream; with an explicit `branch` (and optional configured `remote`, default `origin`) it refreshes only `refs/remotes/<remote>/<branch>` and never touches upstream configuration.
 - `pull_branch` requires a clean worktree and configured upstream, then updates only the current branch with an explicit `git pull --ff-only --no-rebase --no-autostash <remote> <remote-ref>` command; divergence fails without a rebase or merge commit.
 - `rebase_branch` requires a clean worktree and configured upstream, then rebases only the current branch with `git rebase --no-autostash --no-update-refs <upstream>`; it rewrites local commits and automatically attempts `git rebase --abort` on failure.
@@ -82,7 +86,7 @@ src/
 - `pull_request` reads `GITHUB_TOKEN` or `GH_TOKEN` from process environment first; only when neither process token is set does it read those token keys from a small regular `.env` file in the verified git root as a fallback. `BRANCHME_PR_AUTOFILL` uses the same process-first, `.env`-fallback precedence and defaults off.
 - BranchMe does not force checkout/removal, move/prune/repair/lock/unlock worktrees, create detached/orphan worktrees, infer remote worktree branches, copy ignored/untracked files such as `.env`, delete ignored worktree residue through standalone `remove_worktree` without explicit `deleteIgnored: true` authorization, delete retained worktree branches during standalone removal, change Pi's cwd, or start Pi sessions. It also does not stash, create user-authored commits, accept commit messages, reset, force-push, directly edit project files, read unsupported `.env` keys, follow unsafe `.env` file types, depend on GitHub CLI, or collect telemetry. Explicit `integrate_branch`, `update_from_base`, and `conclude_merge` may let Git create a standard merge commit for divergent histories; `conclude_merge` is the only tool that stages, and only the formerly unmerged paths; only explicit leased `retire_branch` or merged-only `land_branch` may delete one exact local branch ref. Retirement has no bulk, inferred-target, remote, remote-tracking, rollback, or automatic worktree deletion. Git documents submodule worktree support as incomplete; BranchMe adds no force-based submodule cleanup.
 
-`list_branches` returns bounded display metadata, including cached upstream counts and occupancy; automatic context is unchanged. `pull_request_status` reads exact-number or latest-head PR state, not CI/review requirements. `pull_request` reuses matching open PRs without overwriting their metadata. PR-aware landing verifies repository/remote identity, exact merged head/base, and merge-commit containment before allowing non-ancestor local retirement; it retains the expected-HEAD lease and reports graph ancestry separately from host evidence.
+`list_branches` returns bounded display metadata, including cached upstream counts and occupancy; optional kind and Git branch-list patterns filter before raw/entry limits and display redaction. `{}` preserves the full cached inventory, and automatic context is unchanged. For unknown issue branches, run `fetch_remote` separately and wait before listing. `pull_request_status` reads exact-number or latest-head PR state, not CI/review requirements. `pull_request` reuses matching open PRs without overwriting their metadata. PR-aware landing verifies repository/remote identity, exact merged head/base, and merge-commit containment before allowing non-ancestor local retirement; it retains the expected-HEAD lease and reports graph ancestry separately from host evidence.
 
 ## Documentation
 

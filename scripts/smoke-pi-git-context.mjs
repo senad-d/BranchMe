@@ -84,6 +84,7 @@ import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTo
 
 const expectedTools = [
   "list_branches",
+  "fetch_remote",
   "track_branch",
   "update_from_base",
   "conclude_merge",
@@ -105,6 +106,7 @@ const expectedTools = [
   "retire_branch",
 ];
 const forbiddenSmokeTools = new Set([
+  "fetch_remote",
   "track_branch",
   "update_from_base",
   "conclude_merge",
@@ -184,7 +186,7 @@ function fail(model, message) {
 
 function verifyTools(context) {
   const available = new Set(getCurrentTools(context.messages).map((tool) => tool.name));
-  return expectedTools.length === 20 &&
+  return expectedTools.length === 21 &&
     expectedTools.every((name) => available.has(name)) &&
     !available.has("git_context") &&
     !available.has("continue_merge") &&

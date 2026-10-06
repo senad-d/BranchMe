@@ -34,7 +34,10 @@ Commands only show info; BranchMe tools perform actions.
 
 ## Discovery and PR lifecycle
 
-- `list_branches` — discover local/cached remote refs, upstream counts, and worktree occupancy without fetching.
+- `list_branches` — discover local/cached remote refs, upstream counts, and occupancy; optional `kind` and Git glob `patterns` filter before limits.
+- `fetch_remote` — refresh all branch refs for one configured remote (default origin); optional `prune: true` deletes only its stale cached branch refs. Wait before `list_branches`.
+- Issue discovery: `fetch_remote({ remote: "origin", prune: true })`, then `list_branches({ kind: "remote-tracking", patterns: ["origin/feat/23", "origin/feat/23-*"] })`.
+- `fetch_remote` preserves local branches, tags, files, and upstream settings; requires the files ref backend and refuses unsafe symbolic destinations.
 - `track_branch` — fetch an existing remote branch and verify a new clean local tracking checkout.
 - `update_from_base` — fetch and merge an explicit base into the current clean feature, preserving published history and upstream; a conflict is aborted unless `keepConflicts: true` leaves it in progress.
 - `conclude_merge` — `action: "conclude"` commits the kept merge once every conflict marker is removed; `action: "abort"` restores the branch.
