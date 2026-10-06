@@ -250,7 +250,10 @@ test("fetch_remote refuses unsupported ref backends and symlinked loose refs bef
 
 test("fetch_remote refuses overlapping remote namespaces rather than pruning another remote's cache", async (t) => {
   const f = await fixture(t);
-  await checked(f.root, ["remote", "add", "origin/team", f.remote]);
+  // Newer Git rejects overlapping names in `remote add`; configure this
+  // deliberately unsafe namespace directly to exercise our own guard.
+  await checked(f.root, ["config", "remote.origin/team.url", f.remote]);
+  await checked(f.root, ["config", "remote.origin/team.fetch", "+refs/heads/*:refs/remotes/origin/team/*"]);
   await checked(f.root, ["update-ref", "refs/remotes/origin/team/main", f.head]);
   const before = await checked(f.root, ["show-ref"]);
   for (const remote of ["origin", "origin/team"]) {
