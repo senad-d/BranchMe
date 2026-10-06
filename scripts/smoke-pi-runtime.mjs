@@ -58,7 +58,7 @@ const expectedBranchMeTools = [
     required: ["worktreePath", "branchName", "branchMode"],
     enums: { branchMode: ["new", "existing"] },
   },
-  { name: "remove_worktree", properties: ["deleteIgnored", "worktreePath"], required: ["worktreePath"] },
+  { name: "remove_worktree", properties: ["deleteIgnored", "discardChanges", "worktreePath"], required: ["worktreePath"] },
 ];
 
 function isTruthy(value) {
