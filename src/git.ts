@@ -534,6 +534,26 @@ async function resolvePushTarget(
     };
   }
 
+  const sameNameRef = `refs/heads/${currentBranch}`;
+  if (
+    upstreamTarget.remoteRef !== sameNameRef &&
+    await isIntegrationBranch(pi, ctx, upstreamTarget.remote, upstreamTarget.remoteRef, signal)
+  ) {
+    // A feature branch tracking the default or an integration branch (created
+    // from origin/main with tracking) would push straight onto it. Publish to
+    // the same-named branch instead and track that; the result reports the
+    // previous upstream.
+    const refspec = `HEAD:${sameNameRef}`;
+    return {
+      upstream: upstreamTarget.upstream,
+      mode: "publish",
+      remote: upstreamTarget.remote,
+      remoteRef: sameNameRef,
+      refspec,
+      args: ["push", "--set-upstream", upstreamTarget.remote, refspec],
+    };
+  }
+
   const refspec = `HEAD:${upstreamTarget.remoteRef}`;
   return {
     ...upstreamTarget,
@@ -541,6 +561,20 @@ async function resolvePushTarget(
     refspec,
     args: ["push", upstreamTarget.remote, refspec],
   };
+}
+
+const INTEGRATION_BRANCH_NAMES = ["main", "master", "trunk", "develop"];
+
+async function isIntegrationBranch(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  remote: string,
+  remoteRef: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const branch = remoteRef.slice("refs/heads/".length);
+  if (INTEGRATION_BRANCH_NAMES.includes(branch)) return true;
+  return remote === "origin" && branch === await getOriginDefaultBranch(pi, ctx, signal);
 }
 
 export async function hasWorkingTreeChanges(
@@ -1762,6 +1796,7 @@ async function requirePresentWorktreeDirectory(canonicalPath: string): Promise<v
 interface WorktreeRemovalStatus {
   workingTree: WorkingTreeDetails;
   ignoredPaths: string[];
+  changedPaths: string[];
 }
 
 function compareIgnoredPaths(left: string, right: string): number {
@@ -1775,6 +1810,7 @@ function parseWorktreeRemovalStatus(output: string): WorktreeRemovalStatus {
 
   const records = output.split(NUL_SEPARATOR);
   const ignoredPaths = new Set<string>();
+  const changedPaths: string[] = [];
   let skipNextRecord = false;
   for (const [index, record] of records.entries()) {
     if (skipNextRecord) {
@@ -1786,11 +1822,13 @@ function parseWorktreeRemovalStatus(output: string): WorktreeRemovalStatus {
     const parsed = parsePorcelainChange(records, index);
     skipNextRecord = parsed.nextIndex > index;
     if (parsed.status === "!!") ignoredPaths.add(parsed.path.split("/")[0]);
+    else changedPaths.push(parsed.path);
   }
 
   return {
     workingTree: parseWorkingTreeStatus(output).workingTree,
     ignoredPaths: [...ignoredPaths].sort(compareIgnoredPaths),
+    changedPaths: changedPaths.sort(compareIgnoredPaths),
   };
 }
 
@@ -1799,10 +1837,13 @@ async function inspectRemovableWorktree(
   canonicalPath: string,
   signal?: AbortSignal,
   allowIgnored = false,
+  allowDirty = false,
 ): Promise<WorktreeRemovalStatus> {
   const workingTree = await inspectWorktreeState(pi, canonicalPath, signal);
-  if (workingTree.state !== "clean") {
-    throw new Error("The target worktree has staged, unstaged, untracked, or unmerged changes; clean it before removal.");
+  if (workingTree.state !== "clean" && !allowDirty) {
+    throw new Error(
+      "The target worktree has staged, unstaged, untracked, or unmerged changes; clean it before removal, or pass discardChanges: true when the user explicitly authorized discarding them.",
+    );
   }
 
   const ignoredResult = await runGit(pi, { cwd: canonicalPath }, GIT_WORKTREE_REMOVAL_IGNORED_STATUS_ARGS, {
@@ -1810,7 +1851,7 @@ async function inspectRemovableWorktree(
     timeout: GIT_STATUS_TIMEOUT_MS,
   });
   const removalStatus = parseWorktreeRemovalStatus(ignoredResult.stdout);
-  if (removalStatus.workingTree.state !== "clean") {
+  if (removalStatus.workingTree.state !== "clean" && !allowDirty) {
     throw new Error("The target worktree has staged, unstaged, untracked, or unmerged changes; clean it before removal.");
   }
   if (!allowIgnored && removalStatus.ignoredPaths.length > 0) {
@@ -1850,6 +1891,7 @@ export async function removeWorktree(
   worktreePath: unknown,
   signal?: AbortSignal,
   deleteIgnored = false,
+  discardChanges = false,
 ): Promise<RemoveWorktreeDetails> {
   const requestedWorktreePath = validateWorktreePathInput(worktreePath);
   const repoRoot = await getGitRoot(pi, ctx, signal);
@@ -1857,11 +1899,21 @@ export async function removeWorktree(
 
   return withRepositoryMutationQueue(
     repoRoot,
-    removeWorktreeWithinQueue.bind(undefined, pi, rootCtx, requestedWorktreePath, signal, deleteIgnored),
+    removeWorktreeWithinQueue.bind(
+      undefined,
+      pi,
+      rootCtx,
+      requestedWorktreePath,
+      signal,
+      deleteIgnored,
+      undefined,
+      discardChanges,
+    ),
   );
 }
 
-// Caller must hold the repository mutation queue. Ignored residue requires explicit authorization.
+// Caller must hold the repository mutation queue. Ignored residue and discarded
+// changes each require explicit authorization.
 export async function removeWorktreeWithinQueue(
   pi: Pick<ExtensionAPI, "exec">,
   rootCtx: GitCommandContext,
@@ -1869,6 +1921,7 @@ export async function removeWorktreeWithinQueue(
   signal?: AbortSignal,
   allowIgnored = false,
   expectedIdentity?: { branch: string; head: string },
+  allowDirty = false,
 ): Promise<RemoveWorktreeDetails & { deletedIgnoredPaths: string[] }> {
     const repoRoot = rootCtx.cwd;
     const resolved = await resolveWorktreeRemovalTarget(
@@ -1893,13 +1946,23 @@ export async function removeWorktreeWithinQueue(
     const verifiedCanonicalPath = requireLosslessWorktreeIdentity(resolved.canonicalPath, "cwd");
     const retainedBranch = requireLosslessWorktreeIdentity(branchName, "branch");
     await requirePresentWorktreeDirectory(verifiedCanonicalPath);
-    const { workingTree, ignoredPaths } = await inspectRemovableWorktree(pi, verifiedCanonicalPath, signal, allowIgnored);
+    const { workingTree, ignoredPaths, changedPaths } = await inspectRemovableWorktree(
+      pi,
+      verifiedCanonicalPath,
+      signal,
+      allowIgnored,
+      allowDirty,
+    );
     const branchHeadBefore = await getLocalBranchCommit(pi, rootCtx, retainedBranch, signal);
     if (branchHeadBefore.toLowerCase() !== head.toLowerCase()) {
       throw new Error("The target local branch did not match the worktree HEAD before removal.");
     }
 
-    const args = ["worktree", "remove", verifiedCanonicalPath];
+    // --force only when the user authorized discarding changes; a locked worktree
+    // is rejected before this and would need a second --force anyway.
+    const args = changedPaths.length > 0
+      ? ["worktree", "remove", "--force", verifiedCanonicalPath]
+      : ["worktree", "remove", verifiedCanonicalPath];
     try {
       await runGit(pi, rootCtx, args, {
         signal,
@@ -1927,10 +1990,12 @@ export async function removeWorktreeWithinQueue(
       return {
         action: "remove_worktree",
         deletedIgnoredPaths: ignoredPaths.map((path) => redactSecrets(path)),
+        discardedPaths: changedPaths.map((path) => redactSecrets(path)),
         repoRoot: safeWorktreeValue(repoRoot, GIT_WORKTREE_PATH_LIMIT_CHARS),
         request: {
           worktreePath: safeWorktreeValue(requestedWorktreePath, GIT_WORKTREE_PATH_LIMIT_CHARS),
           ...(allowIgnored ? { deleteIgnored: true } : {}),
+          ...(allowDirty ? { discardChanges: true } : {}),
         },
         verified: {
           before: {

@@ -1045,6 +1045,30 @@ test("real git removeWorktree preserves ignored residue by default and deletes i
   });
 });
 
+test("real git removeWorktree discards uncommitted changes only with explicit authorization and lists them", async () => {
+  await withTempGitRepo(async (repoRoot, temporaryRoot) => {
+    const worktreePath = join(temporaryRoot, "feature-discard-removal");
+    const pi = makeRealGitPi(repoRoot, [worktreePath]);
+    await createWorktree(pi, { cwd: repoRoot }, worktreePath, "feature/discard-removal", "new");
+    const head = (await runGit(worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(join(worktreePath, "README.md"), "# unwanted edit\n", "utf8");
+    await mkdir(join(worktreePath, "docs"), { recursive: true });
+    await writeFile(join(worktreePath, "docs", "draft.md"), "unwanted\n", "utf8");
+
+    await assert.rejects(() => removeWorktree(pi, { cwd: repoRoot }, worktreePath), /discardChanges: true/);
+    assert.equal(await readFile(join(worktreePath, "README.md"), "utf8"), "# unwanted edit\n");
+
+    const removed = await removeWorktree(pi, { cwd: repoRoot }, worktreePath, undefined, false, true);
+
+    assert.deepEqual(removed.request, { worktreePath, discardChanges: true });
+    assert.deepEqual(removed.discardedPaths, ["docs/", "README.md"]);
+    assert.equal(removed.verified.before.workingTree.state, "dirty");
+    assert.equal(removed.verified.after.branchRetained, true);
+    assert.equal((await runGit(repoRoot, ["rev-parse", "refs/heads/feature/discard-removal"])).stdout.trim(), head);
+    await assert.rejects(() => realpath(worktreePath), { code: "ENOENT" });
+  });
+});
+
 test("real git worktree mutations reject non-lossless machine identities before changing state", async () => {
   await withTempGitRepo(async (repoRoot, temporaryRoot) => {
     const tokenPath = join(temporaryRoot, "ghp_losslesspathsecret123");
@@ -1247,6 +1271,38 @@ test("real git pullCurrentBranch fast-forwards main and refuses divergent histor
     } finally {
       await rm(remoteRoot, { recursive: true, force: true });
       await rm(updaterRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("real git pushCurrentBranch publishes a feature branch tracking origin/main to its own name, never onto main", async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    const remoteRoot = await realpath(await mkdtemp(join(tmpdir(), "branchme-push-guard-remote-")));
+    try {
+      await runGit(remoteRoot, ["init", "--bare", "--initial-branch=main"]);
+      await runGit(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      await runGit(repoRoot, ["push", "--set-upstream", "origin", "main"]);
+      const mainBefore = (await runGit(remoteRoot, ["rev-parse", "refs/heads/main"])).stdout.trim();
+      // The #15 incident: a feature branch created from origin/main with tracking.
+      await runGit(repoRoot, ["switch", "--create", "feat/62", "--track", "origin/main"]);
+      await writeFile(join(repoRoot, "feature.txt"), "feature\n", "utf8");
+      await runGit(repoRoot, ["add", "feature.txt"]);
+      await runGit(repoRoot, ["commit", "-m", "feature work"]);
+      const head = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+
+      const details = await pushCurrentBranch(makeRealGitPi(repoRoot), { cwd: repoRoot });
+
+      assert.equal(details.mode, "publish");
+      assert.equal(details.upstream, "origin/main");
+      assert.equal(details.remoteRef, "refs/heads/feat/62");
+      assert.equal((await runGit(remoteRoot, ["rev-parse", "refs/heads/main"])).stdout.trim(), mainBefore);
+      assert.equal((await runGit(remoteRoot, ["rev-parse", "refs/heads/feat/62"])).stdout.trim(), head);
+      assert.equal(
+        (await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])).stdout.trim(),
+        "origin/feat/62",
+      );
+    } finally {
+      await rm(remoteRoot, { recursive: true, force: true });
     }
   });
 });

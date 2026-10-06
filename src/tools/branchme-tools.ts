@@ -209,6 +209,9 @@ const RemoveWorktreeParametersSchema = Type.Object(
     deleteIgnored: Type.Optional(Type.Boolean({
       description: "Explicit authorization to delete ignored files and directories with the worktree; defaults to false.",
     })),
+    discardChanges: Type.Optional(Type.Boolean({
+      description: "Explicit authorization to discard staged, unstaged, untracked and unmerged changes with the worktree; defaults to false. The result lists every discarded path.",
+    })),
   },
   { additionalProperties: false },
 );
@@ -832,7 +835,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: PUSH_BRANCH_TOOL_NAME,
     label: "Push Branch",
-    description: "push_branch pushes the current branch to its configured upstream remote with an explicit refspec. If the current branch has no upstream, push_branch publishes it to origin with --set-upstream. push_branch never commits, stages, or edits files.",
+    description: "push_branch pushes the current branch to its configured upstream remote with an explicit refspec. If the current branch has no upstream, push_branch publishes it to origin with --set-upstream. A branch whose upstream is a differently named main, master, trunk, develop or origin default branch is never pushed onto it: push_branch publishes it to its own name on that remote, tracks it, and reports the previous upstream. push_branch never commits, stages, or edits files.",
     promptSnippet: "push_branch: push or publish the current branch only with an explicit target, without committing or staging",
     promptGuidelines: [
       "Use push_branch only after commits already exist; push_branch never commits, stages, or edits files.",
@@ -957,17 +960,25 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: REMOVE_WORKTREE_TOOL_NAME,
     label: "Remove Worktree",
-    description: "remove_worktree force-free removes one verified clean linked worktree at an explicit absolute worktreePath while retaining and returning its exact local branch identity. Ignored residue is refused by default; deleteIgnored: true explicitly authorizes deleting it with the worktree and reports its top-level paths. remove_worktree rejects main, current, dirty, detached, locked, prunable, missing, and foreign worktrees and never deletes branches.",
+    description: "remove_worktree force-free removes one verified clean linked worktree at an explicit absolute worktreePath while retaining and returning its exact local branch identity. Ignored residue is refused by default; deleteIgnored: true explicitly authorizes deleting it with the worktree and reports its top-level paths. discardChanges: true explicitly authorizes discarding uncommitted changes and reports every discarded path. remove_worktree rejects main, current, detached, locked, prunable, missing, and foreign worktrees, rejects dirty ones without discardChanges, and never deletes branches.",
     promptSnippet: "remove_worktree: force-free removal of an explicitly selected clean linked worktree, with optional explicit ignored-residue deletion, while retaining its branch",
     promptGuidelines: [
       "Use remove_worktree only when the user explicitly requests worktree removal and provides or approves the exact absolute worktreePath; remove_worktree must never infer a filesystem path silently.",
       "Use remove_worktree with worktreePath and optional deleteIgnored; set deleteIgnored: true only after the user explicitly authorizes deleting all ignored files and directories, including possible .env, .pi/, dependency, and build residue.",
+      "Set remove_worktree discardChanges: true only after the user explicitly authorizes discarding the worktree's uncommitted changes; never infer it from a dirty worktree.",
       "remove_worktree never accepts force, move, prune, repair, lock, unlock, branch deletion, remote, or refspec parameters.",
       "Do not batch remove_worktree with dependent worktree mutations; wait for remove_worktree to complete and verify its non-ready handoff before continuing.",
     ],
     parameters: RemoveWorktreeParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const details = await removeWorktree(pi, ctx, params.worktreePath, signal, params.deleteIgnored === true);
+      const details = await removeWorktree(
+        pi,
+        ctx,
+        params.worktreePath,
+        signal,
+        params.deleteIgnored === true,
+        params.discardChanges === true,
+      );
       return {
         content: [{ type: "text", text: formatRemoveWorktree(details) }],
         details,

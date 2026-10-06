@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.3.4 - Unreleased
+## 0.3.5 - Unreleased
+
+- `push_branch` never pushes onto a differently named integration branch: when the current branch's upstream is `main`, `master`, `trunk`, `develop`, or the origin default branch under another name (a feature branch created from `origin/main` with tracking), it publishes to the same-named branch on that remote with `--set-upstream`, reports `mode: "publish"`, and keeps the previous upstream in `upstream`. Previously such a branch was pushed straight onto the integration branch. Other differently named upstreams keep their explicit `HEAD:<upstream-ref>` push.
+- Added optional `remove_worktree.discardChanges` (default `false`, unchanged behavior). When `true`, the user's explicit authorization, a worktree with staged, unstaged, untracked, or unmerged changes is removed with `git worktree remove --force` and the result lists every discarded path in `discardedPaths`; without it a dirty worktree is still refused, now naming the option. Locked, detached, main, current, prunable, missing, and foreign worktrees stay rejected, and the local branch is retained.
+
+## 0.3.4 - Released
 
 - Added `fetch_remote` for tool-native discovery of unknown remote branch names: refresh one configured remote's branch cache (default `origin`) with optional, remote-tracking-only pruning (default false). Atomic explicit mappings disable configured refmaps, tags, tag pruning, submodules, and maintenance; symbolic destination checks include dangling loose refs, and unsupported non-files ref backends fail closed.
 - Extended read-only `list_branches` with optional local/remote-tracking `kind` and bounded Git branch-list glob `patterns`, applied before output limits. Documented the sequential replacement for issue branch discovery via `git fetch origin --prune` and `git branch -r --list`.

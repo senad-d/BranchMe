@@ -736,8 +736,9 @@ test("worktree tools expose strict schemas and named handoff-oriented prompt gui
   assert.equal(createTool.parameters.additionalProperties, false);
 
   assert.deepEqual(removeTool.parameters.required, ["worktreePath"]);
-  assert.deepEqual(Object.keys(removeTool.parameters.properties), ["worktreePath", "deleteIgnored"]);
+  assert.deepEqual(Object.keys(removeTool.parameters.properties), ["worktreePath", "deleteIgnored", "discardChanges"]);
   assert.equal(removeTool.parameters.properties.deleteIgnored.type, "boolean");
+  assert.equal(removeTool.parameters.properties.discardChanges.type, "boolean");
   assert.equal(removeTool.parameters.additionalProperties, false);
 
   const unsupported = ["force", "remote", "detach", "orphan", "move", "prune", "repair", "lock", "unlock"];

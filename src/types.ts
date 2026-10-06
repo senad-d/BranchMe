@@ -111,6 +111,8 @@ export interface RemoveWorktreeToolInput {
   worktreePath: string;
   /** Explicitly authorizes deleting ignored files and directories with the worktree. */
   deleteIgnored?: boolean;
+  /** Explicitly authorizes discarding staged, unstaged, untracked and unmerged changes with the worktree. */
+  discardChanges?: boolean;
 }
 
 export interface WorktreeEntry {
@@ -194,6 +196,8 @@ export interface CreateWorktreeDetails {
 export interface RemoveWorktreeDetails {
   action: "remove_worktree";
   deletedIgnoredPaths: string[];
+  /** Changed paths discarded under discardChanges; empty for a clean worktree. */
+  discardedPaths: string[];
   repoRoot: string;
   request: RemoveWorktreeToolInput;
   verified: {
