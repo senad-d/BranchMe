@@ -245,7 +245,7 @@ export function formatBranchStatus(details: GitContextDetails): string {
 
 export function formatChangeBranch(details: ChangeBranchDetails): string {
   const previous = details.previousDetached ? "detached HEAD" : details.previousBranch ?? "unknown branch";
-  return `Changed branch from ${previous} to ${details.currentBranch}.`;
+  return `Changed branch from ${previous} to ${details.currentBranch} at ${details.head}.`;
 }
 
 export function formatPullRequest(details: PullRequestToolDetails, autofilledFields: PullRequestInputField[] = []): string {
@@ -641,7 +641,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
         content: [
           {
             type: "text",
-            text: `Created and checked out branch ${details.newBranch} from ${details.previousBranch}.`,
+            text: `Created and checked out branch ${details.newBranch} from ${details.previousBranch} at ${details.head}.`,
           },
         ],
         details,
@@ -735,7 +735,7 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
     async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
       const details = await pullCurrentBranch(pi, ctx, signal);
       return {
-        content: [{ type: "text", text: `Pulled current branch ${details.currentBranch} with fast-forward-only semantics.` }],
+        content: [{ type: "text", text: `Pulled current branch ${details.currentBranch} with fast-forward-only semantics; HEAD ${details.head}.` }],
         details,
       };
     },
@@ -846,8 +846,9 @@ export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "e
     async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
       const details = await pushCurrentBranch(pi, ctx, signal);
       const action = details.mode === "publish" ? "Published" : "Pushed";
+      const remoteState = details.remoteHead === details.head ? "matches" : `is at ${details.remoteHead}`;
       return {
-        content: [{ type: "text", text: `${action} current branch ${details.currentBranch}.` }],
+        content: [{ type: "text", text: `${action} current branch ${details.currentBranch} at ${details.head}; ${details.remoteTrackingRef} ${remoteState}.` }],
         details,
       };
     },

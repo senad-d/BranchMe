@@ -1254,6 +1254,7 @@ test("create_branch schema accepts only branchName and constructs git switch", a
     ["check-ref-format\0--branch\0feature/tool"]: { stdout: "feature/tool\n" },
     ["show-ref\0--verify\0--quiet\0refs/heads/feature/tool"]: { code: 1 },
     ["switch\0-c\0feature/tool"]: { stdout: "" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
   registerBranchMeTools(pi);
   const tool = toolByName(pi, CREATE_BRANCH_TOOL_NAME);
@@ -1265,8 +1266,9 @@ test("create_branch schema accepts only branchName and constructs git switch", a
 
   const output = await tool.execute("call-2", { branchName: "feature/tool" }, undefined, undefined, ctx);
 
-  assert.deepEqual(output.details, { repoRoot: "/repo", previousBranch: "main", newBranch: "feature/tool" });
-  assert.deepEqual(pi.calls.at(-1).args, ["switch", "-c", "feature/tool"]);
+  assert.equal(output.content[0].text, "Created and checked out branch feature/tool from main at cccccccccccccccccccccccccccccccccccccccc.");
+  assert.deepEqual(output.details, { repoRoot: "/repo", previousBranch: "main", newBranch: "feature/tool", head: "cccccccccccccccccccccccccccccccccccccccc" });
+  assert.deepEqual(pi.calls.find((call) => call.args[0] === "switch").args, ["switch", "-c", "feature/tool"]);
   assert.equal(pi.calls.some((call) => ["commit", "add", "push"].includes(call.args[0])), false);
 });
 
@@ -1278,6 +1280,7 @@ test("change_branch schema switches existing local branches and reports safe det
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: [{ stdout: "main\n" }, { stdout: "feature/tool\n" }],
     ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n" },
     ["switch\0feature/tool"]: { stdout: "" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
   registerBranchMeTools(pi);
   const tool = toolByName(pi, CHANGE_BRANCH_TOOL_NAME);
@@ -1300,8 +1303,9 @@ test("change_branch schema switches existing local branches and reports safe det
     previousDetached: false,
     currentBranch: "feature/tool",
     hasChangesBeforeSwitch: false,
+    head: "cccccccccccccccccccccccccccccccccccccccc",
   });
-  assert.equal(output.content[0].text, "Changed branch from main to feature/tool.");
+  assert.equal(output.content[0].text, "Changed branch from main to feature/tool at cccccccccccccccccccccccccccccccccccccccc.");
   assert.deepEqual(pi.calls.filter((call) => call.args[0] === "switch").map((call) => call.args), [["switch", "feature/tool"]]);
   assert.equal(
     pi.calls.some((call) => ["checkout", "stash", "reset", "merge", "rebase", "add", "commit", "push"].includes(call.args[0])),
@@ -1434,6 +1438,7 @@ test("pull_branch has a strict empty schema and fast-forwards the clean current 
     ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
     ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
     ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: { stdout: "Fast-forward\n" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
   registerBranchMeTools(pi);
   const tool = toolByName(pi, PULL_BRANCH_TOOL_NAME);
@@ -1453,9 +1458,10 @@ test("pull_branch has a strict empty schema and fast-forwards the clean current 
     remote: "origin",
     remoteRef: "refs/heads/main",
     output: "Fast-forward",
+    head: "cccccccccccccccccccccccccccccccccccccccc",
   });
-  assert.equal(output.content[0].text, "Pulled current branch main with fast-forward-only semantics.");
-  assert.deepEqual(pi.calls.at(-1).args, ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"]);
+  assert.equal(output.content[0].text, "Pulled current branch main with fast-forward-only semantics; HEAD cccccccccccccccccccccccccccccccccccccccc.");
+  assert.deepEqual(pi.calls.find((call) => call.args[0] === "pull").args, ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"]);
   assert.equal(pi.calls.some((call) => ["rebase", "stash", "add", "commit", "push"].includes(call.args[0])), false);
 });
 
@@ -1522,6 +1528,8 @@ test("push_branch pushes current branch with and without upstream", async () => 
     ["push\0origin\0HEAD:refs/heads/feature/current"]: {
       stdout: "ok https://user:ghp_toolsecret123@github.com/senad-d/branchme.git token=github_pat_toolsecret123\n",
     },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
+    ["rev-parse\0--verify\0refs/remotes/origin/feature/current^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
   registerBranchMeTools(upstreamPi);
   const upstreamTool = toolByName(upstreamPi, PUSH_BRANCH_TOOL_NAME);
@@ -1534,7 +1542,7 @@ test("push_branch pushes current branch with and without upstream", async () => 
   assert.equal(upstreamOutput.details.mode, "push");
   assert.equal(upstreamOutput.details.remote, "origin");
   assert.equal(upstreamOutput.details.remoteRef, "refs/heads/feature/current");
-  assert.deepEqual(upstreamPi.calls.at(-1).args, ["push", "origin", "HEAD:refs/heads/feature/current"]);
+  assert.deepEqual(upstreamPi.calls.find((call) => call.args[0] === "push").args, ["push", "origin", "HEAD:refs/heads/feature/current"]);
   assert.equal(upstreamPi.calls.some((call) => call.args.length === 1 && call.args[0] === "push"), false);
   assert.doesNotMatch(JSON.stringify(upstreamOutput), /toolsecret|user:ghp_/u);
 
@@ -1543,13 +1551,16 @@ test("push_branch pushes current branch with and without upstream", async () => 
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
     ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { code: 1, stderr: "no upstream\n" },
     ["push\0--set-upstream\0origin\0feature/current"]: { stdout: "published\n" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
+    ["rev-parse\0--verify\0refs/remotes/origin/feature/current^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
   registerBranchMeTools(publishPi);
   const publishTool = toolByName(publishPi, PUSH_BRANCH_TOOL_NAME);
 
   const publishOutput = await publishTool.execute("call-4", {}, undefined, undefined, ctx);
   assert.equal(publishOutput.details.mode, "publish");
-  assert.deepEqual(publishPi.calls.at(-1).args, ["push", "--set-upstream", "origin", "feature/current"]);
+  assert.equal(publishOutput.content[0].text, "Published current branch feature/current at cccccccccccccccccccccccccccccccccccccccc; origin/feature/current matches.");
+  assert.deepEqual(publishPi.calls.find((call) => call.args[0] === "push").args, ["push", "--set-upstream", "origin", "feature/current"]);
   assert.equal(publishPi.calls.some((call) => ["commit", "add"].includes(call.args[0])), false);
 });
 
@@ -1566,6 +1577,7 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
         ["check-ref-format\0--branch\0feature/signal-create"]: { stdout: "feature/signal-create\n" },
         ["show-ref\0--verify\0--quiet\0refs/heads/feature/signal-create"]: { code: 1 },
         ["switch\0-c\0feature/signal-create"]: { stdout: "" },
+        ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
       },
     },
     {
@@ -1578,6 +1590,7 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
         ["symbolic-ref\0--quiet\0--short\0HEAD"]: [{ stdout: "main\n" }, { stdout: "feature/signal-change\n" }],
         ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n" },
         ["switch\0feature/signal-change"]: { stdout: "" },
+        ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
       },
     },
     {
@@ -1603,6 +1616,7 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
         ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
         ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
         ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: { stdout: "Already up to date.\n" },
+        ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
       },
     },
     {
@@ -1628,6 +1642,8 @@ test("public BranchMe tools propagate abort signals to git and fetch calls", asy
         ["config\0--get\0branch.feature/signal-push.remote"]: { stdout: "origin\n" },
         ["config\0--get\0branch.feature/signal-push.merge"]: { stdout: "refs/heads/feature/signal-push\n" },
         ["push\0origin\0HEAD:refs/heads/feature/signal-push"]: { stdout: "Everything up-to-date\n" },
+        ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
+        ["rev-parse\0--verify\0refs/remotes/origin/feature/signal-push^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
       },
     },
   ];
@@ -2162,6 +2178,8 @@ test("pull_request queues behind an in-flight push_branch for the same repositor
       if (key === "rev-parse\0--show-toplevel") return result({ stdout: "/repo\n" });
       if (key === "symbolic-ref\0--quiet\0--short\0HEAD") return result({ stdout: "feature/current\n" });
       if (key === "rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}") return result({ code: 1, stderr: "no upstream\n" });
+      if (key === "rev-parse\0--verify\0HEAD^{commit}") return result({ stdout: `${LOCAL_HEAD_SHA}\n` });
+      if (key === "rev-parse\0--verify\0refs/remotes/origin/feature/current^{commit}") return result({ stdout: `${LOCAL_HEAD_SHA}\n` });
       if (key === "push\0--set-upstream\0origin\0feature/current") {
         events.push("push:start");
         pushStarted.resolve();
@@ -2230,6 +2248,8 @@ test("same-batch pull_request before push_branch fails early with retry guidance
       if (key === "remote\0get-url\0origin") return result({ stdout: "https://github.com/senad-d/branchme.git\n" });
       if (key === "symbolic-ref\0--quiet\0--short\0HEAD") return result({ stdout: "feature/current\n" });
       if (key === "rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}") return result({ code: 1, stderr: "no upstream\n" });
+      if (key === "rev-parse\0--verify\0HEAD^{commit}") return result({ stdout: `${LOCAL_HEAD_SHA}\n` });
+      if (key === "rev-parse\0--verify\0refs/remotes/origin/feature/current^{commit}") return result({ stdout: `${LOCAL_HEAD_SHA}\n` });
       if (key === "push\0--set-upstream\0origin\0feature/current") return result({ stdout: "published\n" });
       if (args[0] === "check-ref-format" && args[1] === "--branch") return result({ stdout: `${args[2]}\n` });
       throw new Error(`Unexpected git command: ${args.join(" ")}`);

@@ -1214,7 +1214,8 @@ test("real git createLocalBranch creates and checks out a branch from HEAD", asy
     const pi = makeRealGitPi(repoRoot);
     const details = await createLocalBranch(pi, { cwd: repoRoot }, "feature/integration");
 
-    assert.deepEqual(details, { repoRoot, previousBranch: "main", newBranch: "feature/integration" });
+    const head = (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    assert.deepEqual(details, { repoRoot, previousBranch: "main", newBranch: "feature/integration", head });
     assert.equal(await currentBranch(repoRoot), "feature/integration");
     assert.deepEqual(pi.calls.filter((call) => call.args[0] === "switch").map((call) => call.args), [["switch", "-c", "feature/integration"]]);
   });
@@ -1247,6 +1248,7 @@ test("real git pullCurrentBranch fast-forwards main and refuses divergent histor
       assert.equal(details.upstream, "origin/main");
       assert.equal(details.remote, "origin");
       assert.equal(details.remoteRef, "refs/heads/main");
+      assert.equal(details.head, (await runGit(repoRoot, ["rev-parse", "HEAD"])).stdout.trim());
       assert.equal(await readFile(join(repoRoot, "README.md"), "utf8"), "# Updated base branch\n");
       assert.deepEqual(pi.calls.filter((call) => call.args[0] === "pull").map((call) => call.args), [
         ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"],
@@ -1295,6 +1297,9 @@ test("real git pushCurrentBranch publishes a feature branch tracking origin/main
       assert.equal(details.mode, "publish");
       assert.equal(details.upstream, "origin/main");
       assert.equal(details.remoteRef, "refs/heads/feat/62");
+      assert.equal(details.head, head);
+      assert.equal(details.remoteTrackingRef, "origin/feat/62");
+      assert.equal(details.remoteHead, head);
       assert.equal((await runGit(remoteRoot, ["rev-parse", "refs/heads/main"])).stdout.trim(), mainBefore);
       assert.equal((await runGit(remoteRoot, ["rev-parse", "refs/heads/feat/62"])).stdout.trim(), head);
       assert.equal(

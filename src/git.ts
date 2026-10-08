@@ -563,7 +563,7 @@ async function resolvePushTarget(
   };
 }
 
-const INTEGRATION_BRANCH_NAMES = ["main", "master", "trunk", "develop"];
+const INTEGRATION_BRANCH_NAMES = new Set(["main", "master", "trunk", "develop"]);
 
 async function isIntegrationBranch(
   pi: Pick<ExtensionAPI, "exec">,
@@ -573,7 +573,7 @@ async function isIntegrationBranch(
   signal?: AbortSignal,
 ): Promise<boolean> {
   const branch = remoteRef.slice("refs/heads/".length);
-  if (INTEGRATION_BRANCH_NAMES.includes(branch)) return true;
+  if (INTEGRATION_BRANCH_NAMES.has(branch)) return true;
   return remote === "origin" && branch === await getOriginDefaultBranch(pi, ctx, signal);
 }
 
@@ -1828,7 +1828,7 @@ function parseWorktreeRemovalStatus(output: string): WorktreeRemovalStatus {
   return {
     workingTree: parseWorkingTreeStatus(output).workingTree,
     ignoredPaths: [...ignoredPaths].sort(compareIgnoredPaths),
-    changedPaths: changedPaths.sort(compareIgnoredPaths),
+    changedPaths: [...changedPaths].sort(compareIgnoredPaths),
   };
 }
 
@@ -2687,8 +2687,9 @@ export async function createLocalBranch(
       signal,
       timeout: GIT_MUTATION_TIMEOUT_MS,
     });
+    const head = await getVerifiedRefCommit(pi, rootCtx, "HEAD", "HEAD", signal);
 
-    return { repoRoot, previousBranch: safeDetail(previousBranch), newBranch: safeDetail(branchName) };
+    return { repoRoot, previousBranch: safeDetail(previousBranch), newBranch: safeDetail(branchName), head };
   });
 }
 
@@ -2726,6 +2727,7 @@ export async function changeExistingLocalBranch(
     if (current.detached || current.currentBranch !== branchName) {
       throw new Error(`git switch did not end on branch '${redactSecrets(branchName)}'.`);
     }
+    const head = await getVerifiedRefCommit(pi, rootCtx, "HEAD", "HEAD", signal);
 
     return {
       repoRoot,
@@ -2733,6 +2735,7 @@ export async function changeExistingLocalBranch(
       previousDetached: previous.detached,
       currentBranch: safeDetail(current.currentBranch),
       hasChangesBeforeSwitch: false,
+      head,
     };
   });
 }
@@ -2882,6 +2885,7 @@ export async function pullCurrentBranch(
       signal,
       timeout: GIT_PULL_TIMEOUT_MS,
     });
+    const head = await getVerifiedRefCommit(pi, rootCtx, "HEAD", "HEAD", signal);
 
     return {
       repoRoot,
@@ -2890,6 +2894,7 @@ export async function pullCurrentBranch(
       remote: safeDetail(target.remote),
       remoteRef: safeDetail(target.remoteRef),
       output: safeOutput(result.stdout || result.stderr),
+      head,
     };
   });
 }
@@ -2981,6 +2986,11 @@ export async function pushCurrentBranch(
       signal,
       timeout: GIT_PUSH_TIMEOUT_MS,
     });
+    // The push updated the remote-tracking ref of the pushed branch; reading it
+    // back is the remote-visible HEAD the receipt proves, without another fetch.
+    const remoteTrackingRef = `${target.remote}/${target.remoteRef.replace(/^refs\/heads\//u, "")}`;
+    const head = await getVerifiedRefCommit(pi, rootCtx, "HEAD", "HEAD", signal);
+    const remoteHead = await getRemoteTrackingRefCommit(pi, rootCtx, remoteTrackingRef, signal);
 
     return {
       repoRoot,
@@ -2991,6 +3001,9 @@ export async function pushCurrentBranch(
       remoteRef: safeDetail(target.remoteRef),
       refspec: safeDetail(target.refspec),
       output: safeOutput(result.stdout || result.stderr),
+      head,
+      remoteTrackingRef: safeDetail(remoteTrackingRef),
+      remoteHead,
     };
   });
 }

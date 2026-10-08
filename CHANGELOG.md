@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.3.5 - Unreleased
+## 0.3.6 - Unreleased
+
+- Resolved Sonar maintainability findings by using a set for integration-branch membership and non-mutating sorting for changed worktree paths.
+
+- `create_branch`, `change_branch`, `pull_branch` and `push_branch` receipts carry the resulting full HEAD (`head`); `push_branch` also names the remote-tracking ref it updated (`remoteTrackingRef`) and its commit after the push (`remoteHead`), and the text result says whether it matches the local HEAD. A caller no longer needs `branch_status` after these calls to learn or prove the HEAD.
+## 0.3.5 - Released
 
 - `push_branch` never pushes onto a differently named integration branch: when the current branch's upstream is `main`, `master`, `trunk`, `develop`, or the origin default branch under another name (a feature branch created from `origin/main` with tracking), it publishes to the same-named branch on that remote with `--set-upstream`, reports `mode: "publish"`, and keeps the previous upstream in `upstream`. Previously such a branch was pushed straight onto the integration branch. Other differently named upstreams keep their explicit `HEAD:<upstream-ref>` push.
 - Added optional `remove_worktree.discardChanges` (default `false`, unchanged behavior). When `true`, the user's explicit authorization, a worktree with staged, unstaged, untracked, or unmerged changes is removed with `git worktree remove --force` and the result lists every discarded path in `discardedPaths`; without it a dirty worktree is still refused, now naming the option. Locked, detached, main, current, prunable, missing, and foreign worktrees stay rejected, and the local branch is retained.

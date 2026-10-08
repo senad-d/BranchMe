@@ -280,6 +280,8 @@ export interface CreateBranchDetails {
   repoRoot: string;
   previousBranch: string;
   newBranch: string;
+  /** Full commit identity the new branch starts at (HEAD after the switch). */
+  head: string;
 }
 
 export interface ChangeBranchDetails {
@@ -288,6 +290,8 @@ export interface ChangeBranchDetails {
   previousDetached: boolean;
   currentBranch: string;
   hasChangesBeforeSwitch: false;
+  /** Full commit identity of HEAD after the switch. */
+  head: string;
 }
 
 export interface FetchBranchDetails {
@@ -318,6 +322,8 @@ export interface PullBranchDetails {
   remote: string;
   remoteRef: string;
   output: string;
+  /** Full commit identity of HEAD after the fast-forward. */
+  head: string;
 }
 
 export interface RebaseBranchDetails {
@@ -338,6 +344,12 @@ export interface PushBranchDetails {
   remoteRef: string;
   refspec: string;
   output: string;
+  /** Full commit identity of the local HEAD that was pushed. */
+  head: string;
+  /** Remote-tracking ref updated by the push, for example origin/feature/x. */
+  remoteTrackingRef: string;
+  /** Full commit identity of that remote-tracking ref after the push: the remote-visible HEAD. */
+  remoteHead: string;
 }
 
 export type IntegrateBranchStatus = "already_integrated" | "fast_forward" | "merge_commit" | "conflict" | "conflict_kept";

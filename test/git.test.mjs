@@ -3128,12 +3128,13 @@ test("createLocalBranch creates from current HEAD with git switch -c", async () 
     ["check-ref-format\0--branch\0feature/new"]: { stdout: "feature/new\n" },
     ["show-ref\0--verify\0--quiet\0refs/heads/feature/new"]: { code: 1 },
     ["switch\0-c\0feature/new"]: { stdout: "" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await createLocalBranch(pi, ctx, "feature/new");
 
-  assert.deepEqual(details, { repoRoot: "/repo", previousBranch: "main", newBranch: "feature/new" });
-  assert.deepEqual(pi.calls.at(-1).args, ["switch", "-c", "feature/new"]);
+  assert.deepEqual(details, { repoRoot: "/repo", previousBranch: "main", newBranch: "feature/new", head: "cccccccccccccccccccccccccccccccccccccccc" });
+  assert.deepEqual(pi.calls.find((call) => call.args[0] === "switch").args, ["switch", "-c", "feature/new"]);
 });
 
 test("mutating branch helpers serialize repository-state windows for the same repository", async () => {
@@ -3152,6 +3153,7 @@ test("mutating branch helpers serialize repository-state windows for the same re
       if (args[0] === "check-ref-format") return result({ stdout: `${args[2]}\n` });
       if (args[0] === "show-ref") return result({ code: 1 });
       if (args[0] === "switch") return result();
+      if (args.join("\0") === "rev-parse\0--verify\0HEAD^{commit}") return result({ stdout: "cccccccccccccccccccccccccccccccccccccccc\n" });
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     },
   };
@@ -3170,10 +3172,12 @@ test("mutating branch helpers serialize repository-state windows for the same re
     ["check-ref-format", "--branch", "feature/one"],
     ["show-ref", "--verify", "--quiet", "refs/heads/feature/one"],
     ["switch", "-c", "feature/one"],
+    ["rev-parse", "--verify", "HEAD^{commit}"],
     ["symbolic-ref", "--quiet", "--short", "HEAD"],
     ["check-ref-format", "--branch", "feature/two"],
     ["show-ref", "--verify", "--quiet", "refs/heads/feature/two"],
     ["switch", "-c", "feature/two"],
+    ["rev-parse", "--verify", "HEAD^{commit}"],
   ]);
 });
 
@@ -3185,6 +3189,7 @@ test("changeExistingLocalBranch switches from current branch with argv-style git
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: [{ stdout: "main\n" }, { stdout: "feature/foo\n" }],
     ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n" },
     ["switch\0feature/foo"]: { stdout: "" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await changeExistingLocalBranch(pi, ctx, "feature/foo");
@@ -3195,6 +3200,7 @@ test("changeExistingLocalBranch switches from current branch with argv-style git
     previousDetached: false,
     currentBranch: "feature/foo",
     hasChangesBeforeSwitch: false,
+    head: "cccccccccccccccccccccccccccccccccccccccc",
   });
   assert.deepEqual(
     pi.calls.filter((call) => call.args[0] === "switch").map((call) => call.args),
@@ -3215,6 +3221,7 @@ test("changeExistingLocalBranch switches from detached HEAD when HEAD is valid",
     ["rev-parse\0--verify\0HEAD"]: { stdout: "abc123\n" },
     ["status\0--porcelain=v1\0--branch"]: { stdout: "## HEAD (no branch)\n" },
     ["switch\0main"]: { stdout: "" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await changeExistingLocalBranch(pi, ctx, "main");
@@ -3225,6 +3232,7 @@ test("changeExistingLocalBranch switches from detached HEAD when HEAD is valid",
     previousDetached: true,
     currentBranch: "main",
     hasChangesBeforeSwitch: false,
+    head: "cccccccccccccccccccccccccccccccccccccccc",
   });
   assert.deepEqual(pi.calls.filter((call) => call.args[0] === "switch").map((call) => call.args), [["switch", "main"]]);
   assertNoUnsafeBranchSwitchCommands(pi.calls);
@@ -3409,6 +3417,7 @@ test("pullCurrentBranch fast-forwards the clean current branch from its configur
     ["config\0--get\0branch.main.remote"]: { stdout: "origin\n" },
     ["config\0--get\0branch.main.merge"]: { stdout: "refs/heads/main\n" },
     ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: { stdout: "Updating 1111111..2222222\nFast-forward\n" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await pullCurrentBranch(pi, ctx);
@@ -3420,11 +3429,12 @@ test("pullCurrentBranch fast-forwards the clean current branch from its configur
     remote: "origin",
     remoteRef: "refs/heads/main",
     output: "Updating 1111111..2222222\nFast-forward",
+    head: "cccccccccccccccccccccccccccccccccccccccc",
   });
-  assert.deepEqual(pi.calls.at(-1).args, ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"]);
-  assert.equal(pi.calls.at(-1).options.timeout, 120_000);
-  assert.equal(pi.calls.at(-1).args.includes("--no-rebase"), true);
-  assert.equal(pi.calls.at(-1).args.includes("--no-autostash"), true);
+  assert.deepEqual(pi.calls.find((call) => call.args[0] === "pull").args, ["pull", "--ff-only", "--no-rebase", "--no-autostash", "origin", "refs/heads/main"]);
+  assert.equal(pi.calls.find((call) => call.args[0] === "pull").options.timeout, 120_000);
+  assert.equal(pi.calls.find((call) => call.args[0] === "pull").args.includes("--no-rebase"), true);
+  assert.equal(pi.calls.find((call) => call.args[0] === "pull").args.includes("--no-autostash"), true);
   assert.equal(pi.calls.some((call) => call.args.includes("--rebase") || call.args.includes("--force")), false);
 });
 
@@ -3460,6 +3470,7 @@ test("pullCurrentBranch redacts credential-bearing git output in returned detail
     ["pull\0--ff-only\0--no-rebase\0--no-autostash\0origin\0refs/heads/main"]: {
       stdout: "pulled from https://user:ghp_pullsecret123@github.com/senad-d/branchme.git\n",
     },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await pullCurrentBranch(pi, ctx);
@@ -3548,6 +3559,8 @@ test("pushCurrentBranch redacts credential-bearing git output in returned detail
       stdout:
         "pushed to https://user:ghp_pushsecret123@github.com/senad-d/branchme.git with Bearer ghp_bearersecret123 and token=github_pat_outputsecret123\n",
     },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
+    ["rev-parse\0--verify\0refs/remotes/origin/feature/current^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await pushCurrentBranch(pi, ctx);
@@ -3574,6 +3587,8 @@ test("pushCurrentBranch uses an explicit remote and refspec when upstream exists
     ["config\0--get\0branch.feature/current.remote"]: { stdout: "origin\n" },
     ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/feature/current\n" },
     ["push\0origin\0HEAD:refs/heads/feature/current"]: { stdout: "Everything up-to-date\n" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
+    ["rev-parse\0--verify\0refs/remotes/origin/feature/current^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await pushCurrentBranch(pi, ctx);
@@ -3582,7 +3597,10 @@ test("pushCurrentBranch uses an explicit remote and refspec when upstream exists
   assert.equal(details.remote, "origin");
   assert.equal(details.remoteRef, "refs/heads/feature/current");
   assert.equal(details.refspec, "HEAD:refs/heads/feature/current");
-  assert.deepEqual(pi.calls.at(-1).args, ["push", "origin", "HEAD:refs/heads/feature/current"]);
+  assert.equal(details.head, "cccccccccccccccccccccccccccccccccccccccc");
+  assert.equal(details.remoteTrackingRef, "origin/feature/current");
+  assert.equal(details.remoteHead, "cccccccccccccccccccccccccccccccccccccccc");
+  assert.deepEqual(pi.calls.find((call) => call.args[0] === "push").args, ["push", "origin", "HEAD:refs/heads/feature/current"]);
   assert.equal(pi.calls.some((call) => call.args.length === 1 && call.args[0] === "push"), false);
 });
 
@@ -3594,13 +3612,16 @@ test("pushCurrentBranch supports custom upstreams and branch names with slashes"
     ["config\0--get\0branch.feature/current.remote"]: { stdout: "upstream-remote\n" },
     ["config\0--get\0branch.feature/current.merge"]: { stdout: "refs/heads/team/feature/current\n" },
     ["push\0upstream-remote\0HEAD:refs/heads/team/feature/current"]: { stdout: "Everything up-to-date\n" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
+    ["rev-parse\0--verify\0refs/remotes/upstream-remote/team/feature/current^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await pushCurrentBranch(pi, ctx);
 
   assert.equal(details.remote, "upstream-remote");
   assert.equal(details.remoteRef, "refs/heads/team/feature/current");
-  assert.deepEqual(pi.calls.at(-1).args, ["push", "upstream-remote", "HEAD:refs/heads/team/feature/current"]);
+  assert.equal(details.remoteTrackingRef, "upstream-remote/team/feature/current");
+  assert.deepEqual(pi.calls.find((call) => call.args[0] === "push").args, ["push", "upstream-remote", "HEAD:refs/heads/team/feature/current"]);
 });
 
 test("pushCurrentBranch rejects incomplete or non-remote upstream configuration", async () => {
@@ -3648,6 +3669,8 @@ test("pushCurrentBranch publishes current branch when upstream is missing", asyn
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
     ["rev-parse\0--abbrev-ref\0--symbolic-full-name\0@{u}"]: { code: 1, stderr: "no upstream\n" },
     ["push\0--set-upstream\0origin\0feature/current"]: { stdout: "branch set up\n" },
+    ["rev-parse\0--verify\0HEAD^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
+    ["rev-parse\0--verify\0refs/remotes/origin/feature/current^{commit}"]: { stdout: "cccccccccccccccccccccccccccccccccccccccc\n" },
   });
 
   const details = await pushCurrentBranch(pi, ctx);
@@ -3656,5 +3679,5 @@ test("pushCurrentBranch publishes current branch when upstream is missing", asyn
   assert.equal(details.remote, "origin");
   assert.equal(details.remoteRef, "refs/heads/feature/current");
   assert.equal(details.refspec, "feature/current");
-  assert.deepEqual(pi.calls.at(-1).args, ["push", "--set-upstream", "origin", "feature/current"]);
+  assert.deepEqual(pi.calls.find((call) => call.args[0] === "push").args, ["push", "--set-upstream", "origin", "feature/current"]);
 });
