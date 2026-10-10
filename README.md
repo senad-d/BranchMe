@@ -16,7 +16,7 @@
 
 ---
 
-BranchMe is a Pi extension for safe Git repository, branch, and worktree workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and twenty-one agent-callable tools that initialize a repository, refresh state, manage, integrate, and retire local branches, conclude a kept merge, inspect/create/remove linked worktrees, push the current branch, and create GitHub pull requests.
+BranchMe is a Pi extension for safe Git repository, branch, and worktree workflow automation. Before each agent run, it appends a bounded, read-only snapshot of the current Git repository to the system prompt. It also adds an informational `/branchme` command and twenty-two agent-callable tools that initialize a repository, refresh state, manage, integrate, and retire local branches, conclude a kept merge, inspect/create/remove linked worktrees, push the current branch, and create GitHub pull requests.
 
 <table align="center">
   <tr>
@@ -184,7 +184,7 @@ git remote set-url origin git@github.com:OWNER/REPO.git
 export GITHUB_REPOSITORY=OWNER/REPO
 ```
 
-For automatic related-PR lookup, `pull_request_status`, PR-aware `land_branch`, and `pull_request`, set a token in the process environment before starting pi:
+For automatic related-PR lookup, `pull_request_status`, `pull_request_feedback`, PR-aware `land_branch`, and `pull_request`, set a token in the process environment before starting pi:
 
 ```bash
 export GITHUB_TOKEN=github_pat_...
@@ -214,7 +214,7 @@ BranchMe has no separate project config file. It reads process environment varia
 
 | Variable | Meaning |
 | --- | --- |
-| `GITHUB_TOKEN` | Preferred token for automatic related-PR lookup, `pull_request_status`, PR-aware `land_branch`, and `pull_request`; process environment first, then local `.env` fallback. |
+| `GITHUB_TOKEN` | Preferred token for automatic related-PR lookup, `pull_request_status`, `pull_request_feedback`, PR-aware `land_branch`, and `pull_request`; process environment first, then local `.env` fallback. |
 | `GH_TOKEN` | Fallback token for the same GitHub API operations; process environment first, then local `.env` fallback. |
 | `BRANCHME_PR_AUTOFILL=true` | Allow `pull_request` to fill omitted PR fields. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`; disabled by default. |
 | `GITHUB_REPOSITORY=owner/repo` | Optional CI fallback and boundary check for the current GitHub repository; process environment only. |
@@ -257,6 +257,7 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | `track_branch` | `{ "branchName": string, "remote"?: string, "remoteBranch"?: string }` | Fetch one exact remote branch and create/check out a new local tracking branch. Remote defaults to `origin`; remoteBranch defaults to branchName. Requires a clean idle checkout; verifies HEAD and upstream. |
 | `update_from_base` | `{ "baseBranch": string, "remote"?: string, "keepConflicts"?: boolean }` | Fetch the exact remote base (remote defaults to `origin`) and merge its captured commit into the clean current feature. Uses verified normal-merge policy; a `conflict` is automatically aborted with its paths listed, or with `keepConflicts: true` reported as `conflict_kept` and left in progress (MERGE_HEAD set, conflicted paths unmerged) for `conclude_merge`. Never rebases, pushes, or changes upstream configuration. |
 | `conclude_merge` | `{ "action": "conclude" \| "abort" }` | Finish or abandon the in-progress merge on the current checkout. `conclude` refuses default/custom-sized `<<<<<<<`, `|||||||`, `=======`, or `>>>>>>>` marker lines in unmerged working-tree paths and staged blobs (including CRLF and binary content, naming the paths), stages only the currently unmerged paths, rechecks the candidate index, commits with `git commit --no-edit`, and verifies MERGE_HEAD is gone and HEAD is a two-parent merge of the previous HEAD and MERGE_HEAD; unrelated unstaged changes stay unstaged. `abort` runs `git merge --abort` and verifies the restored HEAD, cleared operation state, and clean tree. Refuses when no merge is in progress. |
+| `pull_request_feedback` | `{ "number"?: integer, "headBranch"?: string }` | Read what a same-repository PR asks to be fixed in one GraphQL request: unresolved, current review threads with their comments (resolved and outdated threads are counted only), review summaries with a body or requested changes, the latest 50 conversation comments, and the head commit's failing checks. For up to three failing GitHub Actions jobs it adds the log lines leading to the last `##[error]`. A job log that cannot be read is reported per check. No mutations. |
 | `pull_request_status` | `{ "number"?: integer, "headBranch"?: string }` | Read exact same-repository PR lifecycle and head/base/merge identities. Number and headBranch are mutually exclusive. Without number, returns the most recently updated PR for headBranch or the current branch. Does not certify CI checks or review approvals. |
 | `init_repository` | `{ "initialBranch"?: string }` | Initializes only pi's exact current working directory as a verified non-bare Git repository with an unborn branch (default `main`). Rejects existing or nested repositories and accepts no path, bare, template, shared, remote, commit, or project-file controls. |
 | `branch_status` | `{ "ancestry"?: { "sourceBranch": string, "targetBranch": string } }` | Explicitly refreshes the same bounded context used at agent start. An optional strict ancestry query captures both exact HEADs and reports whether the source commit is an ancestor of the target commit; each endpoint may be an exact local branch or a remote-tracking ref such as `origin/main` (a local branch of the same name takes precedence). It is read-only and never checks out or resets remote-tracking refs; automatic Git context does not run ancestry queries. |
@@ -564,7 +565,7 @@ npm run check:pack
 printf '/branchme help\n/quit\n' | pi --no-extensions -e .
 ```
 
-Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, isolated real-Git worktree, branch-integration, and leased branch-retirement lifecycle tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all twenty-one BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata, including `integrate_branch`, `retire_branch`, `conclude_merge`, and targeted `branch_status.ancestry`, with no generic `continue_merge` or `abort_merge` tool. Runtime smoke inspects retirement and landing registration/schema but never executes either cleanup tool. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
+Validation covers TypeScript typechecking, formatting checks, automatic context collection and prompt injection, mocked GitHub lookup, isolated real-Git worktree, branch-integration, and leased branch-retirement lifecycle tests, package checks, checkout Pi runtime smoke, and package-content verification. The checkout smoke loads BranchMe through Pi, then uses a temporary verifier command to confirm all twenty-two BranchMe tools are visible through `pi.getAllTools()` with strict schemas and prompt metadata, including `integrate_branch`, `retire_branch`, `conclude_merge`, and targeted `branch_status.ancestry`, with no generic `continue_merge` or `abort_merge` tool. Runtime smoke inspects retirement and landing registration/schema but never executes either cleanup tool. Smoke-test notes are recorded in [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md), and TUI/help captures are stored in [`docs/TUI_CAPTURE.md`](docs/TUI_CAPTURE.md).
 
 Refresh TUI captures intentionally with:
 

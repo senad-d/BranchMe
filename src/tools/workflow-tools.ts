@@ -2,12 +2,13 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-  CONCLUDE_MERGE_TOOL_NAME, GIT_CONTEXT_VALUE_LIMIT_CHARS, PULL_REQUEST_STATUS_TOOL_NAME, TRACK_BRANCH_TOOL_NAME,
-  UPDATE_FROM_BASE_TOOL_NAME,
+  CONCLUDE_MERGE_TOOL_NAME, GIT_CONTEXT_VALUE_LIMIT_CHARS, PULL_REQUEST_FEEDBACK_TOOL_NAME, PULL_REQUEST_STATUS_TOOL_NAME,
+  TRACK_BRANCH_TOOL_NAME, UPDATE_FROM_BASE_TOOL_NAME,
 } from "../constants.ts";
 import { getGitRoot, requireCurrentBranch, safeWorktreeValue } from "../git.ts";
 import { concludeMerge, formatConflictPathList } from "../git-integration.ts";
 import { findGitHubPullRequest, getGitHubPullRequest, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
+import { formatPullRequestFeedback, getPullRequestFeedback } from "../github-feedback.ts";
 import type { ConcludeMergeDetails, PullRequestStatusDetails } from "../types.ts";
 import type { BranchMeToolOptions } from "./branchme-tools.ts";
 import { trackBranch, updateFromBase, type UpdateFromBaseDetails } from "../git-workflow.ts";
@@ -88,6 +89,36 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
         content: [{ type: "text", text: formatPullRequestStatus(pullRequest) }],
         details: { action: "pull_request_status", pullRequest },
       };
+    },
+  });
+  pi.registerTool({
+    name: PULL_REQUEST_FEEDBACK_TOOL_NAME,
+    label: "Pull Request Feedback",
+    description: "pull_request_feedback reads what a same-repository GitHub PR asks to be fixed: unresolved review threads with their comments, review summaries, conversation comments, and the head commit's failing checks with the log tail of up to three failing GitHub Actions jobs. Resolved and outdated threads are counted, not listed. No mutations.",
+    promptSnippet: "pull_request_feedback: read a PR's unresolved review comments and failing checks with their log tails",
+    promptGuidelines: [
+      "Use pull_request_feedback with number to collect the review comments and failing checks a follow-up must address; number and headBranch are mutually exclusive.",
+      "Without number, pull_request_feedback reads the most recently updated PR for headBranch or the current branch.",
+      "pull_request_feedback never comments, resolves threads, reruns checks, or edits the PR; a job log that cannot be read is reported per check, not as a failure of the call.",
+    ],
+    parameters: Type.Object({
+      number: Type.Optional(Type.Integer({ minimum: 1, description: "Exact PR number; mutually exclusive with headBranch." })),
+      headBranch: Type.Optional(Type.String({ minLength: 1, description: "Head branch to look up; defaults to current branch when number is omitted." })),
+    }, { additionalProperties: false }),
+    async execute(_id, params, signal, _update, ctx) {
+      if (params.number !== undefined && params.headBranch !== undefined) throw new Error("Supply number or headBranch, not both.");
+      const rootCtx = { cwd: await getGitRoot(pi, ctx, signal) };
+      const repository = await resolveGitHubRepository(pi, rootCtx, signal, options.env);
+      const token = (await resolveGitHubToken(options.env, { cwd: rootCtx.cwd, signal })).token;
+      const requestOptions = { fetchImpl: options.fetchImpl, signal };
+      let number = params.number;
+      if (number === undefined) {
+        const found = await findGitHubPullRequest(repository, params.headBranch ?? await requireCurrentBranch(pi, rootCtx, signal), token, requestOptions);
+        if (!found) return { content: [{ type: "text", text: "No matching pull request found." }], details: { action: "pull_request_feedback", feedback: null } };
+        number = found.number;
+      }
+      const feedback = await getPullRequestFeedback(repository, number, token, requestOptions);
+      return { content: [{ type: "text", text: formatPullRequestFeedback(feedback) }], details: { action: "pull_request_feedback", feedback } };
     },
   });
   pi.registerTool({

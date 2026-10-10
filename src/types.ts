@@ -601,6 +601,46 @@ export interface PullRequestStatusDetails extends PullRequestDetails {
   mergeCommitSha: string | null;
 }
 
+export interface PullRequestFeedbackComment {
+  author: string;
+  body: string;
+  url: string;
+}
+
+export interface PullRequestFeedbackThread {
+  path: string;
+  line: number | null;
+  comments: PullRequestFeedbackComment[];
+}
+
+export interface PullRequestFeedbackReview extends PullRequestFeedbackComment {
+  state: string;
+}
+
+export interface PullRequestFeedbackCheck {
+  name: string;
+  conclusion: string;
+  url: string;
+  jobId: number | null;
+  logTail?: string;
+  logError?: string;
+}
+
+export interface PullRequestFeedbackDetails {
+  repository: GitHubRepository;
+  number: number;
+  url: string;
+  headSha: string;
+  checksState: string | null;
+  unresolvedThreads: PullRequestFeedbackThread[];
+  resolvedThreadCount: number;
+  outdatedThreadCount: number;
+  reviews: PullRequestFeedbackReview[];
+  comments: PullRequestFeedbackComment[];
+  failingChecks: PullRequestFeedbackCheck[];
+  omitted: { threads: number; comments: number; checks: number };
+}
+
 export interface PullRequestInput {
   headBranch: string;
   baseBranch: string;

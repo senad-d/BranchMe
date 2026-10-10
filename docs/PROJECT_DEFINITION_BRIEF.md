@@ -15,7 +15,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 - Exported extension function: `branchMeExtension`
 - Repository URL: `https://github.com/senad-d/branchme`
 - One-sentence pitch: Verified Pi tools for Git repository initialization plus current-repository branch, integration, retirement, linked-worktree, push, and GitHub pull request workflows.
-- Tool count: twenty-one strict agent-callable tools.
+- Tool count: twenty-two strict agent-callable tools.
 
 ## 3. Users and use cases
 
@@ -56,6 +56,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 | Tool | `update_from_base` | Fetch and merge an explicit remote base | Preserves published history; fixed merge policy, listed conflict paths, automatic abort unless `keepConflicts` |
 | Tool | `conclude_merge` | Commit or abort the in-progress kept merge | Refuses remaining markers; stages only formerly unmerged paths; `commit --no-edit`; verified two-parent result or verified abort |
 | Tool | `pull_request_status` | Read exact PR or latest PR for a head | Open/closed/merged state and commit identities; not a CI/review verdict |
+| Tool | `pull_request_feedback` | Read what a PR asks to be fixed | Unresolved review threads, review summaries, conversation comments, failing checks with Actions log tails; read-only |
 | Tool | `init_repository` | Initialize the exact current directory as a new non-bare Git repository | Optional initial branch; rejects reinitialization/nesting; no path, commit, or project-file controls |
 | Tool | `branch_status` | Refresh bounded current-worktree Git and related-PR context; optionally prove captured local or remote-tracking ancestry | Read-only; targeted ancestry is absent from automatic context |
 | Tool | `integrate_branch` | Integrate one exact local source into the already-current clean local target | Fixed normal-merge policy; verified automatic abort/restoration on conflict |
@@ -95,7 +96,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - `src/github.ts`
   - `src/ui/branchme-panel.ts`
 - Module boundaries:
-  - The extension entry point registers the informational command, twenty-one tools, and automatic context hook.
+  - The extension entry point registers the informational command, twenty-two tools, and automatic context hook.
   - `src/git-workflow.ts` and `src/tools/workflow-tools.ts` own verified remote tracking, base updates, and the new PR status registration.
   - The context module owns bounded read-only collection, prompt formatting, targeted ancestry rendering, and the `before_agent_start` hook; automatic context never runs ancestry queries.
   - The command and UI modules own mode-safe informational help/status behavior and never invoke mutations.

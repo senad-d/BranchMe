@@ -21,6 +21,7 @@ const expectedBranchMeTools = [
   { name: "update_from_base", properties: ["baseBranch", "keepConflicts", "remote"], required: ["baseBranch"] },
   { name: "conclude_merge", properties: ["action"], required: ["action"], enums: { action: ["conclude", "abort"] } },
   { name: "pull_request_status", properties: ["headBranch", "number"], required: [] },
+  { name: "pull_request_feedback", properties: ["headBranch", "number"], required: [] },
   {
     name: "branch_status",
     properties: ["ancestry"],
@@ -236,7 +237,7 @@ export default function branchMeRuntimeVerifier(pi) {
       const failures = [];
       const tools = [];
 
-      if (expectedTools.length !== 21) failures.push("runtime verifier did not expect exactly twenty-one BranchMe tools");
+      if (expectedTools.length !== 22) failures.push("runtime verifier did not expect exactly twenty-two BranchMe tools");
       for (const forbiddenName of ["continue_merge", "abort_merge"]) {
         if (byName.has(forbiddenName) || activeTools.has(forbiddenName)) {
           failures.push(forbiddenName + " must not be registered or active");

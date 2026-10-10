@@ -42,6 +42,7 @@ Commands only show info; BranchMe tools perform actions.
 - `update_from_base` — fetch and merge an explicit base into the current clean feature, preserving published history and upstream; a conflict is aborted unless `keepConflicts: true` leaves it in progress.
 - `conclude_merge` — `action: "conclude"` commits the kept merge once every conflict marker is removed; `action: "abort"` restores the branch.
 - `pull_request_status` — inspect a PR by number, or the latest PR for a head branch; not a CI/review verdict.
+- `pull_request_feedback` — read a PR's unresolved review comments and failing checks with log tails.
 - `pull_request` — reuses an exact matching open PR without changing its title, body, or draft state.
 - `land_branch` — after host merge, clean up from the primary checkout; use `pullRequestNumber` for squash/rebase evidence.
 

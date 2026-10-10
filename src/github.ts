@@ -380,7 +380,7 @@ function truncate(value: string): string {
 
 export { redactSecrets } from "./redaction.ts";
 
-function encodePathSegment(value: string): string {
+export function encodePathSegment(value: string): string {
   return encodeURIComponent(value);
 }
 
@@ -433,7 +433,7 @@ function validatePullRequestInput(input: unknown): asserts input is PullRequestI
   if (typeof input.draft !== "boolean") throw new Error("draft must be a boolean.");
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -442,7 +442,7 @@ function stringField(value: unknown, field: string): string {
   return value;
 }
 
-function pullRequestNumberField(value: unknown): number {
+export function pullRequestNumberField(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error("GitHub response pull request number must be a finite positive safe integer.");
   }
@@ -458,7 +458,7 @@ function throwIfResponseReadAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new Error("GitHub pull request response read was aborted.");
 }
 
-async function readBoundedResponseText(response: Response, signal: AbortSignal | undefined): Promise<BoundedResponseBody> {
+export async function readBoundedResponseText(response: Response, signal: AbortSignal | undefined, limitBytes = GITHUB_RESPONSE_BODY_LIMIT_BYTES): Promise<BoundedResponseBody> {
   throwIfResponseReadAborted(signal);
   if (!response.body) return { text: "", truncated: false };
 
@@ -474,7 +474,7 @@ async function readBoundedResponseText(response: Response, signal: AbortSignal |
       if (done) break;
       if (!value || value.byteLength === 0) continue;
 
-      const remainingBytes = GITHUB_RESPONSE_BODY_LIMIT_BYTES - capturedBytes;
+      const remainingBytes = limitBytes - capturedBytes;
       if (remainingBytes > 0) {
         const capturedChunk = value.byteLength <= remainingBytes ? value : value.subarray(0, remainingBytes);
         chunks.push(Buffer.from(capturedChunk));
@@ -495,7 +495,7 @@ async function readBoundedResponseText(response: Response, signal: AbortSignal |
   return { text: truncated ? `${text}… [truncated]` : text, truncated };
 }
 
-function gitHubJsonHeaders(token: string): Record<string, string> {
+export function gitHubJsonHeaders(token: string): Record<string, string> {
   return {
     Accept: "application/vnd.github+json",
     Authorization: `Bearer ${token}`,
@@ -505,7 +505,7 @@ function gitHubJsonHeaders(token: string): Record<string, string> {
   };
 }
 
-function requireFetchImplementation(fetchImpl: typeof fetch | undefined): typeof fetch {
+export function requireFetchImplementation(fetchImpl: typeof fetch | undefined): typeof fetch {
   if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable in this Node.js runtime.");
   return fetchImpl;
 }
@@ -515,7 +515,7 @@ function redactedErrorMessage(error: unknown, tokens: readonly string[]): string
   return redactSecrets(message, tokens);
 }
 
-async function fetchGitHubResponse(
+export async function fetchGitHubResponse(
   fetchImpl: typeof fetch,
   url: string,
   init: RequestInit,
@@ -542,7 +542,7 @@ async function readGitHubResponseBody(
   }
 }
 
-function parseGitHubJson(text: string, responseContext: string, token: string): unknown {
+export function parseGitHubJson(text: string, responseContext: string, token: string): unknown {
   try {
     return JSON.parse(text);
   } catch (error) {
@@ -550,7 +550,7 @@ function parseGitHubJson(text: string, responseContext: string, token: string): 
   }
 }
 
-function requireGitHubResponseObject(payload: unknown, responseContext: string): Record<string, unknown> {
+export function requireGitHubResponseObject(payload: unknown, responseContext: string): Record<string, unknown> {
   if (!isRecord(payload)) throw new Error(`${responseContext} was not an object.`);
   return payload;
 }

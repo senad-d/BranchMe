@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.8 - Unreleased
+
+- Resolved four Sonar maintainability findings: fetch the bounded failing-job logs concurrently and simplify feedback formatting by extracting nested template literals.
+
+## 0.3.7 - Unreleased
+
+- Added read-only `pull_request_feedback`: one GraphQL request returns a same-repository PR's unresolved, current review threads with their comments (resolved and outdated threads counted only), review summaries with a body or requested changes, the latest 50 conversation comments, and the head commit's failing checks; for up to three failing GitHub Actions jobs it adds the log lines leading to the last `##[error]`. Agents that address PR feedback no longer need `gh pr view`, `gh api` or `gh run view`.
+
 ## 0.3.6 - Unreleased
 
 - Resolved Sonar maintainability findings by using a set for integration-branch membership and non-mutating sorting for changed worktree paths.
