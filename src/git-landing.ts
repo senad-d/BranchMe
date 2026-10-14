@@ -55,7 +55,8 @@ export interface LandBranchReceipt {
   sourceHead: string | null;
   ancestry: { isAncestor: boolean | null };
   mergeProof: "ancestry" | "pull-request" | null;
-  pullRequest: { number: number; headSha: string; mergeCommitSha: string } | null;
+  /** sourceInHead: the local source head is the merged PR head or one of its ancestors (a branch left behind). */
+  pullRequest: { number: number; headSha: string; mergeCommitSha: string; sourceInHead: boolean } | null;
   worktree: {
     path: string | null;
     outcome: "removed" | "absent" | "refused";
@@ -240,8 +241,8 @@ async function removeLandingWorktree(pi: GitAPI, receipt: LandBranchReceipt, sig
   const sourceHead = await captureLocalHead(pi, ctx, receipt.sourceBranch, signal);
   if (sourceHead !== receipt.sourceHead) throw new Error("Source branch moved after the ancestry proof; no worktree removed.");
   const worktreeHead = validated.worktree.head;
-  const exactMergedPrHead = receipt.mergeProof === "pull-request" &&
-    validated.worktree.branch === receipt.sourceBranch && worktreeHead === receipt.pullRequest?.headSha;
+  const exactMergedPrHead = receipt.mergeProof === "pull-request" && validated.worktree.branch === receipt.sourceBranch &&
+    (worktreeHead === receipt.pullRequest?.headSha || (worktreeHead === receipt.sourceHead && receipt.pullRequest?.sourceInHead === true));
   if (!worktreeHead || !receipt.remoteTargetHead ||
       (!exactMergedPrHead && !(await isCommitAncestor(pi, ctx, worktreeHead, receipt.remoteTargetHead, signal)))) {
     throw new Error("Selected worktree HEAD is not merged into the fetched target.");
@@ -297,7 +298,7 @@ async function retireLandingBranch(pi: GitAPI, receipt: LandBranchReceipt, signa
     targetBranch: `${receipt.remote}/${receipt.targetBranch}`,
     // A verified host merge authorizes retiring rewritten source history, not a
     // general force option. Identity, occupancy, target stability and lease checks remain.
-    force: receipt.mergeProof === "pull-request" && receipt.pullRequest?.headSha === head,
+    force: receipt.mergeProof === "pull-request" && receipt.pullRequest?.sourceInHead === true && head === receipt.sourceHead,
   }, ctx.cwd, signal, "remote-tracking", receipt.remoteTargetHead);
   receipt.branch.outcome = "deleted";
   receipt.branch.reason = null;
@@ -415,6 +416,15 @@ async function refuseLanding(pi: GitAPI, receipt: LandBranchReceipt, error: unkn
   return receipt;
 }
 
+// A commit missing locally (an unfetched squash-merged PR head) proves nothing: not contained.
+async function commitContains(pi: GitAPI, ctx: GitCommandContext, ancestor: string, descendant: string, signal?: AbortSignal): Promise<boolean> {
+  try {
+    return await isCommitAncestor(pi, ctx, ancestor, descendant, signal);
+  } catch {
+    return false;
+  }
+}
+
 async function verifyLandingPullRequest(
   pi: GitAPI,
   ctx: GitCommandContext,
@@ -431,14 +441,20 @@ async function verifyLandingPullRequest(
   }
   const token = (await resolveGitHubToken(options.env, { cwd: ctx.cwd, signal })).token;
   const pr = await getGitHubPullRequest(repository, number, token, { fetchImpl: options.fetchImpl, signal });
-  if (!pr.merged || pr.state !== "closed" || !pr.mergeCommitSha || pr.head !== receipt.sourceBranch ||
-      pr.base !== receipt.targetBranch || (receipt.sourceHead !== null && pr.headSha !== receipt.sourceHead)) {
+  if (!pr.merged || pr.state !== "closed" || !pr.mergeCommitSha || pr.head !== receipt.sourceBranch || pr.base !== receipt.targetBranch) {
     throw new Error("PR merge evidence does not match the exact source commit and target branch; landing refused.");
+  }
+  // A local branch behind the merged head (the PR received commits pushed from another
+  // checkout, such as a merge of the base) holds nothing the PR lacks.
+  const sourceInHead = receipt.sourceHead === null || pr.headSha === receipt.sourceHead ||
+    await commitContains(pi, ctx, receipt.sourceHead, pr.headSha, signal);
+  if (!sourceInHead) {
+    throw new Error("The local source branch has commits the merged PR head does not contain; landing refused to keep them.");
   }
   if (!receipt.remoteTargetHead || !(await isCommitAncestor(pi, ctx, pr.mergeCommitSha, receipt.remoteTargetHead, signal))) {
     throw new Error("The PR merge commit is not contained in the fetched remote target; landing refused.");
   }
-  receipt.pullRequest = { number: pr.number, headSha: pr.headSha, mergeCommitSha: pr.mergeCommitSha };
+  receipt.pullRequest = { number: pr.number, headSha: pr.headSha, mergeCommitSha: pr.mergeCommitSha, sourceInHead };
   receipt.mergeProof = "pull-request";
 }
 

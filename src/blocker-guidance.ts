@@ -113,6 +113,16 @@ const BLOCKER_RULES: readonly BlockerRule[] = [
     resolve: "list_branches to check names (fetch_remote first for remote branches); track_branch creates a local branch from a remote one.",
   },
   {
+    pattern: /has commits the merged PR head does not contain/iu,
+    why: "the local branch holds commits that never reached the merged pull request, so deleting it would lose them.",
+    resolve: "report the branch and the PR; those commits need their own delivery (a new branch and pull request from another step) or the user's decision to discard them. Do not retry land_branch unchanged.",
+  },
+  {
+    pattern: /PR merge evidence does not match/iu,
+    why: "the pull request is not merged, or names a different head or base branch than the landing request.",
+    resolve: "read pull_request_status for the PR and retry land_branch once with its exact head and base branch names.",
+  },
+  {
     pattern: /moved after|changed while|moved concurrently|changed during/iu,
     why: "repository state changed while the call ran.",
     resolve: "refresh with branch_status or list_branches and retry once with the new values.",

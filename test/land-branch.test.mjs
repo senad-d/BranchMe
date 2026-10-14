@@ -503,6 +503,30 @@ test("squash and rebase landing requires exact PR evidence and preserves false g
   }
 });
 
+test("PR landing accepts a local branch left behind the merged PR head and refuses one with extra commits", async (t) => {
+  const f = await rewrittenFixture(t);
+  // Another checkout pushed one more commit to the PR before it merged; this branch never fetched it.
+  await writeFile(join(f.worktree, "pushed-elsewhere.txt"), "remote only\n");
+  await git(f.worktree, ["add", "."]);
+  await git(f.worktree, ["commit", "-m", "pushed from another checkout"]);
+  const prHead = await head(f.worktree);
+  await git(f.worktree, ["reset", "--hard", f.sourceHead]);
+  const behind = await prLand(f, { ...f.pr, head: { ...f.pr.head, sha: prHead } });
+  assert.equal(behind.pullRequest.sourceInHead, true);
+  assert.equal(behind.worktree.outcome, "removed", JSON.stringify(behind));
+  assert.equal(behind.branch.outcome, "deleted", JSON.stringify(behind));
+});
+
+test("PR landing keeps a local branch with commits the merged PR head lacks", async (t) => {
+  const f = await rewrittenFixture(t);
+  await writeFile(join(f.worktree, "local-only.txt"), "unpublished\n");
+  await git(f.worktree, ["add", "."]);
+  await git(f.worktree, ["commit", "-m", "never pushed"]);
+  const receipt = await prLand(f);
+  assert.equal(receipt.branch.outcome, "refused");
+  assert.match(formatLandBranch(receipt), /has commits the merged PR head does not contain[\s\S]*\nResolve: report the branch and the PR/u);
+});
+
 test("PR landing refuses open, unmerged, wrong-identity and unreachable-merge evidence", async (t) => {
   const f = await rewrittenFixture(t);
   const invalid = [

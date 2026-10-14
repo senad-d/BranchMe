@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.11 - Unreleased
+
+- `land_branch` with `pullRequestNumber` accepts a local source branch that is the merged PR head or one of its ancestors: a branch left behind because the PR received commits pushed from another checkout (for example a merge of the base) holds nothing the PR lacks, and is retired. A local branch with commits the PR head does not contain is still refused, now with its own message and Blocked/Resolve guidance; a PR head that is not available locally counts as not containing it.
+- Blocked/Resolve guidance for the PR-evidence refusals of `land_branch`.
+
 ## 0.3.10 - Unreleased
 
 - Added `reply_pull_request_feedback`: one reply in a review thread of a PR, optionally resolving it, or one PR conversation comment, on open, merged and closed PRs of the repository (forks included). The thread is verified to belong to the PR, and a conversation comment's number to be a pull request, before anything is posted. Agents that address PR feedback can now answer every comment on GitHub, so the reviewer, and the next automated check, see what was handled.
