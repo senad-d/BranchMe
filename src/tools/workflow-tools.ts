@@ -43,7 +43,7 @@ export function formatUpdateFromBase(details: UpdateFromBaseDetails): string {
 export function formatConcludeMerge(details: ConcludeMergeDetails): string {
   const branch = branchLabel(details.branch);
   if (details.status === "aborted") {
-    return `conclude_merge: aborted. git merge --abort restored ${branch} to HEAD ${shortCommit(details.head)}; MERGE_HEAD ${shortCommit(details.mergeHead)} is cleared, no Git operation is in progress, and the working tree is clean.`;
+    return `conclude_merge: aborted. git merge --abort restored ${branch} to HEAD ${shortCommit(details.head)}; MERGE_HEAD ${shortCommit(details.mergeHead)} is cleared, no Git operation is in progress, and tracked files are clean.`;
   }
   const count = details.resolvedPaths.length;
   return formatConflictPathList(

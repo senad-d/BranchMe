@@ -591,6 +591,34 @@ export async function hasWorkingTreeChanges(
     .some((line) => line.length > 0 && !line.startsWith("## "));
 }
 
+const TRACKED_CHANGE_PATH_LIMIT = 5;
+
+/**
+ * Refuses when tracked files have staged, unstaged, or unmerged changes. Untracked
+ * files (a local .env, editor or tool state) never block: git itself refuses a
+ * switch, pull, rebase, or merge that would overwrite one.
+ */
+export async function requireNoTrackedChanges(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  operation: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const result = await runGit(pi, ctx, ["status", "--porcelain=v1", "--branch"], {
+    signal,
+    timeout: GIT_STATUS_TIMEOUT_MS,
+  });
+  // Display only: git quotes unusual paths and shows renames as "old -> new".
+  const paths = result.stdout
+    .split("\n")
+    .filter((line) => line.length > 3 && !line.startsWith("## ") && !line.startsWith("?? ") && !line.startsWith("!! "))
+    .map((line) => line.slice(3));
+  if (paths.length === 0) return;
+  const shown = paths.slice(0, TRACKED_CHANGE_PATH_LIMIT).map((path) => JSON.stringify(safeDetail(path))).join(", ");
+  const more = paths.length > TRACKED_CHANGE_PATH_LIMIT ? ` and ${paths.length - TRACKED_CHANGE_PATH_LIMIT} more` : "";
+  throw new Error(`Tracked files have uncommitted changes; ${operation} refused: ${shown}${more}. Untracked files do not block ${operation}.`);
+}
+
 export interface WorkingTreeStatus {
   workingTree: WorkingTreeDetails;
   unstagedChanges: GitFileChangeSummary;
@@ -2714,9 +2742,7 @@ export async function changeExistingLocalBranch(
       throw new Error(`Already on branch '${redactSecrets(branchName)}'.`);
     }
 
-    if (await hasWorkingTreeChanges(pi, rootCtx, signal)) {
-      throw new Error("Working tree has uncommitted changes; clean it before changing branches.");
-    }
+    await requireNoTrackedChanges(pi, rootCtx, "change_branch", signal);
 
     await runGit(pi, rootCtx, ["switch", branchName], {
       signal,
@@ -2872,9 +2898,7 @@ export async function pullCurrentBranch(
 
   return withRepositoryMutationQueue(repoRoot, async () => {
     const currentBranch = await requireCurrentBranch(pi, rootCtx, signal);
-    if (await hasWorkingTreeChanges(pi, rootCtx, signal)) {
-      throw new Error("Working tree has uncommitted changes; clean it before pulling the current branch.");
-    }
+    await requireNoTrackedChanges(pi, rootCtx, "pull_branch", signal);
 
     const target = await resolveConfiguredUpstreamTarget(pi, rootCtx, currentBranch, "pull", signal);
     if (!target) {
@@ -2934,9 +2958,7 @@ export async function rebaseCurrentBranch(
 
   return withRepositoryMutationQueue(repoRoot, async () => {
     const currentBranch = await requireCurrentBranch(pi, rootCtx, signal);
-    if (await hasWorkingTreeChanges(pi, rootCtx, signal)) {
-      throw new Error("Working tree has uncommitted changes; clean it before rebasing the current branch.");
-    }
+    await requireNoTrackedChanges(pi, rootCtx, "rebase_branch", signal);
 
     const target = await resolveConfiguredUpstreamTarget(pi, rootCtx, currentBranch, "rebase", signal);
     if (!target) {

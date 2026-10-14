@@ -30,7 +30,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - Create and verify a linked worktree from current `HEAD`, optional read-only `baseRef`, or an unoccupied existing local branch.
   - Return an exact, absolute, machine-readable worktree handoff for a caller-managed separate Pi session or subagent.
   - Remove an exact verified clean linked worktree while retaining its local branch; protect ignored residue by default and delete it only with explicit `deleteIgnored: true` authorization.
-  - Land a host-merged feature in one cwd-independent call: fetch/prove remote ancestry, remove a clean linked checkout including ignored residue, lease-delete the source branch, and sync the target independently without touching a dirty checkout.
+  - Land a host-merged feature in one cwd-independent call: fetch/prove remote ancestry, remove a clean linked checkout including ignored residue, release a tracked-clean primary source checkout with an ignored-file-protecting switch, lease-delete the source branch, and sync the target independently without touching tracked changes. Untracked-only target checkouts are permitted.
   - Retire one exact unoccupied local branch ref only when it matches a full expected `HEAD` and its relationship to one exact local target has been verified; unmerged retirement requires explicit force authorization.
   - Switch to an existing local branch after a clean-worktree preflight or create a new branch from current `HEAD`.
   - Fetch a configured upstream tracking ref, fast-forward the current branch, or explicitly rebase it.
@@ -159,14 +159,14 @@ Standalone removal retains its branch and requires explicit `deleteIgnored: true
 
 ## 10. Security and privacy
 
-- Every Git command uses `pi.exec("git", args, { cwd, signal, timeout })` with an argv array rather than shell interpolation.
+- Every Git command uses an argv array rather than shell interpolation. Network commands use a fixed absolute Git executable with cwd, signal, timeout, and a non-interactive child environment; other commands use `pi.exec("git", args, { cwd, signal, timeout })`.
 - Paths, branch names, Git output, commit subjects, and pull request metadata are treated as untrusted. Display and prompt surfaces are escaped, redacted, and bounded separately from prevalidated exact handoff identities.
 - Worktree paths are canonicalized and checked against a fresh current-repository inventory or the common Git directory before mutation. User-supplied removal paths are never passed directly to Git.
 - Worktree removal has no force path and rejects dirty, detached, locked, prunable/missing, bare, main, current, and foreign entries before mutation. Ignored entries require explicit `deleteIgnored: true` authorization.
 - Worktree tools expose no force, move, prune, repair, lock, unlock, detached, orphan, remote-inference, or arbitrary refspec controls; new-mode `baseRef` is explicitly read-only. Git's incomplete submodule worktree support is not bypassed with force cleanup.
 - Retirement requires exact direct local refs, full expected-`HEAD` leasing, complete worktree occupancy inspection, captured target ancestry, and explicit unmerged force authorization. Final verification is cancellation-safe and bounded; uncertain state requires manual inspection and no rollback mutation.
 - Automatic context and `branch_status` never collect diffs or file contents. Related-PR lookup may make a bounded authenticated GitHub request only when credentials and repository identity resolve; there is no unauthenticated fallback.
-- `pull_request` uses the resolved current GitHub repository, preflights local and GitHub branch identity, and rejects cross-repository head refs. Git fetch/pull/push use the user's normal Git credentials.
+- `pull_request` uses the resolved current GitHub repository, preflights local and GitHub branch identity, and rejects cross-repository head refs. Git fetch/pull/push try the user's normal Git credentials first, then a GitHub-HTTPS-only helper using BranchMe's token from the child environment (never argv or persistent configuration).
 - BranchMe's direct integration and retirement commands are local-only, but repository-configured hooks—including `reference-transaction` hooks during retirement—merge drivers, filters, and signing policy may execute arbitrary commands or network operations under the user's identity outside BranchMe's argv guarantees.
 - Tokens are resolved from supported process or verified-root `.env` keys and redacted from prompts, errors, content, and details. BranchMe collects no telemetry.
 - Creation and removal require explicit user intent and an exact approved path. BranchMe does not silently infer worktree destinations or start a separate agent session.

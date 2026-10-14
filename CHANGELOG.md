@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.9 - Unreleased
+
+- Git network commands (`fetch`, `pull`, `push`, `ls-remote`) run with terminal prompts disabled: missing credentials fail at once with git's own message instead of waiting on an unanswerable prompt until the timeout reported only "killed". For `https://github.com` the `GITHUB_TOKEN`/`GH_TOKEN` BranchMe already uses for the API now also answers git's credential request (after the user's own helpers), through the child environment, never argv. A token alone is enough for push and pull.
+- `change_branch`, `pull_branch`, `rebase_branch`, `track_branch` and `update_from_base` refuse only on staged, unstaged or unmerged tracked changes and name the paths; untracked files such as a local `.env` no longer block them (git still refuses an overwrite). `land_branch` target sync treats a checkout with only untracked files as clean.
+- `land_branch` releases a merged source branch checked out in the primary checkout by switching that checkout to the target (new `checkout` receipt step) before retiring it. Its text names the sync result plainly (`main fast-forwarded 79cf046 -> cd4f9ef`) instead of the mode name.
+- Every tool error with a known cause ends with `Blocked:` (why) and `Resolve:` (the next call to make) lines: credentials, unreachable remote, timeout, rejected or diverged push and pull, missing remote branch, overwritten files, tracked changes, branch occupancy, in-progress operations, detached HEAD, missing upstream, GitHub token and HTTP errors, and concurrent moves. Worktree-removal guidance distinguishes untracked changes from tracked-only checkout blockers.
+- Resolved Sonar findings by extracting landing guidance formatting, emitting credential fields from the runtime token, and using fixed absolute system Git executables rather than `PATH` resolution. Added timeout/cancellation and PATH-hijacking regression coverage.
+- Applied untracked-file tolerance through base-update verification and merge aborts, and protected ignored-file collisions when landing switches the primary checkout. Updated security and architecture documentation for the transport and checkout boundaries.
+
 ## 0.3.8 - Unreleased
 
 - Resolved four Sonar maintainability findings: fetch the bounded failing-job logs concurrently and simplify feedback formatting by extracting nested template literals.

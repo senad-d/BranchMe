@@ -97,7 +97,7 @@ function realGitPi(f) {
 
 async function land(f, overrides = {}, cwd = f.root, pi = realGitPi(f)) {
   const receipt = await landBranch(pi, { cwd }, { sourceBranch, targetBranch, ...overrides });
-  assert.deepEqual(receipt.steps.map((entry) => entry.step), ["repository", "cwd", "fetch", "ancestry", "worktree", "branch", "targetSync"]);
+  assert.deepEqual(receipt.steps.map((entry) => entry.step), ["repository", "cwd", "fetch", "ancestry", "worktree", "checkout", "branch", "targetSync"]);
   assert.equal(receipt.repositoryRoot, f.root);
   assert.equal(receipt.remote, "origin");
   assert.equal(await git(f.origin, ["show-ref"]), f.remoteRefs, "remote refs must never change");
@@ -170,6 +170,58 @@ test("clean target in primary uses pull-ff and moves the ref and reflog", async 
   assert.equal(receipt.targetSync.after, f.sourceHead);
   assert.equal(await head(f.root), f.sourceHead);
   assert.equal((await git(f.root, ["reflog", "show", "--format=%H", "main"])).split("\n")[0], f.sourceHead);
+});
+
+test("source checked out in the primary checkout is switched to the target, retired, and the target fast-forwarded", async (t) => {
+  const f = await fixture();
+  t.after(() => rm(f.temporaryRoot, { recursive: true, force: true }));
+  await git(f.root, ["worktree", "remove", f.worktree]);
+  await git(f.root, ["switch", sourceBranch]);
+  await writeFile(join(f.root, ".env"), "GH_TOKEN=local\n");
+  await writeFile(join(f.root, "notes.txt"), "untracked and not ignored\n");
+  const receipt = await landBranch(realGitPi(f), { cwd: f.root }, { sourceBranch, targetBranch });
+  assert.equal(receipt.checkout.outcome, "switched", JSON.stringify(receipt));
+  assert.equal(receipt.branch.outcome, "deleted", JSON.stringify(receipt));
+  assert.equal(receipt.targetSync.mode, "pull-ff", JSON.stringify(receipt));
+  assert.equal(await git(f.root, ["symbolic-ref", "--short", "HEAD"]), "main");
+  assert.equal(await head(f.root, "refs/heads/main"), f.sourceHead);
+  assert.equal(await readFile(join(f.root, "notes.txt"), "utf8"), "untracked and not ignored\n");
+  assert.match(formatLandBranch(receipt), /primary checkout switched to main; branch deleted; target sync: main fast-forwarded [0-9a-f]{7} -> [0-9a-f]{7}/u);
+});
+
+test("landing preserves an ignored file that the target checkout would overwrite", async (t) => {
+  const f = await fixture();
+  t.after(() => rm(f.temporaryRoot, { recursive: true, force: true }));
+  await git(f.root, ["merge", "--ff-only", sourceBranch]);
+  await writeFile(join(f.root, ".env"), "tracked target configuration\n");
+  await git(f.root, ["add", "-f", ".env"]);
+  await git(f.root, ["commit", "-m", "track target configuration"]);
+  await git(f.root, ["push", "origin", "main"]);
+  await git(f.root, ["worktree", "remove", f.worktree]);
+  await git(f.root, ["switch", sourceBranch]);
+  await writeFile(join(f.root, ".env"), "private local configuration\n");
+  const receipt = await landBranch(realGitPi(f), { cwd: f.root }, { sourceBranch, targetBranch });
+  assert.equal(receipt.checkout.outcome, "refused", JSON.stringify(receipt));
+  assert.equal(receipt.branch.outcome, "refused", JSON.stringify(receipt));
+  assert.match(receipt.checkout.reason, /would be overwritten/u);
+  assert.equal(await git(f.root, ["symbolic-ref", "--short", "HEAD"]), sourceBranch);
+  assert.equal(await head(f.root), f.sourceHead);
+  assert.equal(await readFile(join(f.root, ".env"), "utf8"), "private local configuration\n");
+});
+
+test("tracked changes keep the source checked out and the summary says how to resolve it", async (t) => {
+  const f = await fixture();
+  t.after(() => rm(f.temporaryRoot, { recursive: true, force: true }));
+  await git(f.root, ["worktree", "remove", f.worktree]);
+  await git(f.root, ["switch", sourceBranch]);
+  await writeFile(join(f.root, "README.md"), "edited\n");
+  const receipt = await landBranch(realGitPi(f), { cwd: f.root }, { sourceBranch, targetBranch });
+  assert.equal(receipt.checkout.outcome, "refused");
+  assert.equal(receipt.branch.outcome, "refused");
+  assert.equal(await git(f.root, ["symbolic-ref", "--short", "HEAD"]), sourceBranch);
+  const summary = formatLandBranch(receipt);
+  assert.match(summary, /refused: "README.md"/u);
+  assert.match(summary, /\nBlocked: .*\nResolve: commit them with commitme/u);
 });
 
 test("dirty target is skipped independently of successful worktree removal and branch retirement", async (t) => {

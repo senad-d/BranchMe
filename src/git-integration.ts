@@ -43,6 +43,7 @@ import type {
   IntegrateBranchDetails,
   IntegrateBranchToolInput,
   IntegrateBranchVerification,
+  WorkingTreeDetails,
 } from "./types.ts";
 
 export interface PreparedBranchIntegration {
@@ -216,6 +217,12 @@ async function integrationSourceHead(
   return head;
 }
 
+function integrationWorkingTreeIsClean(workingTree: WorkingTreeDetails, allowUntracked: boolean): boolean {
+  return allowUntracked
+    ? workingTree.staged + workingTree.unstaged === 0
+    : workingTree.state === "clean";
+}
+
 async function inspectIntegrationState(
   pi: Pick<ExtensionAPI, "exec">,
   prepared: PreparedBranchIntegration,
@@ -234,7 +241,8 @@ async function inspectIntegrationState(
     signal,
     timeout: GIT_STATUS_TIMEOUT_MS,
   });
-  const clean = parseWorkingTreeStatus(statusResult.stdout).workingTree.state === "clean";
+  const workingTree = parseWorkingTreeStatus(statusResult.stdout).workingTree;
+  const clean = integrationWorkingTreeIsClean(workingTree, prepared.remoteSource === true || prepared.sourceHeadFixed === true);
   const sourceIsAncestorOfTarget = await isCommitAncestor(
     pi,
     rootCtx,
@@ -767,7 +775,7 @@ export async function prepareBranchIntegration(
     timeout: GIT_STATUS_TIMEOUT_MS,
   });
   const workingTree = parseWorkingTreeStatus(statusResult.stdout).workingTree;
-  if (workingTree.state !== "clean") {
+  if (!integrationWorkingTreeIsClean(workingTree, remoteSource)) {
     throw new Error(
       "The control worktree must be clean, with no staged, unstaged, untracked, or unmerged changes, before integration.",
     );

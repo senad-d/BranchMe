@@ -5,8 +5,8 @@ import type { IntegrateBranchDetails } from "./types.ts";
 import {
   fetchRemoteBranchWithinQueue, getCanonicalGitWorktreeRoot, getCurrentBranch,
   getGitOperationState, getLocalBranchCommit, getRemoteTrackingRefCommit, getUpstreamBranch,
-  getWorkingTreeStatus, inspectDirectRemoteTrackingRef, localBranchExists,
-  requireLosslessWorktreeIdentity, runGit, validateBranchName, withRepositoryMutationQueue,
+  inspectDirectRemoteTrackingRef, localBranchExists,
+  requireLosslessWorktreeIdentity, requireNoTrackedChanges, runGit, validateBranchName, withRepositoryMutationQueue,
   type GitCommandContext,
 } from "./git.ts";
 
@@ -40,13 +40,11 @@ export async function fetchWorkflowBase(pi: GitAPI, ctx: GitCommandContext, remo
   await fetchRemoteBranchWithinQueue(scopedPi, ctx, remote, branch, signal);
 }
 
-export async function requireCleanIdleCheckout(pi: GitAPI, ctx: GitCommandContext, signal?: AbortSignal): Promise<void> {
+export async function requireCleanIdleCheckout(pi: GitAPI, ctx: GitCommandContext, operation: string, signal?: AbortSignal): Promise<void> {
   if ((await getGitOperationState(pi, ctx, signal)).active.length > 0) {
     throw new Error("An in-progress Git operation must be completed or aborted first.");
   }
-  if ((await getWorkingTreeStatus(pi, ctx, signal)).workingTree.state !== "clean") {
-    throw new Error("The working tree must be clean before this operation.");
-  }
+  await requireNoTrackedChanges(pi, ctx, operation, signal);
 }
 
 async function trackBranchWithinQueue(pi: GitAPI, ctx: GitCommandContext, input: TrackBranchInput, signal?: AbortSignal): Promise<TrackBranchDetails> {
@@ -61,7 +59,7 @@ async function trackBranchWithinQueue(pi: GitAPI, ctx: GitCommandContext, input:
     throw new Error("track_branch requires branch names, not full refs.");
   }
   if (await localBranchExists(pi, ctx, input.branchName, signal)) throw new Error("Local branch already exists; use change_branch.");
-  await requireCleanIdleCheckout(pi, ctx, signal);
+  await requireCleanIdleCheckout(pi, ctx, "track_branch", signal);
   const previous = await getCurrentBranch(pi, ctx, signal);
   if (previous.currentBranch !== null) requireLosslessWorktreeIdentity(previous.currentBranch, "branch");
   await fetchWorkflowBase(pi, ctx, remote, remoteBranch, signal);
@@ -69,7 +67,7 @@ async function trackBranchWithinQueue(pi: GitAPI, ctx: GitCommandContext, input:
   const ref = await inspectDirectRemoteTrackingRef(pi, ctx, upstream, signal);
   const head = await getRemoteTrackingRefCommit(pi, ctx, upstream, signal);
   if (ref.status !== "present" || ref.objectId !== head) throw new Error("Fetched branch is not a direct remote-tracking commit ref.");
-  await requireCleanIdleCheckout(pi, ctx, signal);
+  await requireCleanIdleCheckout(pi, ctx, "track_branch", signal);
   try {
     await runGit(pi, ctx, ["switch", "--no-overwrite-ignore", "--track=direct", "-c", input.branchName, `refs/remotes/${upstream}`], {
       signal, timeout: GIT_MUTATION_TIMEOUT_MS,
@@ -79,7 +77,7 @@ async function trackBranchWithinQueue(pi: GitAPI, ctx: GitCommandContext, input:
         await getUpstreamBranch(pi, ctx) !== upstream) {
       throw new Error("Branch, commit, or configured upstream did not match the captured remote branch.");
     }
-    await requireCleanIdleCheckout(pi, ctx);
+    await requireCleanIdleCheckout(pi, ctx, "track_branch");
   } catch {
     throw new Error("Tracking checkout did not complete with verified postconditions; inspect the repository before retrying. No automatic rollback was attempted.");
   }
@@ -125,7 +123,7 @@ async function updateFromBaseWithinQueue(pi: GitAPI, ctx: GitCommandContext, inp
   requireLosslessWorktreeIdentity(remote, "branch");
   requireLosslessWorktreeIdentity(input.baseBranch, "branch");
   await validateBranchName(pi, ctx, input.baseBranch, signal);
-  await requireCleanIdleCheckout(pi, ctx, signal);
+  await requireCleanIdleCheckout(pi, ctx, "update_from_base", signal);
   const current = await getCurrentBranch(pi, ctx, signal);
   if (!current.currentBranch || current.detached) throw new Error("update_from_base requires a current local branch.");
   if (current.currentBranch === input.baseBranch) throw new Error("Use pull_branch for the base branch itself.");

@@ -1463,16 +1463,28 @@ test("real git targeted fetch, remote-baseline worktree creation, and remote-tra
   });
 });
 
-test("real git changeExistingLocalBranch rejects a dirty worktree before switching", async () => {
+test("real git changeExistingLocalBranch rejects tracked changes before switching", async () => {
   await withTempGitRepo(async (repoRoot) => {
     await runGit(repoRoot, ["branch", "feature/target"]);
-    await writeFile(join(repoRoot, "dirty.txt"), "dirty\n", "utf8");
+    await writeFile(join(repoRoot, "README.md"), "changed\n", "utf8");
 
     const pi = makeRealGitPi(repoRoot);
-    await assert.rejects(() => changeExistingLocalBranch(pi, { cwd: repoRoot }, "feature/target"), /uncommitted changes/i);
+    await assert.rejects(() => changeExistingLocalBranch(pi, { cwd: repoRoot }, "feature/target"), /change_branch refused: "README.md"/i);
 
     assert.equal(await currentBranch(repoRoot), "main");
     assert.equal(pi.calls.some((call) => call.args[0] === "switch"), false);
+  });
+});
+
+test("real git changeExistingLocalBranch switches with an untracked file such as .env", async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    await runGit(repoRoot, ["branch", "feature/target"]);
+    await writeFile(join(repoRoot, ".env"), "GH_TOKEN=local\n", "utf8");
+
+    await changeExistingLocalBranch(makeRealGitPi(repoRoot), { cwd: repoRoot }, "feature/target");
+
+    assert.equal(await currentBranch(repoRoot), "feature/target");
+    assert.equal(await readFile(join(repoRoot, ".env"), "utf8"), "GH_TOKEN=local\n");
   });
 });
 

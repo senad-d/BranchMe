@@ -3445,7 +3445,7 @@ test("pullCurrentBranch rejects dirty worktrees and branches without upstreams",
     ["status\0--porcelain=v1\0--branch"]: { stdout: "## main\n M README.md\n" },
   });
 
-  await assert.rejects(() => pullCurrentBranch(dirtyPi, ctx), /clean it before pulling/i);
+  await assert.rejects(() => pullCurrentBranch(dirtyPi, ctx), /pull_branch refused: "README.md"/i);
   assert.equal(dirtyPi.calls.some((call) => call.args[0] === "pull"), false);
 
   const noUpstreamPi = makePi({
@@ -3514,7 +3514,7 @@ test("rebaseCurrentBranch rejects dirty worktrees and branches without upstreams
     ["status\0--porcelain=v1\0--branch"]: { stdout: "## feature/current\n M README.md\n" },
   });
 
-  await assert.rejects(() => rebaseCurrentBranch(dirtyPi, ctx), /clean it before rebasing/i);
+  await assert.rejects(() => rebaseCurrentBranch(dirtyPi, ctx), /rebase_branch refused/i);
   assert.equal(dirtyPi.calls.some((call) => call.args[0] === "rebase"), false);
 
   const noUpstreamPi = makePi({

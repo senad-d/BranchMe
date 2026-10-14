@@ -132,15 +132,16 @@ test("real Git tracking creates the exact local checkout and upstream; existing 
   const f = await fixture(t);
   const head = await checked(f.root, ["rev-parse", "HEAD"]);
   await checked(f.root, ["push", "origin", "HEAD:refs/heads/shared/topic"]);
+  await writeFile(join(f.root, "notes.txt"), "untracked\n");
   const details = await trackBranch(f.pi, { cwd: f.root }, { branchName: "topic", remoteBranch: "shared/topic" });
   assert.equal(details.head, head);
   assert.equal(details.upstream, "origin/shared/topic");
   assert.equal(await checked(f.root, ["symbolic-ref", "--short", "HEAD"]), "topic");
   assert.equal(await checked(f.root, ["config", "branch.topic.merge"]), "refs/heads/shared/topic");
   await assert.rejects(trackBranch(f.pi, { cwd: f.root }, { branchName: "topic" }), /already exists/);
-  await writeFile(join(f.root, "dirty"), "keep");
-  await assert.rejects(trackBranch(f.pi, { cwd: f.root }, { branchName: "other" }), /clean/);
-  await rm(join(f.root, "dirty"));
+  await writeFile(join(f.root, "initial.txt"), "changed\n");
+  await assert.rejects(trackBranch(f.pi, { cwd: f.root }, { branchName: "other" }), /track_branch refused: "initial.txt"/);
+  await checked(f.root, ["checkout", "--", "initial.txt"]);
   await assert.rejects(trackBranch(f.pi, { cwd: f.root }, { branchName: "missing" }), /failed/);
   await assert.rejects(trackBranch(f.pi, { cwd: f.root }, { branchName: "new", remote: "missing" }), /configured/);
   assert.equal(await checked(f.root, ["symbolic-ref", "--short", "HEAD"]), "topic");
@@ -169,17 +170,19 @@ test("real Git base updates verify no-op, fast-forward, divergent merge, and res
       await checked(base, ["commit", "-m", "base"]);
       await checked(base, ["push", "origin", "main"]);
     }
+    await writeFile(join(f.root, "notes.txt"), "untracked\n");
     const details = await updateFromBase(f.pi, { cwd: f.root }, { baseBranch: "main" });
     assert.equal(details.status, { noop: "already_integrated", ff: "fast_forward", merge: "merge_commit", conflict: "conflict" }[mode]);
     assert.equal(await checked(f.root, ["rev-parse", "--abbrev-ref", "@{u}"]), "origin/feature");
-    assert.equal(await checked(f.root, ["status", "--porcelain"]), "");
+    assert.equal(await checked(f.root, ["status", "--porcelain"]), "?? notes.txt");
+    assert.equal(await readFile(join(f.root, "notes.txt"), "utf8"), "untracked\n");
     if (mode === "conflict") assert.equal(await checked(f.root, ["rev-parse", "HEAD"]), before);
     else {
       await checked(f.root, ["merge-base", "--is-ancestor", "origin/main", "HEAD"]);
       await checked(f.root, ["merge-base", "--is-ancestor", before, "HEAD"]);
     }
-    await writeFile(join(f.root, "dirty"), "keep");
-    await assert.rejects(updateFromBase(f.pi, { cwd: f.root }, { baseBranch: "main" }), /clean/);
+    await writeFile(join(f.root, "initial.txt"), "changed\n");
+    await assert.rejects(updateFromBase(f.pi, { cwd: f.root }, { baseBranch: "main" }), /update_from_base refused: "initial.txt"/);
   }
   const schema = Compile(registered("update_from_base").parameters);
   assert.equal(schema.Check({ baseBranch: "main" }), true);
@@ -189,6 +192,7 @@ test("real Git base updates verify no-op, fast-forward, divergent merge, and res
 test("real Git base-update conflicts list their paths, stay in progress with keepConflicts, and conclude or abort through conclude_merge", async (t) => {
   for (const action of ["conclude", "abort"]) {
     const f = await conflictFixture(t);
+    await writeFile(join(f.root, "notes.txt"), "untracked\n");
     const run = realTools(f);
     const noMerge = run("conclude_merge", { action });
     await assert.rejects(noMerge, /no merge is in progress/);
@@ -200,7 +204,7 @@ test("real Git base-update conflicts list their paths, stay in progress with kee
       "Conflict paths:",
       "- initial.txt",
     ].join("\n"));
-    assert.equal(await checked(f.root, ["status", "--porcelain"]), "");
+    assert.equal(await checked(f.root, ["status", "--porcelain"]), "?? notes.txt");
 
     const kept = await run("update_from_base", { baseBranch: "main", keepConflicts: true });
     assert.equal(kept.details.status, "conflict_kept");
@@ -219,9 +223,9 @@ test("real Git base-update conflicts list their paths, stay in progress with kee
       assert.equal(restored.details.status, "aborted");
       assert.equal(restored.details.head, f.before);
       assert.equal(restored.details.mergeHead, f.baseHead);
-      assert.equal(restored.content[0].text, `conclude_merge: aborted. git merge --abort restored feature to HEAD ${f.before.slice(0, 12)}; MERGE_HEAD ${f.baseHead.slice(0, 12)} is cleared, no Git operation is in progress, and the working tree is clean.`);
+      assert.equal(restored.content[0].text, `conclude_merge: aborted. git merge --abort restored feature to HEAD ${f.before.slice(0, 12)}; MERGE_HEAD ${f.baseHead.slice(0, 12)} is cleared, no Git operation is in progress, and tracked files are clean.`);
       assert.equal(await checked(f.root, ["rev-parse", "HEAD"]), f.before);
-      assert.equal(await checked(f.root, ["status", "--porcelain"]), "");
+      assert.equal(await checked(f.root, ["status", "--porcelain"]), "?? notes.txt");
       assert.equal((await git(f.root, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).code, 1);
       assert.equal(await readFile(join(f.root, "initial.txt"), "utf8"), "feature\n");
       continue;
@@ -251,7 +255,7 @@ test("real Git base-update conflicts list their paths, stay in progress with kee
     ].join("\n"));
     assert.equal(await checked(f.root, ["rev-list", "--parents", "-n", "1", "HEAD"]), `${head} ${f.before} ${f.baseHead}`);
     assert.equal((await git(f.root, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).code, 1);
-    assert.equal(await checked(f.root, ["status", "--porcelain"]), " M other.txt\n?? untracked.txt");
+    assert.equal(await checked(f.root, ["status", "--porcelain"]), " M other.txt\n?? notes.txt\n?? untracked.txt");
     assert.equal(await checked(f.root, ["show", "HEAD:initial.txt"]), "resolved");
     assert.equal(await checked(f.root, ["show", "HEAD:other.txt"]), "other");
     assert.match(await checked(f.root, ["log", "-1", "--format=%s"]), /^Merge /u);

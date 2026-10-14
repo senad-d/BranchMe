@@ -52,6 +52,7 @@ import { collectGitContext, formatGitContext } from "../git-context.ts";
 import { fetchRemote } from "../git-discovery.ts";
 import { formatConflictPathList, integrateBranch } from "../git-integration.ts";
 import { retireBranch } from "../git-retirement.ts";
+import { withBlockerGuidance } from "../blocker-guidance.ts";
 import { formatLandBranch, landBranch } from "../git-landing.ts";
 import {
   createOrReuseGitHubPullRequest,
@@ -546,7 +547,13 @@ async function requireGitHubHeadMatchesLocalBranch(
   );
 }
 
-export function registerBranchMeTools(pi: Pick<ExtensionAPI, "registerTool" | "exec">, options: BranchMeToolOptions = {}): void {
+function registerGuidedTool(host: Pick<ExtensionAPI, "registerTool">, tool: Parameters<ExtensionAPI["registerTool"]>[0]): void {
+  host.registerTool(withBlockerGuidance(tool));
+}
+
+export function registerBranchMeTools(host: Pick<ExtensionAPI, "registerTool" | "exec">, options: BranchMeToolOptions = {}): void {
+  // Every tool error carries Blocked/Resolve lines for known blockers.
+  const pi = { exec: host.exec.bind(host), registerTool: registerGuidedTool.bind(undefined, host) } as Pick<ExtensionAPI, "registerTool" | "exec">;
   registerWorkflowTools(pi, options);
   pi.registerTool({
     name: LIST_BRANCHES_TOOL_NAME,

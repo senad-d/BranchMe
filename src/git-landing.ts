@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { GIT_FETCH_TIMEOUT_MS, GIT_PULL_TIMEOUT_MS, MAX_SUMMARY_OUTPUT_CHARS } from "./constants.ts";
+import { GIT_FETCH_TIMEOUT_MS, GIT_MUTATION_TIMEOUT_MS, GIT_PULL_TIMEOUT_MS, MAX_SUMMARY_OUTPUT_CHARS } from "./constants.ts";
 import {
   canonicalizePathAllowMissing,
   collectWorktreeInventory,
@@ -20,6 +20,7 @@ import {
   pathIsInsideOrEqual,
   removeWorktreeWithinQueue,
   requireLosslessWorktreeIdentity,
+  requireNoTrackedChanges,
   runGit,
   validateBranchName,
   validateBranchNameInput,
@@ -29,6 +30,7 @@ import {
   type GitCommandContext,
 } from "./git.ts";
 import { retireBranchWithinQueue } from "./git-retirement.ts";
+import { blockerGuidance } from "./blocker-guidance.ts";
 import { redactSecrets } from "./redaction.ts";
 import { getGitHubPullRequest, parseGitHubRepository, repositoriesEqual, resolveGitHubRepository, resolveGitHubToken, type RelatedPullRequestLookupOptions } from "./github.ts";
 import type { AheadBehindCount } from "./types.ts";
@@ -60,6 +62,11 @@ export interface LandBranchReceipt {
     reason: string | null;
     deletedIgnoredPaths: string[];
   };
+  /** The primary checkout, switched from the merged source to the target so the source can be retired. */
+  checkout: {
+    outcome: "switched" | "not-needed" | "refused";
+    reason: string | null;
+  };
   branch: {
     outcome: "deleted" | "absent" | "refused";
     reason: string | null;
@@ -74,7 +81,7 @@ export interface LandBranchReceipt {
     reason: string | null;
   };
   steps: {
-    step: "repository" | "cwd" | "fetch" | "ancestry" | "worktree" | "branch" | "targetSync";
+    step: "repository" | "cwd" | "fetch" | "ancestry" | "worktree" | "checkout" | "branch" | "targetSync";
     outcome: string;
     reason: string | null;
   }[];
@@ -144,6 +151,7 @@ function newLandingReceipt(root: string, input: LandBranchInput): LandBranchRece
     mergeProof: null,
     pullRequest: null,
     worktree: { path: null, outcome: "refused", reason: "Not attempted.", deletedIgnoredPaths: [] },
+    checkout: { outcome: "refused", reason: "Not attempted." },
     branch: { outcome: "refused", reason: "Not attempted.", expectedHead: null },
     targetSync: { mode: "not-run", worktreePath: null, before: null, after: null, aheadBehind: null, reason: "Not attempted." },
     steps: [{ step: "repository", outcome: "resolved", reason: null }],
@@ -248,6 +256,29 @@ async function removeLandingWorktree(pi: GitAPI, receipt: LandBranchReceipt, sig
   worktree.deletedIgnoredPaths = removed.deletedIgnoredPaths;
 }
 
+// The primary checkout can never be removed, so a merged source branch checked out
+// there is released by switching that checkout to the target branch.
+async function releasePrimaryCheckout(pi: GitAPI, receipt: LandBranchReceipt, signal?: AbortSignal): Promise<void> {
+  const ctx = { cwd: receipt.repositoryRoot };
+  const inventory = await collectWorktreeInventory(pi, ctx, signal);
+  if (inventory.entries[0]?.record.branch !== receipt.sourceBranch) {
+    receipt.checkout.outcome = "not-needed";
+    receipt.checkout.reason = null;
+    return;
+  }
+  if (await captureLocalHead(pi, ctx, receipt.sourceBranch, signal) !== receipt.sourceHead) {
+    throw new Error("Source branch moved after the ancestry proof; primary checkout retained.");
+  }
+  await requireIdleWorktree(pi, ctx, signal);
+  await requireNoTrackedChanges(pi, ctx, "switching the primary checkout to the target branch", signal);
+  await runGit(pi, ctx, ["switch", "--no-overwrite-ignore", receipt.targetBranch], { signal, timeout: GIT_MUTATION_TIMEOUT_MS });
+  if ((await getCurrentBranch(pi, ctx, signal)).currentBranch !== receipt.targetBranch) {
+    throw new Error("git switch did not end on the target branch; the primary checkout was left as git reported it.");
+  }
+  receipt.checkout.outcome = "switched";
+  receipt.checkout.reason = null;
+}
+
 async function retireLandingBranch(pi: GitAPI, receipt: LandBranchReceipt, signal?: AbortSignal): Promise<void> {
   const ctx = { cwd: receipt.repositoryRoot };
   const head = await captureLocalHead(pi, ctx, receipt.sourceBranch, signal);
@@ -309,9 +340,9 @@ async function syncLandingTarget(pi: GitAPI, receipt: LandBranchReceipt, signal?
       throw new Error("Target checkout identity changed; sync refused.");
     }
     const status = await getWorkingTreeStatus(pi, targetCtx, signal);
-    if (status.workingTree.state !== "clean") {
+    if (status.workingTree.staged + status.workingTree.unstaged > 0) {
       sync.mode = "skipped-dirty";
-      sync.reason = "Target checkout is dirty; no pull attempted.";
+      sync.reason = "Target checkout has tracked changes; no pull attempted.";
       return;
     }
     await requireIdleWorktree(pi, targetCtx, signal);
@@ -377,7 +408,8 @@ async function refuseLanding(pi: GitAPI, receipt: LandBranchReceipt, error: unkn
     receipt.targetSync.reason = `${reason} Verification: ${landingError(verificationError)}`;
   }
   const recorded = new Set(receipt.steps.map((step) => step.step));
-  for (const step of ["cwd", "fetch", "ancestry", "worktree", "branch", "targetSync"] as const) {
+  receipt.checkout.reason = reason;
+  for (const step of ["cwd", "fetch", "ancestry", "worktree", "checkout", "branch", "targetSync"] as const) {
     if (!recorded.has(step)) receipt.steps.push({ step, outcome: "not-run", reason });
   }
   return receipt;
@@ -468,6 +500,12 @@ async function landBranchWithinQueue(
   }
   receipt.steps.push({ step: "worktree", outcome: receipt.worktree.outcome, reason: receipt.worktree.reason });
   try {
+    await releasePrimaryCheckout(pi, receipt, signal);
+  } catch (error) {
+    receipt.checkout.reason = landingError(error);
+  }
+  receipt.steps.push({ step: "checkout", outcome: receipt.checkout.outcome, reason: receipt.checkout.reason });
+  try {
     await retireLandingBranch(pi, receipt, signal);
   } catch (error) {
     receipt.branch.reason = landingError(error);
@@ -493,9 +531,30 @@ export async function landBranch(pi: GitAPI, ctx: GitCommandContext, input: Land
   return withRepositoryMutationQueue(root, landBranchWithinQueue.bind(undefined, routedPi, ctx.cwd, root, input, signal, options));
 }
 
+function shortHead(head: string | null): string {
+  return head ? head.slice(0, 7) : "unknown";
+}
+
+function formatTargetSync(receipt: LandBranchReceipt): string {
+  const sync = receipt.targetSync;
+  const target = receipt.targetBranch;
+  switch (sync.mode) {
+    case "noop": return `${target} already matched ${receipt.remote}/${target} at ${shortHead(sync.after)}`;
+    case "fetch-refspec":
+    case "pull-ff": return `${target} fast-forwarded ${shortHead(sync.before)} -> ${shortHead(sync.after)}`;
+    case "skipped-dirty": return `${target} not updated (its checkout has tracked changes)`;
+    case "failed": return `${target} not updated (failed)`;
+    case "not-run": return `${target} not updated (not run)`;
+  }
+}
+
 export function formatLandBranch(receipt: LandBranchReceipt): string {
   const proof = receipt.pullRequest ? ` Verified merged PR #${receipt.pullRequest.number}; source ancestry: ${receipt.ancestry.isAncestor ?? "unknown"}.` : "";
-  const summary = `land_branch: worktree ${receipt.worktree.outcome}; branch ${receipt.branch.outcome}; target sync ${receipt.targetSync.mode}.${proof}`;
-  const reason = receipt.worktree.reason ?? receipt.branch.reason ?? receipt.targetSync.reason;
-  return reason ? `${summary} ${landingError(reason)}` : summary;
+  const checkout = receipt.checkout.outcome === "switched" ? `; primary checkout switched to ${receipt.targetBranch}` : "";
+  const summary = `land_branch: worktree ${receipt.worktree.outcome}${checkout}; branch ${receipt.branch.outcome}; target sync: ${formatTargetSync(receipt)}.${proof}`;
+  const reason = receipt.worktree.reason ?? receipt.checkout.reason ?? receipt.branch.reason ?? receipt.targetSync.reason;
+  if (!reason) return summary;
+  const guidance = blockerGuidance(reason);
+  const suffix = guidance ? `\n${guidance}` : "";
+  return `${summary} ${landingError(reason)}${suffix}`;
 }
