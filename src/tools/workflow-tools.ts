@@ -2,13 +2,13 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-  CONCLUDE_MERGE_TOOL_NAME, GIT_CONTEXT_VALUE_LIMIT_CHARS, PULL_REQUEST_FEEDBACK_TOOL_NAME, PULL_REQUEST_STATUS_TOOL_NAME,
-  TRACK_BRANCH_TOOL_NAME, UPDATE_FROM_BASE_TOOL_NAME,
+  CONCLUDE_MERGE_TOOL_NAME, GIT_CONTEXT_VALUE_LIMIT_CHARS, PULL_REQUEST_FEEDBACK_TOOL_NAME, PULL_REQUEST_REPLY_BODY_LIMIT_CHARS,
+  PULL_REQUEST_STATUS_TOOL_NAME, REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME, TRACK_BRANCH_TOOL_NAME, UPDATE_FROM_BASE_TOOL_NAME,
 } from "../constants.ts";
 import { getGitRoot, requireCurrentBranch, safeWorktreeValue } from "../git.ts";
 import { concludeMerge, formatConflictPathList } from "../git-integration.ts";
 import { findGitHubPullRequest, getGitHubPullRequest, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
-import { formatPullRequestFeedback, getPullRequestFeedback } from "../github-feedback.ts";
+import { formatPullRequestFeedback, formatPullRequestReply, getPullRequestFeedback, replyPullRequestFeedback } from "../github-feedback.ts";
 import type { ConcludeMergeDetails, PullRequestStatusDetails } from "../types.ts";
 import type { BranchMeToolOptions } from "./branchme-tools.ts";
 import { trackBranch, updateFromBase, type UpdateFromBaseDetails } from "../git-workflow.ts";
@@ -94,7 +94,7 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: PULL_REQUEST_FEEDBACK_TOOL_NAME,
     label: "Pull Request Feedback",
-    description: "pull_request_feedback reads what a same-repository GitHub PR asks to be fixed: unresolved review threads with their comments, review summaries, conversation comments, and the head commit's failing checks with the log tail of up to three failing GitHub Actions jobs. Resolved and outdated threads are counted, not listed. No mutations.",
+    description: "pull_request_feedback reads what a same-repository GitHub PR asks to be fixed: unresolved review threads (with thread ids) and their comments, review summaries, conversation comments (with ids), each with author and time and comments by the token's own user marked (you), and the head commit's failing checks with their file:line annotations and the log tail of up to three failing GitHub Actions jobs. Resolved and outdated threads are counted, not listed. No mutations.",
     promptSnippet: "pull_request_feedback: read a PR's unresolved review comments and failing checks with their log tails",
     promptGuidelines: [
       "Use pull_request_feedback with number to collect the review comments and failing checks a follow-up must address; number and headBranch are mutually exclusive.",
@@ -119,6 +119,31 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       }
       const feedback = await getPullRequestFeedback(repository, number, token, requestOptions);
       return { content: [{ type: "text", text: formatPullRequestFeedback(feedback) }], details: { action: "pull_request_feedback", feedback } };
+    },
+  });
+  pi.registerTool({
+    name: REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME,
+    label: "Reply To Pull Request Feedback",
+    description: "reply_pull_request_feedback posts one reply on a pull request of this GitHub repository (including one opened from a fork): with threadId it replies in that review thread and, with resolve: true, resolves the thread; without threadId it posts one conversation comment. Works on open, merged and closed PRs. The thread must belong to the PR; nothing else is changed.",
+    promptSnippet: "reply_pull_request_feedback: answer a PR review thread (optionally resolving it) or post a PR comment",
+    promptGuidelines: [
+      "Use reply_pull_request_feedback with the thread ids pull_request_feedback reports ([thread <id>]); one call per thread, the body states what was done or why not.",
+      "Pass reply_pull_request_feedback resolve: true only for a thread whose request is fixed or already addressed; leave a thread open when it needs a person's decision.",
+      "Without threadId, reply_pull_request_feedback posts one conversation comment on the PR; conversation comments cannot be resolved.",
+      "reply_pull_request_feedback never edits or deletes comments, approves, requests changes, merges, or closes a PR.",
+    ],
+    parameters: Type.Object({
+      number: Type.Integer({ minimum: 1, description: "PR number." }),
+      body: Type.String({ minLength: 1, maxLength: PULL_REQUEST_REPLY_BODY_LIMIT_CHARS, description: "Markdown reply." }),
+      threadId: Type.Optional(Type.String({ minLength: 1, description: "Review thread id from pull_request_feedback; omit for a conversation comment." })),
+      resolve: Type.Optional(Type.Boolean({ description: "Resolve the thread after replying; requires threadId." })),
+    }, { additionalProperties: false }),
+    async execute(_id, params, signal, _update, ctx) {
+      const rootCtx = { cwd: await getGitRoot(pi, ctx, signal) };
+      const repository = await resolveGitHubRepository(pi, rootCtx, signal, options.env);
+      const token = (await resolveGitHubToken(options.env, { cwd: rootCtx.cwd, signal })).token;
+      const details = await replyPullRequestFeedback(repository, params, token, { fetchImpl: options.fetchImpl, signal });
+      return { content: [{ type: "text", text: formatPullRequestReply(details) }], details };
     },
   });
   pi.registerTool({

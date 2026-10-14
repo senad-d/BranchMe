@@ -52,6 +52,7 @@ export function getBranchMeHelpText(): string {
     "- `conclude_merge` — `action: \"conclude\"` commits the kept merge once every conflict marker is removed; `action: \"abort\"` restores the branch.",
     "- `pull_request_status` — inspect a PR by number, or the latest PR for a head branch; not a CI/review verdict.",
     "- `pull_request_feedback` — read a PR's unresolved review comments and failing checks with log tails.",
+    "- `reply_pull_request_feedback` — reply to a PR review thread (optionally resolving it) or post a PR comment.",
     "- `pull_request` — reuses an exact matching open PR without changing its title, body, or draft state.",
     "- `land_branch` — after host merge, clean up from the primary checkout; use `pullRequestNumber` for squash/rebase evidence.",
     "",

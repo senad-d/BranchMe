@@ -90,6 +90,7 @@ const expectedTools = [
   "conclude_merge",
   "pull_request_status",
   "pull_request_feedback",
+  "reply_pull_request_feedback",
   "branch_status",
   "change_branch",
   "create_branch",
@@ -113,6 +114,7 @@ const forbiddenSmokeTools = new Set([
   "conclude_merge",
   "pull_request_status",
   "pull_request_feedback",
+  "reply_pull_request_feedback",
   "create_worktree",
   "fetch_branch",
   "init_repository",
@@ -188,7 +190,7 @@ function fail(model, message) {
 
 function verifyTools(context) {
   const available = new Set(getCurrentTools(context.messages).map((tool) => tool.name));
-  return expectedTools.length === 22 &&
+  return expectedTools.length === 23 &&
     expectedTools.every((name) => available.has(name)) &&
     !available.has("git_context") &&
     !available.has("continue_merge") &&

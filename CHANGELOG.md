@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.10 - Unreleased
+
+- Added `reply_pull_request_feedback`: one reply in a review thread of a PR, optionally resolving it, or one PR conversation comment, on open, merged and closed PRs of the repository (forks included). The thread is verified to belong to the PR, and a conversation comment's number to be a pull request, before anything is posted. Agents that address PR feedback can now answer every comment on GitHub, so the reviewer, and the next automated check, see what was handled.
+- `pull_request_feedback` returns what replying and deduplication need: review thread ids, conversation comment ids, the author and time of every comment and review, the token's own login (`viewer`) with its comments marked `(you)`, and the pull request's node id. Failing check runs list up to 20 failure and warning annotations (`path:line LEVEL: message`) before their log tail, the most precise pointer for lint and test failures.
+
 ## 0.3.9 - Unreleased
 
 - Git network commands (`fetch`, `pull`, `push`, `ls-remote`) run with terminal prompts disabled: missing credentials fail at once with git's own message instead of waiting on an unanswerable prompt until the timeout reported only "killed". For `https://github.com` the `GITHUB_TOKEN`/`GH_TOKEN` BranchMe already uses for the API now also answers git's credential request (after the user's own helpers), through the child environment, never argv. A token alone is enough for push and pull.

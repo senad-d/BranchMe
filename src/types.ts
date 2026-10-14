@@ -602,12 +602,19 @@ export interface PullRequestStatusDetails extends PullRequestDetails {
 }
 
 export interface PullRequestFeedbackComment {
+  /** GraphQL node id; empty when GitHub did not return one. */
+  id: string;
   author: string;
+  /** True when the token's own user wrote it (Mission's earlier replies). */
+  byViewer: boolean;
+  createdAt: string;
   body: string;
   url: string;
 }
 
 export interface PullRequestFeedbackThread {
+  /** Review thread node id, the target for replies and resolution. */
+  id: string;
   path: string;
   line: number | null;
   comments: PullRequestFeedbackComment[];
@@ -622,13 +629,25 @@ export interface PullRequestFeedbackCheck {
   conclusion: string;
   url: string;
   jobId: number | null;
+  annotations: PullRequestFeedbackAnnotation[];
   logTail?: string;
   logError?: string;
+}
+
+export interface PullRequestFeedbackAnnotation {
+  path: string;
+  line: number | null;
+  level: string;
+  message: string;
 }
 
 export interface PullRequestFeedbackDetails {
   repository: GitHubRepository;
   number: number;
+  /** Pull request node id. */
+  id: string;
+  /** Login of the token's user; null when GitHub did not return it. */
+  viewer: string | null;
   url: string;
   headSha: string;
   checksState: string | null;
@@ -639,6 +658,23 @@ export interface PullRequestFeedbackDetails {
   comments: PullRequestFeedbackComment[];
   failingChecks: PullRequestFeedbackCheck[];
   omitted: { threads: number; comments: number; checks: number };
+}
+
+export interface PullRequestReplyInput {
+  number: number;
+  body: string;
+  threadId?: string;
+  resolve?: boolean;
+}
+
+export interface PullRequestReplyDetails {
+  action: "reply_pull_request_feedback";
+  repository: GitHubRepository;
+  number: number;
+  threadId: string | null;
+  commentUrl: string;
+  /** Thread state after the call; null when resolution was not requested or this was a conversation comment. */
+  resolved: boolean | null;
 }
 
 export interface PullRequestInput {

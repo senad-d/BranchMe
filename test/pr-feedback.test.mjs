@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractLogTail, formatPullRequestFeedback, getPullRequestFeedback } from "../src/github-feedback.ts";
+import { extractLogTail, formatPullRequestFeedback, formatPullRequestReply, getPullRequestFeedback, replyPullRequestFeedback } from "../src/github-feedback.ts";
 
 const repository = { owner: "example", repo: "project" };
 const token = "test-private-credential";
@@ -135,4 +135,111 @@ test("log tail without an error annotation keeps the end of the log", () => {
   const tail = extractLogTail(log, token);
   assert.match(tail, /^line 40\n/u);
   assert.match(tail, /line 99$/u);
+});
+
+test("feedback carries thread and comment ids, times, the token user and failing-check annotations", async () => {
+  const payload = graphql({
+    id: "PR_node7",
+    reviewThreads: { totalCount: 1, nodes: [{
+      id: "PRRT_thread1", isResolved: false, isOutdated: false, path: "src/app.ts", line: 12,
+      comments: { nodes: [
+        { ...comment("alice", "Rename this"), id: "PRRC_1", createdAt: "2026-10-14T10:00:00Z" },
+        { ...comment("mission-bot", "Renamed in abc1234"), id: "PRRC_2", createdAt: "2026-10-14T11:00:00Z" },
+      ] },
+    }] },
+    comments: { totalCount: 1, nodes: [{ ...comment("bob", "Why this approach?"), id: "IC_1", createdAt: "2026-10-14T12:00:00Z" }] },
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { totalCount: 1, nodes: [{
+      __typename: "CheckRun", name: "lint", conclusion: "FAILURE", databaseId: 11, detailsUrl: "https://github.com/example/project/actions/runs/1/job/11",
+      annotations: { nodes: [
+        { path: "src/app.ts", location: { start: { line: 3 } }, annotationLevel: "FAILURE", message: `'x' is unused ${token}` },
+        { path: "src/app.ts", location: { start: { line: 9 } }, annotationLevel: "NOTICE", message: "informational" },
+      ] },
+    }] } } } }] },
+  });
+  payload.data.viewer = { login: "mission-bot" };
+  const feedback = await getPullRequestFeedback(repository, 7, token, fetchFor(payload));
+
+  assert.equal(feedback.id, "PR_node7");
+  assert.equal(feedback.viewer, "mission-bot");
+  assert.equal(feedback.unresolvedThreads[0].id, "PRRT_thread1");
+  assert.deepEqual(feedback.unresolvedThreads[0].comments.map((item) => item.byViewer), [false, true]);
+  assert.equal(feedback.comments[0].createdAt, "2026-10-14T12:00:00Z");
+  assert.deepEqual(feedback.failingChecks[0].annotations, [{ path: "src/app.ts", line: 3, level: "FAILURE", message: "'x' is unused [REDACTED]" }]);
+
+  const text = formatPullRequestFeedback(feedback);
+  assert.match(text, /Token user: @mission-bot; comments marked \(you\)/u);
+  assert.match(text, /- \[thread PRRT_thread1\] src\/app\.ts:12\n {2}@alice 2026-10-14T10:00:00Z: Rename this\n {2}@mission-bot \(you\) 2026-10-14T11:00:00Z: Renamed/u);
+  assert.match(text, /- \[comment IC_1\] @bob 2026-10-14T12:00:00Z: Why this approach\?/u);
+  assert.match(text, /- lint: FAILURE \S+\n {2}Annotations:\n {4}src\/app\.ts:3 FAILURE: 'x' is unused \[REDACTED\]\n {2}Log tail/u);
+  assert.doesNotMatch(text, /informational|test-private-credential/u);
+});
+
+function replyFetch(responses) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push({ url, method: init.method, query: body?.query ?? "", variables: body?.variables ?? null, body: body?.body ?? null });
+    const next = responses.shift();
+    return new Response(JSON.stringify(next.payload), { status: next.status ?? 200 });
+  };
+  return { calls, fetchImpl };
+}
+
+const threadOf = (number, isResolved = false) => ({ data: { node: { id: "PRRT_1", isResolved, pullRequest: { number, repository: { name: "project", owner: { login: "example" } } } } } });
+
+test("a thread reply checks ownership, replies, then resolves", async () => {
+  const { calls, fetchImpl } = replyFetch([
+    { payload: threadOf(7) },
+    { payload: { data: { addPullRequestReviewThreadReply: { comment: { url: "https://github.com/example/project/pull/7#r1" } } } } },
+    { payload: { data: { resolveReviewThread: { thread: { isResolved: true } } } } },
+  ]);
+  const details = await replyPullRequestFeedback(repository, { number: 7, threadId: "PRRT_1", body: " Renamed in abc1234. ", resolve: true }, token, { fetchImpl });
+  assert.deepEqual(calls.map((call) => call.query.match(/node\(|addPullRequestReviewThreadReply|resolveReviewThread/u)?.[0]), ["node(", "addPullRequestReviewThreadReply", "resolveReviewThread"]);
+  assert.equal(calls[1].variables.body, "Renamed in abc1234.");
+  assert.equal(details.resolved, true);
+  assert.equal(formatPullRequestReply(details), "Replied to thread PRRT_1 on PR #7; thread resolved: https://github.com/example/project/pull/7#r1");
+});
+
+test("reply formatting distinguishes unrequested, successful and unsuccessful resolution", () => {
+  const details = {
+    action: "reply_pull_request_feedback", repository, number: 7, threadId: "PRRT_1",
+    commentUrl: "https://github.com/example/project/pull/7#r1",
+  };
+  for (const [resolved, suffix] of [[null, ""], [true, "; thread resolved"], [false, "; thread NOT resolved"]]) {
+    assert.equal(
+      formatPullRequestReply({ ...details, resolved }),
+      `Replied to thread PRRT_1 on PR #7${suffix}: ${details.commentUrl}`,
+    );
+  }
+});
+
+test("a thread of another pull request is refused before anything is posted", async () => {
+  const { calls, fetchImpl } = replyFetch([{ payload: threadOf(8) }]);
+  await assert.rejects(
+    replyPullRequestFeedback(repository, { number: 7, threadId: "PRRT_1", body: "Done", resolve: true }, token, { fetchImpl }),
+    /PRRT_1 is not a thread of pull request #7 in example\/project; nothing was posted/u,
+  );
+  assert.equal(calls.length, 1);
+});
+
+test("a conversation comment confirms the pull request, then posts once", async () => {
+  const { calls, fetchImpl } = replyFetch([
+    { payload: { data: { repository: { pullRequest: { number: 7 } } } } },
+    { status: 201, payload: { html_url: "https://github.com/example/project/pull/7#issuecomment-1" } },
+  ]);
+  const details = await replyPullRequestFeedback(repository, { number: 7, body: "Tracked in #12." }, token, { fetchImpl });
+  assert.equal(calls[1].url, "https://api.github.com/repos/example/project/issues/7/comments");
+  assert.equal(calls[1].method, "POST");
+  assert.equal(calls[1].body, "Tracked in #12.");
+  assert.equal(details.resolved, null);
+  assert.equal(formatPullRequestReply(details), "Commented on PR #7: https://github.com/example/project/pull/7#issuecomment-1");
+});
+
+test("reply input is validated before any request", async () => {
+  const { calls, fetchImpl } = replyFetch([]);
+  await assert.rejects(replyPullRequestFeedback(repository, { number: 7, body: "   " }, token, { fetchImpl }), /body is required/u);
+  await assert.rejects(replyPullRequestFeedback(repository, { number: 7, body: "x".repeat(4001) }, token, { fetchImpl }), /exceeds 4000/u);
+  await assert.rejects(replyPullRequestFeedback(repository, { number: 7, body: "ok", resolve: true }, token, { fetchImpl }), /resolve requires threadId/u);
+  await assert.rejects(replyPullRequestFeedback(repository, { number: 7, body: "ok" }, token, { fetchImpl: replyFetch([{ payload: { data: { repository: { pullRequest: null } } } }]).fetchImpl }), /Pull request #7 was not found/u);
+  assert.equal(calls.length, 0);
 });
