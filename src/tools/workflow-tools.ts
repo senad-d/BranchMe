@@ -3,12 +3,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   CONCLUDE_MERGE_TOOL_NAME, GIT_CONTEXT_VALUE_LIMIT_CHARS, PULL_REQUEST_FEEDBACK_TOOL_NAME, PULL_REQUEST_REPLY_BODY_LIMIT_CHARS,
-  PULL_REQUEST_STATUS_TOOL_NAME, REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME, TRACK_BRANCH_TOOL_NAME, UPDATE_FROM_BASE_TOOL_NAME,
+  LABEL_PULL_REQUEST_TOOL_NAME, PULL_REQUEST_FILES_TOOL_NAME, PULL_REQUEST_LABEL_LIMIT, PULL_REQUEST_STATUS_TOOL_NAME,
+  REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME, TRACK_BRANCH_TOOL_NAME, UPDATE_FROM_BASE_TOOL_NAME,
 } from "../constants.ts";
 import { getGitRoot, requireCurrentBranch, safeWorktreeValue } from "../git.ts";
 import { concludeMerge, formatConflictPathList } from "../git-integration.ts";
 import { findGitHubPullRequest, getGitHubPullRequest, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
-import { formatPullRequestFeedback, formatPullRequestReply, getPullRequestFeedback, replyPullRequestFeedback } from "../github-feedback.ts";
+import {
+  formatPullRequestFeedback, formatPullRequestFiles, formatPullRequestLabel, formatPullRequestReply, getPullRequestFeedback,
+  getPullRequestFiles, labelPullRequest, replyPullRequestFeedback,
+} from "../github-feedback.ts";
 import type { ConcludeMergeDetails, PullRequestStatusDetails } from "../types.ts";
 import type { BranchMeToolOptions } from "./branchme-tools.ts";
 import { trackBranch, updateFromBase, type UpdateFromBaseDetails } from "../git-workflow.ts";
@@ -144,6 +148,47 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const token = (await resolveGitHubToken(options.env, { cwd: rootCtx.cwd, signal })).token;
       const details = await replyPullRequestFeedback(repository, params, token, { fetchImpl: options.fetchImpl, signal });
       return { content: [{ type: "text", text: formatPullRequestReply(details) }], details };
+    },
+  });
+  pi.registerTool({
+    name: PULL_REQUEST_FILES_TOOL_NAME,
+    label: "Pull Request Files",
+    description: "pull_request_files lists the changed files of a pull request of this GitHub repository (path, change type, additions, deletions; the first 100, with a count of the rest) and its current labels. No mutations.",
+    promptSnippet: "pull_request_files: list a PR's changed files and current labels",
+    promptGuidelines: [
+      "Use pull_request_files to see which areas of the repository a pull request touches, for example before choosing its labels.",
+      "pull_request_files never reads file contents or diffs, and never changes the pull request.",
+    ],
+    parameters: Type.Object({
+      number: Type.Integer({ minimum: 1, description: "PR number." }),
+    }, { additionalProperties: false }),
+    async execute(_id, params, signal, _update, ctx) {
+      const rootCtx = { cwd: await getGitRoot(pi, ctx, signal) };
+      const repository = await resolveGitHubRepository(pi, rootCtx, signal, options.env);
+      const token = (await resolveGitHubToken(options.env, { cwd: rootCtx.cwd, signal })).token;
+      const details = await getPullRequestFiles(repository, params.number, token, { fetchImpl: options.fetchImpl, signal });
+      return { content: [{ type: "text", text: formatPullRequestFiles(details) }], details };
+    },
+  });
+  pi.registerTool({
+    name: LABEL_PULL_REQUEST_TOOL_NAME,
+    label: "Label Pull Request",
+    description: "label_pull_request adds labels that already exist in this GitHub repository to one of its pull requests (1 to 5 per call). A label that does not exist is refused before anything changes; existing labels on the pull request stay.",
+    promptSnippet: "label_pull_request: add existing repository labels to a PR",
+    promptGuidelines: [
+      "Use label_pull_request only with label names the assignment or the repository's labels name exactly; it never creates, renames or removes labels.",
+      "label_pull_request adds labels and keeps the pull request's existing ones.",
+    ],
+    parameters: Type.Object({
+      number: Type.Integer({ minimum: 1, description: "PR number." }),
+      labels: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: PULL_REQUEST_LABEL_LIMIT, description: "Exact names of existing labels." }),
+    }, { additionalProperties: false }),
+    async execute(_id, params, signal, _update, ctx) {
+      const rootCtx = { cwd: await getGitRoot(pi, ctx, signal) };
+      const repository = await resolveGitHubRepository(pi, rootCtx, signal, options.env);
+      const token = (await resolveGitHubToken(options.env, { cwd: rootCtx.cwd, signal })).token;
+      const details = await labelPullRequest(repository, params.number, params.labels, token, { fetchImpl: options.fetchImpl, signal });
+      return { content: [{ type: "text", text: formatPullRequestLabel(details) }], details };
     },
   });
   pi.registerTool({

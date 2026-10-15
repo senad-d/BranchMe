@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractLogTail, formatPullRequestFeedback, formatPullRequestReply, getPullRequestFeedback, replyPullRequestFeedback } from "../src/github-feedback.ts";
+import {
+  extractLogTail, formatPullRequestFeedback, formatPullRequestFiles, formatPullRequestLabel, formatPullRequestReply, getPullRequestFeedback,
+  getPullRequestFiles, labelPullRequest, replyPullRequestFeedback,
+} from "../src/github-feedback.ts";
 
 const repository = { owner: "example", repo: "project" };
 const token = "test-private-credential";
@@ -70,7 +73,7 @@ test("pull request feedback lists unresolved current threads, meaningful reviews
 
   const text = formatPullRequestFeedback(feedback);
   assert.match(text, /Unresolved review threads: 1 \(1 resolved and 1 outdated not listed\)/u);
-  assert.match(text, /- src\/app\.ts:12\n {2}@alice: Fix this \[REDACTED\]\n {2}@bob: Agreed/u);
+  assert.match(text, /- src\/app\.ts:12\n {2}@alice <https:\/\/github\.com\/example\/project\/pull\/7#c>: Fix this \[REDACTED\]\n {2}@bob <https:\/\/github\.com\/example\/project\/pull\/7#c>: Agreed/u);
   assert.match(text, /Log unavailable: job log returned HTTP 403/u);
   assert.doesNotMatch(text, new RegExp(token, "u"));
 });
@@ -168,8 +171,8 @@ test("feedback carries thread and comment ids, times, the token user and failing
 
   const text = formatPullRequestFeedback(feedback);
   assert.match(text, /Token user: @mission-bot; comments marked \(you\)/u);
-  assert.match(text, /- \[thread PRRT_thread1\] src\/app\.ts:12\n {2}@alice 2026-10-14T10:00:00Z: Rename this\n {2}@mission-bot \(you\) 2026-10-14T11:00:00Z: Renamed/u);
-  assert.match(text, /- \[comment IC_1\] @bob 2026-10-14T12:00:00Z: Why this approach\?/u);
+  assert.match(text, /- \[thread PRRT_thread1\] src\/app\.ts:12\n {2}@alice 2026-10-14T10:00:00Z <https:\/\/github\.com\/example\/project\/pull\/7#c>: Rename this\n {2}@mission-bot \(you\) 2026-10-14T11:00:00Z <https:\/\/github\.com\/example\/project\/pull\/7#c>: Renamed/u);
+  assert.match(text, /- \[comment IC_1\] @bob 2026-10-14T12:00:00Z <https:\/\/github\.com\/example\/project\/pull\/7#c>: Why this approach\?/u);
   assert.match(text, /- lint: FAILURE \S+\n {2}Annotations:\n {4}src\/app\.ts:3 FAILURE: 'x' is unused \[REDACTED\]\n {2}Log tail/u);
   assert.doesNotMatch(text, /informational|test-private-credential/u);
 });
@@ -242,4 +245,33 @@ test("reply input is validated before any request", async () => {
   await assert.rejects(replyPullRequestFeedback(repository, { number: 7, body: "ok", resolve: true }, token, { fetchImpl }), /resolve requires threadId/u);
   await assert.rejects(replyPullRequestFeedback(repository, { number: 7, body: "ok" }, token, { fetchImpl: replyFetch([{ payload: { data: { repository: { pullRequest: null } } } }]).fetchImpl }), /Pull request #7 was not found/u);
   assert.equal(calls.length, 0);
+});
+
+test("pull request files list paths, change types and labels", async () => {
+  const { fetchImpl } = replyFetch([{ payload: { data: { repository: { pullRequest: {
+    number: 7, labels: { nodes: [{ name: "bug" }] },
+    files: { totalCount: 102, nodes: [{ path: "apps/api/src/main.ts", changeType: "MODIFIED", additions: 2, deletions: 1 }, { path: "apps/web/src/app.tsx", changeType: "ADDED", additions: 9, deletions: 0 }] },
+  } } } } }]);
+  const details = await getPullRequestFiles(repository, 7, token, { fetchImpl });
+  assert.equal(details.omitted, 100);
+  assert.equal(formatPullRequestFiles(details), "PR #7: 2 changed file(s); 100 more not listed. Labels: bug.\n- apps/api/src/main.ts (modified, +2 -1)\n- apps/web/src/app.tsx (added, +9 -0)");
+});
+
+test("labeling refuses an unknown label before changing the pull request, then adds existing ones", async () => {
+  const exists = { payload: { data: { repository: { pullRequest: { number: 7 } } } } };
+  const unknown = replyFetch([exists, { payload: { name: "bug" } }, { status: 404, payload: { message: "Not Found" } }]);
+  await assert.rejects(labelPullRequest(repository, 7, ["bug", "area:nope"], token, { fetchImpl: unknown.fetchImpl }), /Label "area:nope" does not exist/u);
+  assert.equal(unknown.calls.some((call) => call.method === "POST" && call.url.endsWith("/labels")), false);
+
+  const ok = replyFetch([exists, { payload: { name: "bug" } }, { payload: { name: "area:backend" } }, { payload: [{ name: "bug" }, { name: "area:backend" }] }]);
+  const details = await labelPullRequest(repository, 7, ["bug", "area:backend"], token, { fetchImpl: ok.fetchImpl });
+  assert.equal(ok.calls.at(-1).url, "https://api.github.com/repos/example/project/issues/7/labels");
+  assert.equal(formatPullRequestLabel(details), "Labeled PR #7 with bug, area:backend; labels now: bug, area:backend.");
+  await assert.rejects(labelPullRequest(repository, 7, [], token, { fetchImpl: ok.fetchImpl }), /1 to 5 labels/u);
+});
+
+test("feedback lines carry comment URLs and review ids", async () => {
+  const payload = graphql({ reviews: { nodes: [{ ...comment("erin", "Add a test"), id: "PRR_1", state: "COMMENTED", submittedAt: "2026-10-14T09:00:00Z" }] } });
+  const text = formatPullRequestFeedback(await getPullRequestFeedback(repository, 7, token, fetchFor(payload)));
+  assert.match(text, /- \[review PRR_1\] @erin 2026-10-14T09:00:00Z <https:\/\/github\.com\/example\/project\/pull\/7#c> COMMENTED: Add a test/u);
 });

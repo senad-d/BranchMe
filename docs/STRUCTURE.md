@@ -30,7 +30,7 @@ src/
 
 ## Module boundaries
 
-1. `src/extension.ts` stays small and registers the command, twenty-three tools, and one `before_agent_start` context hook.
+1. `src/extension.ts` stays small and registers the command, twenty-five tools, and one `before_agent_start` context hook.
 2. `src/git-context.ts` owns the shared read-only collector, escaped/bounded formatter, automatic system-prompt append, and the current-state output used by `branch_status`.
 3. `src/commands/branchme-command.ts` parses `/branchme`, `/branchme help`, `--help`, and `-h`; it never performs git or GitHub mutations and avoids raw stdout in JSON mode.
 4. `src/tools/branchme-tools.ts` owns strict TypeBox schemas, prompt metadata, bounded tool content, and safe structured details. `branch_status` delegates to the shared context collector and optional ancestry verifier; `integrate_branch` and `retire_branch` delegate to focused mutation state machines; worktree tools expose explicit inventory and verified handoff operations.

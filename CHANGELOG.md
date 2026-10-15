@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.12 - Unreleased
+
+- Added `pull_request_files` (read-only: a PR's first 100 changed files with change type and line counts, plus its labels) and `label_pull_request` (adds 1 to 5 existing repository labels to a PR; GitHub would create an unknown label, so it is refused first). An agent can now choose and set a PR's area label from what it changes.
+- `pull_request_feedback` prints each comment's and review's URL, and review ids, so a follow-up issue can quote and link the exact comment.
+
 ## 0.3.11 - Unreleased
 
 - `land_branch` with `pullRequestNumber` accepts a local source branch that is the merged PR head or one of its ancestors: a branch left behind because the PR received commits pushed from another checkout (for example a merge of the base) holds nothing the PR lacks, and is retired. A local branch with commits the PR head does not contain is still refused, now with its own message and Blocked/Resolve guidance; a PR head that is not available locally counts as not containing it.

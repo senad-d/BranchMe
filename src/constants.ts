@@ -18,6 +18,8 @@ export const PULL_REQUEST_TOOL_NAME = "pull_request";
 export const PULL_REQUEST_STATUS_TOOL_NAME = "pull_request_status";
 export const PULL_REQUEST_FEEDBACK_TOOL_NAME = "pull_request_feedback";
 export const REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME = "reply_pull_request_feedback";
+export const PULL_REQUEST_FILES_TOOL_NAME = "pull_request_files";
+export const LABEL_PULL_REQUEST_TOOL_NAME = "label_pull_request";
 export const LIST_WORKTREES_TOOL_NAME = "list_worktrees";
 export const CREATE_WORKTREE_TOOL_NAME = "create_worktree";
 export const REMOVE_WORKTREE_TOOL_NAME = "remove_worktree";
@@ -47,6 +49,8 @@ export const BRANCHME_TOOL_NAMES = [
   PULL_REQUEST_STATUS_TOOL_NAME,
   PULL_REQUEST_FEEDBACK_TOOL_NAME,
   REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME,
+  PULL_REQUEST_FILES_TOOL_NAME,
+  LABEL_PULL_REQUEST_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   REMOVE_WORKTREE_TOOL_NAME,
@@ -98,5 +102,6 @@ export const PULL_REQUEST_FEEDBACK_BODY_LIMIT_CHARS = 2_000;
 export const PULL_REQUEST_FEEDBACK_LOG_LIMIT_CHARS = 6_000;
 export const PULL_REQUEST_FEEDBACK_SUMMARY_LIMIT_CHARS = 24_000;
 export const PULL_REQUEST_REPLY_BODY_LIMIT_CHARS = 4_000;
+export const PULL_REQUEST_LABEL_LIMIT = 5;
 export const GITHUB_GRAPHQL_TIMEOUT_MS = 15_000;
 export const GITHUB_JOB_LOG_TIMEOUT_MS = 30_000;

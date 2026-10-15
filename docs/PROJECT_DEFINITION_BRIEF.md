@@ -15,7 +15,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 - Exported extension function: `branchMeExtension`
 - Repository URL: `https://github.com/senad-d/branchme`
 - One-sentence pitch: Verified Pi tools for Git repository initialization plus current-repository branch, integration, retirement, linked-worktree, push, and GitHub pull request workflows.
-- Tool count: twenty-three strict agent-callable tools.
+- Tool count: twenty-five strict agent-callable tools.
 
 ## 3. Users and use cases
 
@@ -57,6 +57,8 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 | Tool | `conclude_merge` | Commit or abort the in-progress kept merge | Refuses remaining markers; stages only formerly unmerged paths; `commit --no-edit`; verified two-parent result or verified abort |
 | Tool | `pull_request_status` | Read exact PR or latest PR for a head | Open/closed/merged state and commit identities; not a CI/review verdict |
 | Tool | `pull_request_feedback` | Read what a PR asks to be fixed | Unresolved review threads, review summaries, conversation comments, failing checks with annotations and Actions log tails; read-only |
+| Tool | `pull_request_files` | List a PR's changed files | Path, change type and line counts of the first 100 changed files, plus current labels; read-only |
+| Tool | `label_pull_request` | Label a PR | Adds 1-5 labels that already exist in the repository; refuses unknown labels; never removes |
 | Tool | `reply_pull_request_feedback` | Answer PR feedback | One reply in a review thread of the PR (optionally resolving it) or one conversation comment; the thread must belong to the PR; never edits, deletes, approves, merges or closes |
 | Tool | `init_repository` | Initialize the exact current directory as a new non-bare Git repository | Optional initial branch; rejects reinitialization/nesting; no path, commit, or project-file controls |
 | Tool | `branch_status` | Refresh bounded current-worktree Git and related-PR context; optionally prove captured local or remote-tracking ancestry | Read-only; targeted ancestry is absent from automatic context |
@@ -97,7 +99,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - `src/github.ts`
   - `src/ui/branchme-panel.ts`
 - Module boundaries:
-  - The extension entry point registers the informational command, twenty-three tools, and automatic context hook.
+  - The extension entry point registers the informational command, twenty-five tools, and automatic context hook.
   - `src/git-workflow.ts` and `src/tools/workflow-tools.ts` own verified remote tracking, base updates, and the new PR status registration.
   - The context module owns bounded read-only collection, prompt formatting, targeted ancestry rendering, and the `before_agent_start` hook; automatic context never runs ancestry queries.
   - The command and UI modules own mode-safe informational help/status behavior and never invoke mutations.

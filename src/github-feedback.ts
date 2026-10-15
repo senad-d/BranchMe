@@ -2,7 +2,7 @@ import {
   GITHUB_API_BASE_URL, GITHUB_GRAPHQL_TIMEOUT_MS, GITHUB_JOB_LOG_TIMEOUT_MS, PULL_REQUEST_FEEDBACK_BODY_LIMIT_CHARS,
   PULL_REQUEST_FEEDBACK_LOG_JOB_LIMIT, PULL_REQUEST_FEEDBACK_LOG_LIMIT_CHARS, PULL_REQUEST_FEEDBACK_LOG_TAIL_BYTES,
   PULL_REQUEST_FEEDBACK_LOG_TAIL_LINES, PULL_REQUEST_FEEDBACK_RESPONSE_LIMIT_BYTES, PULL_REQUEST_FEEDBACK_SUMMARY_LIMIT_CHARS,
-  PULL_REQUEST_REPLY_BODY_LIMIT_CHARS,
+  PULL_REQUEST_LABEL_LIMIT, PULL_REQUEST_REPLY_BODY_LIMIT_CHARS,
 } from "./constants.ts";
 import {
   encodePathSegment, fetchGitHubResponse, gitHubJsonHeaders, isRecord, parseGitHubJson, pullRequestNumberField,
@@ -12,7 +12,8 @@ import {
 import { redactSecrets } from "./redaction.ts";
 import type {
   GitHubRepository, PullRequestFeedbackAnnotation, PullRequestFeedbackCheck, PullRequestFeedbackComment, PullRequestFeedbackDetails,
-  PullRequestFeedbackReview, PullRequestFeedbackThread, PullRequestReplyDetails, PullRequestReplyInput,
+  PullRequestFeedbackReview, PullRequestFeedbackThread, PullRequestFilesDetails, PullRequestLabelDetails,
+  PullRequestReplyDetails, PullRequestReplyInput,
 } from "./types.ts";
 
 // One GraphQL request reads review threads with their resolution state, review summaries, conversation
@@ -255,9 +256,10 @@ function location(path: string, line: number | null): string {
   return line === null ? path : `${path}:${line}`;
 }
 
-// "@alice (you) 2026-10-14T19:50:15Z" — the marker and time decide what is new.
+// "@alice (you) 2026-10-14T19:50:15Z <url>" — the marker and time decide what is new;
+// the URL lets a follow-up issue link the exact comment.
 function byline(comment: PullRequestFeedbackComment): string {
-  return [`@${comment.author}`, comment.byViewer ? "(you)" : "", comment.createdAt].filter(Boolean).join(" ");
+  return [`@${comment.author}`, comment.byViewer ? "(you)" : "", comment.createdAt, comment.url ? `<${comment.url}>` : ""].filter(Boolean).join(" ");
 }
 
 function idTag(kind: string, id: string): string {
@@ -291,7 +293,7 @@ export function formatPullRequestFeedback(details: PullRequestFeedbackDetails): 
     `Unresolved review threads: ${details.unresolvedThreads.length} (${details.resolvedThreadCount} resolved and ${details.outdatedThreadCount} outdated not listed${omittedThreads}).`,
     ...details.unresolvedThreads.map(formatThread),
     `Reviews with a body or requested changes: ${details.reviews.length}.`,
-    ...details.reviews.map((review) => `- ${byline(review)} ${review.state}: ${review.body}`),
+    ...details.reviews.map((review) => `- ${idTag("review", review.id)}${byline(review)} ${review.state}: ${review.body}`),
     `Conversation comments: ${details.comments.length}${omittedComments}.`,
     ...details.comments.map((comment) => `- ${idTag("comment", comment.id)}${byline(comment)}: ${comment.body}`),
     `Failing checks: ${details.failingChecks.length}${omittedChecks}.`,
@@ -391,4 +393,85 @@ export function formatPullRequestReply(details: PullRequestReplyDetails): string
   let resolution = "";
   if (details.resolved !== null) resolution = details.resolved ? "; thread resolved" : "; thread NOT resolved";
   return `Replied to thread ${details.threadId} on PR #${details.number}${resolution}: ${details.commentUrl}`;
+}
+
+const PULL_REQUEST_FILES_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      number
+      labels(first: 50) { nodes { name } }
+      files(first: 100) { totalCount nodes { path changeType additions deletions } }
+    }
+  }
+}`;
+
+function requirePullRequestNode(payload: Record<string, unknown>, repository: GitHubRepository, number: number): Record<string, unknown> {
+  const pullRequest = isRecord(payload.data) && isRecord(payload.data.repository) ? payload.data.repository.pullRequest : null;
+  if (!isRecord(pullRequest) || pullRequest.number !== number) {
+    throw new Error(`Pull request #${number} was not found in ${repository.owner}/${repository.repo}.`);
+  }
+  return pullRequest;
+}
+
+/** The first 100 changed files of a pull request and its current labels. */
+export async function getPullRequestFiles(repository: GitHubRepository, number: number, token: string, options: PullRequestFetchOptions = {}): Promise<PullRequestFilesDetails> {
+  validateGitHubRepository(repository);
+  pullRequestNumberField(number);
+  const payload = await postGraphQL(PULL_REQUEST_FILES_QUERY, { owner: repository.owner, repo: repository.repo, number }, token, options, "GitHub pull request files");
+  const pullRequest = requirePullRequestNode(payload, repository, number);
+  const files = nodes(pullRequest.files).map((file) => ({
+    path: safeText(file.path, token, 500),
+    change: safeText(file.changeType, token, 20).toLowerCase(),
+    additions: typeof file.additions === "number" ? file.additions : 0,
+    deletions: typeof file.deletions === "number" ? file.deletions : 0,
+  }));
+  return {
+    action: "pull_request_files",
+    repository,
+    number,
+    labels: nodes(pullRequest.labels).map((label) => safeText(label.name, token, 100)).filter(Boolean),
+    files,
+    omitted: Math.max(0, totalCount(pullRequest.files) - files.length),
+  };
+}
+
+export function formatPullRequestFiles(details: PullRequestFilesDetails): string {
+  const omitted = details.omitted > 0 ? `; ${details.omitted} more not listed` : "";
+  return [
+    `PR #${details.number}: ${details.files.length} changed file(s)${omitted}. Labels: ${details.labels.join(", ") || "none"}.`,
+    ...details.files.map((file) => `- ${file.path} (${file.change}, +${file.additions} -${file.deletions})`),
+  ].join("\n");
+}
+
+async function requireExistingLabel(repository: GitHubRepository, label: string, token: string, options: PullRequestFetchOptions): Promise<void> {
+  const url = `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/labels/${encodePathSegment(label)}`;
+  const response = await fetchGitHubResponse(requireFetchImplementation(options.fetchImpl ?? globalThis.fetch), url, {
+    method: "GET", headers: gitHubJsonHeaders(token), signal: options.signal,
+  }, "GitHub label lookup failed", token);
+  if (response.status === 404) throw new Error(`Label "${label}" does not exist in ${repository.owner}/${repository.repo}; label_pull_request adds existing labels only.`);
+  if (!response.ok) throw new Error(`GitHub label lookup returned HTTP ${response.status}.`);
+}
+
+/** Adds existing repository labels to a pull request; GitHub would create unknown ones, so they are refused first. */
+export async function labelPullRequest(repository: GitHubRepository, number: number, labels: readonly string[], token: string, options: PullRequestFetchOptions = {}): Promise<PullRequestLabelDetails> {
+  validateGitHubRepository(repository);
+  pullRequestNumberField(number);
+  const wanted = [...new Set(labels.map((label) => label.trim()).filter(Boolean))];
+  if (wanted.length === 0 || wanted.length > PULL_REQUEST_LABEL_LIMIT) throw new Error(`labels must name 1 to ${PULL_REQUEST_LABEL_LIMIT} labels.`);
+  const found = await postGraphQL(PULL_REQUEST_EXISTS_QUERY, { owner: repository.owner, repo: repository.repo, number }, token, options, "GitHub pull request");
+  requirePullRequestNode(found, repository, number);
+  await Promise.all(wanted.map((label) => requireExistingLabel(repository, label, token, options)));
+  const url = `${GITHUB_API_BASE_URL}/repos/${encodePathSegment(repository.owner)}/${encodePathSegment(repository.repo)}/issues/${number}/labels`;
+  const response = await fetchGitHubResponse(requireFetchImplementation(options.fetchImpl ?? globalThis.fetch), url, {
+    method: "POST", headers: gitHubJsonHeaders(token), body: JSON.stringify({ labels: wanted }), signal: options.signal,
+  }, "GitHub pull request labeling failed", token);
+  if (!response.ok) throw new Error(`GitHub pull request labeling returned HTTP ${response.status}.`);
+  const text = await readBoundedResponseText(response, options.signal, PULL_REQUEST_FEEDBACK_RESPONSE_LIMIT_BYTES);
+  const payload: unknown = parseGitHubJson(text.text, "GitHub pull request labels response", token);
+  const after = Array.isArray(payload) ? payload.filter(isRecord).map((label) => safeText(label.name, token, 100)).filter(Boolean) : [];
+  return { action: "label_pull_request", repository, number, added: wanted, labels: after };
+}
+
+export function formatPullRequestLabel(details: PullRequestLabelDetails): string {
+  return `Labeled PR #${details.number} with ${details.added.join(", ")}; labels now: ${details.labels.join(", ") || "none"}.`;
 }

@@ -660,6 +660,24 @@ export interface PullRequestFeedbackDetails {
   omitted: { threads: number; comments: number; checks: number };
 }
 
+export interface PullRequestFilesDetails {
+  action: "pull_request_files";
+  repository: GitHubRepository;
+  number: number;
+  labels: string[];
+  files: { path: string; change: string; additions: number; deletions: number }[];
+  omitted: number;
+}
+
+export interface PullRequestLabelDetails {
+  action: "label_pull_request";
+  repository: GitHubRepository;
+  number: number;
+  added: string[];
+  /** Every label on the pull request after the call. */
+  labels: string[];
+}
+
 export interface PullRequestReplyInput {
   number: number;
   body: string;
