@@ -133,6 +133,7 @@ const IntegrateBranchParametersSchema = Type.Object(
   {
     sourceBranch: Type.String({ minLength: 1, description: "Exact existing local source branch to integrate." }),
     targetBranch: Type.String({ minLength: 1, description: "Exact existing local target branch already checked out in the clean control worktree." }),
+    keepConflicts: Type.Optional(Type.Boolean({ description: "When true, a conflicted merge is left in progress (MERGE_HEAD set, conflicted paths unmerged) for conclude_merge instead of being aborted; defaults to false." })),
   },
   { additionalProperties: false },
 );
@@ -772,15 +773,16 @@ export function registerBranchMeTools(host: Pick<ExtensionAPI, "registerTool" | 
   pi.registerTool({
     name: INTEGRATE_BRANCH_TOOL_NAME,
     label: "Integrate Branch",
-    description: "integrate_branch verifies and merges one exact existing local source branch into one exact existing local target branch from the current clean control worktree, returning an already-integrated, fast-forward, merge-commit, or automatically aborted conflict result. integrate_branch never fetches or pushes.",
-    promptSnippet: "integrate_branch: merge an exact local source branch into the checked-out clean local target with verified outcomes and automatic conflict abort",
+    description: "integrate_branch verifies and merges one exact existing local source branch into one exact existing local target branch from the current clean control worktree, returning an already-integrated, fast-forward, merge-commit, or conflict result. A conflict is automatically aborted with restoration verified unless keepConflicts is true, which leaves the conflicted merge in progress (conflict_kept) for conclude_merge. integrate_branch never fetches or pushes.",
+    promptSnippet: "integrate_branch: merge an exact local source branch into the checked-out clean local target with verified outcomes and automatic conflict abort; keepConflicts keeps a conflicted merge in progress",
     promptGuidelines: [
       "Use integrate_branch only when the user explicitly wants one exact existing local source branch integrated into one exact existing local target branch.",
       "Before integrate_branch, require the current clean control worktree to already have targetBranch checked out; integrate_branch never switches branches, stashes, or discards changes.",
       "Use integrate_branch only after local refs already contain the commits to integrate; integrate_branch never fetches or pushes.",
       "Call integrate_branch by itself and wait for it to complete; never batch integrate_branch with other Git mutations.",
       "After integrate_branch completes, run any targeted branch_status ancestry proof separately; never place integrate_branch and branch_status in the same parallel tool batch.",
-      "A conflict result from integrate_branch means the merge was automatically aborted and restoration was verified; semantic conflict analysis belongs to a separate delegated workflow, not integrate_branch.",
+      "A conflict result from integrate_branch means the merge was automatically aborted and restoration was verified unless keepConflicts is true; semantic conflict analysis belongs to a separate delegated workflow, not integrate_branch.",
+      "Pass keepConflicts: true to integrate_branch only when a file-editing step will resolve the listed paths; the result conflict_kept leaves the merge in progress with MERGE_HEAD set, and conclude_merge must then conclude or abort it before any other Git mutation.",
     ],
     parameters: IntegrateBranchParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {

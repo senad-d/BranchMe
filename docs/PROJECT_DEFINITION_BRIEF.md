@@ -62,7 +62,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 | Tool | `reply_pull_request_feedback` | Answer PR feedback | One reply in a review thread of the PR (optionally resolving it) or one conversation comment; the thread must belong to the PR; never edits, deletes, approves, merges or closes |
 | Tool | `init_repository` | Initialize the exact current directory as a new non-bare Git repository | Optional initial branch; rejects reinitialization/nesting; no path, commit, or project-file controls |
 | Tool | `branch_status` | Refresh bounded current-worktree Git and related-PR context; optionally prove captured local or remote-tracking ancestry | Read-only; targeted ancestry is absent from automatic context |
-| Tool | `integrate_branch` | Integrate one exact local source into the already-current clean local target | Fixed normal-merge policy; verified automatic abort/restoration on conflict |
+| Tool | `integrate_branch` | Integrate one exact local source into the already-current clean local target | Fixed normal-merge policy; verified automatic abort/restoration on conflict unless `keepConflicts` |
 | Tool | `list_worktrees` | List bounded main/linked worktree inventory | Read-only and explicit |
 | Tool | `create_worktree` | Create and verify a linked worktree | Exact absolute handoff cwd; new/existing local branch modes only |
 | Tool | `remove_worktree` | Remove an exact verified clean linked worktree | Force-free; ignored entries protected by default and deletable with explicit `deleteIgnored: true`; branch retained |
@@ -141,7 +141,7 @@ Standalone removal retains its branch and requires explicit `deleteIgnored: true
 
 ## 8. Branch integration contract
 
-- `integrate_branch` accepts exactly `sourceBranch` and `targetBranch`. They must identify distinct existing local refs in the current repository; remote-only refs, full refs, commit IDs, paths, repositories, remotes, and owner-prefixed refs are rejected.
+- `integrate_branch` accepts exactly `sourceBranch` and `targetBranch`, plus optional boolean `keepConflicts`. They must identify distinct existing local refs in the current repository; remote-only refs, full refs, commit IDs, paths, repositories, remotes, and owner-prefixed refs are rejected.
 - The active Pi worktree is the control worktree and must already have the target checked out, be clean, and have no merge/rebase/cherry-pick/revert/sequencer state. The source may be checked out in another dirty worktree because only its captured commit ref is read.
 - Before mutation, BranchMe rejects a non-empty `branch.<targetBranch>.mergeOptions` setting so branch-specific defaults cannot change the policy. The fixed command is `git -c rerere.enabled=false merge --ff --no-edit --no-autostash --no-rerere-autoupdate --no-overwrite-ignore refs/heads/<sourceBranch>`. It does not fetch or push, disables autostash and rerere, protects ignored files, and preserves hooks, custom merge drivers, clean/smudge filters, and signing policy.
 - Results distinguish `already_integrated`, `fast_forward`, `merge_commit`, and `conflict`. Before/after source and target commit IDs, repository/control-worktree identity, clean/operation state, and source/prior-target ancestry are verified. Merge-commit classification requires exact captured target/source parents.
@@ -200,7 +200,7 @@ Standalone removal retains its branch and requires explicit `deleteIgnored: true
 - Slash commands remain informational; tools perform all Git and GitHub actions.
 - Automatic context remains focused on the active worktree; inventory is available only through `list_worktrees`.
 - `create_worktree` returns a verified target for a caller-managed session but does not change cwd or create processes.
-- `integrate_branch` and `update_from_base` use the verified normal-merge state machine and automatically abort initial conflicts; only `update_from_base` fetches an explicit remote base before merging its captured commit, and only it may keep a conflicted merge in progress with `keepConflicts: true`. `conclude_merge` is the single continuation surface: it commits only marker-free formerly unmerged paths with Git's prepared message or aborts with verified restoration, and performs no semantic resolution.
+- `integrate_branch` and `update_from_base` use the verified normal-merge state machine and automatically abort initial conflicts; only `update_from_base` fetches an explicit remote base before merging its captured commit, and either may keep a conflicted merge in progress with `keepConflicts: true`. `conclude_merge` is the single continuation surface: it commits only marker-free formerly unmerged paths with Git's prepared message or aborts with verified restoration, and performs no semantic resolution.
 - Worktree removal remains force-free, protects ignored entries by default, requires explicit authorization to delete them, and preserves the local branch.
 - Local branch retirement remains a separate explicit operation requiring a fresh expected `HEAD`, exact target ancestry, zero complete-inventory occupancy, and an explicit boolean force decision; it deletes only the leased local ref and leaves branch configuration and remote/remote-tracking refs untouched.
 - `push_branch` uses `origin` only when the current branch has no configured upstream.

@@ -449,7 +449,7 @@ test("integrate_branch exposes a strict schema and explicit sequencing guidance"
   const tool = toolByName(pi, INTEGRATE_BRANCH_TOOL_NAME);
 
   assert.deepEqual(tool.parameters.required, ["sourceBranch", "targetBranch"]);
-  assert.deepEqual(Object.keys(tool.parameters.properties), ["sourceBranch", "targetBranch"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["sourceBranch", "targetBranch", "keepConflicts"]);
   assert.equal(tool.parameters.additionalProperties, false);
   for (const unsupported of [
     "path",

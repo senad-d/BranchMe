@@ -86,6 +86,8 @@ export interface InitRepositoryDetails {
 export interface IntegrateBranchToolInput {
   sourceBranch: string;
   targetBranch: string;
+  /** Leave a conflicted merge in progress for conclude_merge instead of aborting it. */
+  keepConflicts?: boolean;
 }
 
 export interface RetireBranchToolInput {
@@ -440,7 +442,7 @@ export interface IntegrateBranchConflictDetails extends IntegrateBranchDetailsBa
   };
 }
 
-/** A conflicted merge deliberately left in progress (update_from_base keepConflicts); conclude_merge finishes or abandons it. */
+/** A conflicted merge deliberately left in progress (integrate_branch or update_from_base keepConflicts); conclude_merge finishes or abandons it. */
 export interface IntegrateBranchConflictKeptDetails {
   action: "integrate_branch";
   status: "conflict_kept";

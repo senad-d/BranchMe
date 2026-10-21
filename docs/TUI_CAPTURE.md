@@ -52,7 +52,7 @@ Commands only show info; BranchMe tools perform actions.
 ## Branch integration
 
 - `integrate_branch` — integrate an exact local source into an exact local target; the clean control worktree must already have the target checked out.
-- It never fetches or pushes; a conflict is automatically aborted after paths are captured and restoration is verified.
+- It never fetches or pushes; a conflict is automatically aborted after paths are captured and restoration is verified, unless `keepConflicts: true` leaves it in progress for `conclude_merge`.
 - BranchMe does not resolve semantic conflicts; handle them in a separate developer workflow.
 
 ## Branch retirement

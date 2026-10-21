@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.13 - Unreleased
+
+- Added optional `integrate_branch.keepConflicts` (default `false`). When true, a conflicted local integration returns `conflict_kept` with the merge left in progress for `conclude_merge` to finish after resolution or abort; default conflict handling still aborts and verifies restoration. Updated schemas, prompt guidance, documentation, and real-Git regression coverage.
+
 ## 0.3.12 - Unreleased
 
 - Added `pull_request_files` (read-only: a PR's first 100 changed files with change type and line counts, plus its labels) and `label_pull_request` (adds 1 to 5 existing repository labels to a PR; GitHub would create an unknown label, so it is refused first). An agent can now choose and set a PR's area label from what it changes.

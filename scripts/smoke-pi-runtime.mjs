@@ -44,7 +44,7 @@ const expectedBranchMeTools = [
   { name: "rebase_branch", properties: [], required: [] },
   { name: "push_branch", properties: [], required: [] },
   { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title"], required: [] },
-  { name: "integrate_branch", properties: ["sourceBranch", "targetBranch"], required: ["sourceBranch", "targetBranch"] },
+  { name: "integrate_branch", properties: ["keepConflicts", "sourceBranch", "targetBranch"], required: ["sourceBranch", "targetBranch"] },
   {
     name: "retire_branch",
     properties: ["branchName", "expectedHead", "force", "targetBranch"],

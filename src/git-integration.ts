@@ -814,6 +814,8 @@ export async function integrateBranch(
     request,
     worktreeRoot,
     signal,
+    false,
+    request.keepConflicts === true,
   );
   return withRepositoryMutationQueue(worktreeRoot, operation);
 }

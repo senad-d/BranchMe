@@ -194,6 +194,8 @@ test("runtime schema validation enforces exact integrate_branch inputs", () => {
   const valid = { sourceBranch: "feature/runtime-schema", targetBranch: "main" };
 
   assertValid(tool, valid);
+  assertValid(tool, { ...valid, keepConflicts: true });
+  assertInvalid(tool, { ...valid, keepConflicts: "yes" });
   assertInvalid(tool, null);
   assertInvalid(tool, {});
   assertInvalid(tool, { sourceBranch: "feature/runtime-schema" });

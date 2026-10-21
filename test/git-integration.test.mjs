@@ -4,7 +4,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from
 import { devNull, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import test from "node:test";
-import { integrateBranch } from "../src/git-integration.ts";
+import { concludeMerge, integrateBranch } from "../src/git-integration.ts";
 import {
   changeExistingLocalBranch,
   createLocalBranch,
@@ -498,6 +498,38 @@ test("real git integrateBranch captures a content conflict and automatically res
     );
     assertIntegrationMergePolicy(pi.calls, sourceBranch);
     assertSafeIntegrationCalls(pi.calls);
+  });
+});
+
+test("real git integrateBranch keeps a conflicted merge in progress with keepConflicts for conclude_merge", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/conflict";
+    const targetBranch = "main";
+    await commitFile(repoRoot, "conflict.txt", "shared base\n", "add conflict base");
+    await runGit(repoRoot, ["switch", "-c", sourceBranch]);
+    const sourceHead = await commitFile(repoRoot, "conflict.txt", "source version\n", "change conflict on source");
+    await runGit(repoRoot, ["switch", targetBranch]);
+    const targetHead = await commitFile(repoRoot, "conflict.txt", "target version\n", "change conflict on target");
+    const pi = makeRealGitPi(repoRoot);
+
+    const details = await integrateBranch(
+      pi,
+      { cwd: repoRoot },
+      { sourceBranch, targetBranch, keepConflicts: true },
+    );
+
+    assert.equal(details.status, "conflict_kept");
+    assert.deepEqual(details.request, { sourceBranch, targetBranch });
+    assert.deepEqual(details.heads, { sourceHead, targetHead });
+    assert.deepEqual(details.conflict, { paths: [{ path: "conflict.txt" }], omitted: 0, kept: true, mergeInProgress: true });
+    assert.equal(await gitStatePathExists(repoRoot, "MERGE_HEAD"), true);
+    assert.equal(await refHead(repoRoot), targetHead);
+    assert.match(await readFile(join(repoRoot, "conflict.txt"), "utf8"), /^<<<<<<< /mu);
+    assert.equal(pi.calls.some((call) => call.args[0] === "merge" && call.args[1] === "--abort"), false);
+
+    const aborted = await concludeMerge(pi, { cwd: repoRoot }, { action: "abort" });
+    assert.equal(aborted.status, "aborted");
+    await assertRestoredIntegrationState(repoRoot, sourceBranch, targetBranch, sourceHead, targetHead);
   });
 });
 
