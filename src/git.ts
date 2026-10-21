@@ -1,5 +1,6 @@
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   GIT_BRANCH_ENTRY_LIMIT,
@@ -9,6 +10,8 @@ import {
   GIT_CONTEXT_RECENT_COMMIT_LIMIT,
   GIT_CONTEXT_VALUE_LIMIT_CHARS,
   GIT_FETCH_TIMEOUT_MS,
+  GIT_LOCK_RETRY_INTERVAL_MS,
+  GIT_LOCK_WAIT_MS,
   GIT_MUTATION_TIMEOUT_MS,
   GIT_PULL_TIMEOUT_MS,
   GIT_PUSH_TIMEOUT_MS,
@@ -128,17 +131,41 @@ export function formatGitFailure(args: readonly string[], result: GitExecResult,
   return `${safeCommandLabel(args, tokens)} failed${killed}: ${reason}`;
 }
 
-export async function runGit(
+// git's "Unable to create '<path>.lock': File exists" for index.lock, HEAD.lock
+// and ref locks: another git process holds the lock.
+const GIT_LOCK_HELD_PATTERN = /Unable to create '[^'\n]*\.lock': File exists/u;
+
+async function runGitWithLockRetry(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   args: string[],
-  options: GitRunOptions = {},
+  options: GitRunOptions,
+  deadline: number,
 ): Promise<GitExecResult> {
   const result = await pi.exec("git", args, {
     cwd: ctx.cwd,
     signal: options.signal,
     timeout: options.timeout ?? GIT_STATUS_TIMEOUT_MS,
   });
+  // Retries depend on the previous failure and must never run concurrently.
+  // The lock belongs to another git process and is never touched here.
+  if (result.killed || result.code === 0 || !GIT_LOCK_HELD_PATTERN.test(result.stderr) || options.signal?.aborted) {
+    return result;
+  }
+  if (Date.now() >= deadline) {
+    return { ...result, stderr: `${result.stderr.trimEnd()}\nThe lock was still held after waiting ${GIT_LOCK_WAIT_MS / 1000} s.` };
+  }
+  await sleep(GIT_LOCK_RETRY_INTERVAL_MS, undefined, { signal: options.signal });
+  return runGitWithLockRetry(pi, ctx, args, options, deadline);
+}
+
+export async function runGit(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  args: string[],
+  options: GitRunOptions = {},
+): Promise<GitExecResult> {
+  const result = await runGitWithLockRetry(pi, ctx, args, options, Date.now() + GIT_LOCK_WAIT_MS);
 
   if (result.killed) {
     throw new Error(formatGitFailure(args, result, options.tokens));

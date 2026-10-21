@@ -303,7 +303,7 @@ Before each agent run, BranchMe appends an **Automatic Git Context** snapshot to
 - whether pull request field autofill is enabled;
 - up to 5 recent commits with short hash, date, and subject.
 
-Collection defaults are a 5-second timeout per local Git command, a 4-second related-PR lookup timeout, at most 512 characters per metadata value, and at most 4,000 characters for the rendered snapshot. GitHub response bodies are limited to 64 KiB. The formatter can further shorten values or omit entries to stay within the total limit.
+Collection defaults are a 30-second timeout per local Git read, a 4-second related-PR lookup timeout, at most 512 characters per metadata value, and at most 4,000 characters for the rendered snapshot. GitHub response bodies are limited to 64 KiB. The formatter can further shorten values or omit entries to stay within the total limit.
 
 The snapshot is fresh at agent start but is not live. A fetch, branch switch, pull, rebase, integration, commit, file change, push, or other mutation later in the same run can make it stale. `branch_status` performs an explicit current-state refresh through the same shared collector and remains read-only; it does not mutate files, Git state, or GitHub state. Its optional `ancestry` object requires exact `sourceBranch` and `targetBranch` fields together, captures both commit IDs, and reports `isAncestor`. Each endpoint may be an exact local branch or a remote-tracking ref such as `origin/main` (local branches take precedence), so a fetched `origin/main` can serve as a read-only containment proof after a pull request merges. This targeted proof is explicit only: automatic Git context remains unchanged. Run it after `integrate_branch` or `fetch_branch` completes, never in the same parallel tool batch.
 
@@ -466,7 +466,7 @@ Repository-configured `reference-transaction` hooks can run during `git update-r
 BranchMe operates only on the repository where pi is running:
 
 - Automatic collection and `branch_status` run bounded, read-only Git commands from the verified git root.
-- Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from the verified git root.
+- Git commands use `pi.exec("git", args, { cwd, signal, timeout })` with argv arrays; repository mutations run from the verified git root. A command that fails because another git process holds a lock (`index.lock`, `HEAD.lock`, a ref lock) is retried every 250 ms for up to 10 seconds, then fails with git's error plus a note that the lock was still held; BranchMe never removes a lock file.
 - `change_branch` switches only to existing local branches and has no `force`, `stash`, `discard`, remote, or path input.
 - `fetch_branch` uses an explicit source-to-remote-tracking refspec with tags and submodule recursion disabled and does not change local branches or working-tree files. Without arguments it requires a configured upstream; with an explicit `branch` (and optional configured `remote`, default `origin`) it refreshes only `refs/remotes/<remote>/<branch>` and never touches upstream configuration.
 - `pull_branch` requires a clean worktree and configured upstream, updates only the current branch with `git pull --ff-only --no-rebase --no-autostash`, and has no branch, remote, force, or rebase input.

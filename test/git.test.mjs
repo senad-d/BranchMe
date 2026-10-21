@@ -1416,7 +1416,7 @@ test("getWorkingTreeStatus uses bounded porcelain v1 -z data from the verified r
   );
   assert.equal(pi.calls[1].options.cwd, "/repo");
   assert.equal(pi.calls[1].options.signal, controller.signal);
-  assert.equal(pi.calls[1].options.timeout, 5_000);
+  assert.equal(pi.calls[1].options.timeout, 30_000);
 });
 
 test("parseWorkingTreeStatus reports clean state and skips ignored records", () => {
@@ -1696,7 +1696,7 @@ test("listWorktrees uses read-only Git commands, canonical path comparison, and 
     ]);
     assert.equal(calls.every((call) => call.options.cwd === repoRoot), true);
     assert.equal(calls.every((call) => call.options.signal === controller.signal), true);
-    assert.equal(calls.every((call) => call.options.timeout === 5_000), true);
+    assert.equal(calls.every((call) => call.options.timeout === 30_000), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1721,7 +1721,7 @@ test("getGitOperationState preserves marker order and deduplicates operations af
       autoMergePresent: true,
     });
     assert.equal(pi.calls[0].options.signal, controller.signal);
-    assert.equal(pi.calls[0].options.timeout, 5_000);
+    assert.equal(pi.calls[0].options.timeout, 30_000);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1801,7 +1801,7 @@ test("validateWorktreeCreationPath accepts an external destination and uses read
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ]);
     assert.equal(pi.calls.every((call) => call.options.signal === controller.signal), true);
-    assert.equal(pi.calls.every((call) => call.options.timeout === 5_000), true);
+    assert.equal(pi.calls.every((call) => call.options.timeout === 30_000), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -2990,7 +2990,7 @@ test("getRecentCommits uses one bounded argv-style git log call and sanitizes su
   );
   assert.equal(pi.calls.filter((call) => call.args[0] === "log").length, 1);
   assert.equal(pi.calls[1].options.cwd, "/repo");
-  assert.equal(pi.calls[1].options.timeout, 5_000);
+  assert.equal(pi.calls[1].options.timeout, 30_000);
 });
 
 test("parseRecentCommits returns at most five bounded control-free subjects", () => {

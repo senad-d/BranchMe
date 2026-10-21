@@ -1533,3 +1533,27 @@ test("real git recent commits remain available on detached HEAD while branch-req
     assert.equal(pi.calls.some((call) => call.args[0] === "push"), false);
   });
 });
+
+test("real git mutations wait for another process's index.lock and fail with the lock named once the wait ends", { timeout: 30_000 }, async () => {
+  await withTempGitRepo(async (repoRoot) => {
+    await runGit(repoRoot, ["branch", "feature/target"]);
+    const lockPath = join(repoRoot, ".git", "index.lock");
+    await writeFile(lockPath, "", "utf8");
+    const pi = makeRealGitPi(repoRoot);
+    const released = new Promise((resolve) => setTimeout(resolve, 700)).then(() => rm(lockPath));
+
+    await changeExistingLocalBranch(pi, { cwd: repoRoot }, "feature/target");
+    await released;
+
+    assert.equal(await currentBranch(repoRoot), "feature/target");
+    assert.ok(pi.calls.filter((call) => call.args[0] === "switch").length > 1, "the switch must have retried");
+
+    await writeFile(lockPath, "", "utf8");
+    await assert.rejects(
+      () => changeExistingLocalBranch(pi, { cwd: repoRoot }, "main"),
+      /index\.lock': File exists[\s\S]*The lock was still held after waiting 10 s\./u,
+    );
+    await access(lockPath);
+    assert.equal(await currentBranch(repoRoot), "feature/target");
+  });
+});

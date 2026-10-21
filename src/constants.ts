@@ -56,7 +56,11 @@ export const BRANCHME_TOOL_NAMES = [
   REMOVE_WORKTREE_TOOL_NAME,
 ] as const;
 
-export const GIT_STATUS_TIMEOUT_MS = 5_000;
+// Emulated git (e.g. Rosetta in a container) under parallel agents needs far more than 5 s for a status read.
+export const GIT_STATUS_TIMEOUT_MS = 30_000;
+// A mutation that finds another git process's *.lock retries every interval until the wait ends.
+export const GIT_LOCK_RETRY_INTERVAL_MS = 250;
+export const GIT_LOCK_WAIT_MS = 10_000;
 export const GIT_MUTATION_TIMEOUT_MS = 30_000;
 export const GIT_FETCH_TIMEOUT_MS = 120_000;
 export const GIT_PULL_TIMEOUT_MS = 120_000;
