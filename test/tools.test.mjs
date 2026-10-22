@@ -449,7 +449,7 @@ test("integrate_branch exposes a strict schema and explicit sequencing guidance"
   const tool = toolByName(pi, INTEGRATE_BRANCH_TOOL_NAME);
 
   assert.deepEqual(tool.parameters.required, ["sourceBranch", "targetBranch"]);
-  assert.deepEqual(Object.keys(tool.parameters.properties), ["sourceBranch", "targetBranch", "keepConflicts"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["sourceBranch", "targetBranch", "keepConflicts", "worktreePath"]);
   assert.equal(tool.parameters.additionalProperties, false);
   for (const unsupported of [
     "path",
@@ -467,7 +467,6 @@ test("integrate_branch exposes a strict schema and explicit sequencing guidance"
     "delete",
     "push",
     "fetch",
-    "worktreePath",
   ]) {
     assert.equal(unsupported in tool.parameters.properties, false);
   }
@@ -994,7 +993,7 @@ test("branch_status has strict schema, refresh guidance, and shared current Git 
   registerBranchMeTools(pi, { env: {} });
   const tool = toolByName(pi, BRANCH_STATUS_TOOL_NAME);
 
-  assert.deepEqual(Object.keys(tool.parameters.properties), ["ancestry"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["ancestry", "worktreePath"]);
   assert.equal(tool.parameters.required, undefined);
   assert.deepEqual(tool.parameters.properties.ancestry.required, ["sourceBranch", "targetBranch"]);
   assert.deepEqual(

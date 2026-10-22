@@ -642,6 +642,7 @@ async function verifyKeptConflict(
     status: "conflict_kept",
     mergeExecuted: true,
     request: { sourceBranch: prepared.sourceBranch, targetBranch: prepared.targetBranch },
+    worktreeRoot: prepared.worktreeRoot,
     heads: { sourceHead: prepared.sourceHead, targetHead: prepared.targetHead },
     conflict: {
       paths: conflictPaths.paths,

@@ -177,6 +177,7 @@ test("runtime schema validation enforces strict optional branch_status ancestry"
 
   assertValid(tool, {});
   assertValid(tool, valid);
+  assertValid(tool, { ...valid, worktreePath: "/tmp/linked" });
   assertInvalid(tool, null);
   assertInvalid(tool, { branchName: "main" });
   assertInvalid(tool, { ...valid, extra: true });
@@ -196,6 +197,8 @@ test("runtime schema validation enforces exact integrate_branch inputs", () => {
   assertValid(tool, valid);
   assertValid(tool, { ...valid, keepConflicts: true });
   assertInvalid(tool, { ...valid, keepConflicts: "yes" });
+  assertValid(tool, { ...valid, worktreePath: "/tmp/linked" });
+  assertInvalid(tool, { ...valid, worktreePath: "" });
   assertInvalid(tool, null);
   assertInvalid(tool, {});
   assertInvalid(tool, { sourceBranch: "feature/runtime-schema" });
@@ -220,7 +223,6 @@ test("runtime schema validation enforces exact integrate_branch inputs", () => {
     "delete",
     "push",
     "fetch",
-    "worktreePath",
   ]) {
     assertInvalid(tool, { ...valid, [forbidden]: "forbidden" });
   }

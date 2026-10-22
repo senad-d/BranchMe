@@ -1310,6 +1310,25 @@ export async function validateWorktreeRemovalPath(
   };
 }
 
+/** Resolves an explicit worktreePath to the root of a live, non-bare worktree of the repository at ctx.cwd. */
+export async function resolveRepositoryWorktreeCwd(
+  pi: Pick<ExtensionAPI, "exec">,
+  ctx: GitCommandContext,
+  worktreePath: unknown,
+  signal?: AbortSignal,
+): Promise<string> {
+  const { canonicalPath, worktree } = await validateWorktreeRemovalPath(pi, ctx, worktreePath, signal);
+  if (worktree.bare || worktree.prunable) {
+    throw new Error("worktreePath must be an existing, non-bare worktree of the current repository.");
+  }
+  const targetCtx = { cwd: canonicalPath };
+  if (await getCanonicalGitWorktreeRoot(pi, targetCtx, signal) !== canonicalPath ||
+      await getCanonicalCommonGitDirectory(pi, targetCtx, signal) !== await getCanonicalCommonGitDirectory(pi, ctx, signal)) {
+    throw new Error("worktreePath must be the root of a worktree of the current repository.");
+  }
+  return requireLosslessWorktreeIdentity(canonicalPath, "cwd");
+}
+
 const GIT_BRANCH_FORMAT = "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream)%00%(symref)%00%(upstream:track)";
 
 function branchTrackingCounts(upstream: string, track: string): AheadBehindCount {

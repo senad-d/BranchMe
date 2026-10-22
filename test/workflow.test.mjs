@@ -434,6 +434,78 @@ test("conclude_merge honors cancellation until staging and reports uncertainty a
   assert.equal((await git(f.root, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).code, 1);
 });
 
+async function branchWithCommit(f, branch, path, content) {
+  const worktree = join(f.temp, branch.replaceAll("/", "-"));
+  await checked(f.root, ["worktree", "add", "-b", branch, worktree, "main"]);
+  await writeFile(join(worktree, path), content);
+  await checked(worktree, ["add", "."]);
+  await checked(worktree, ["commit", "-m", branch]);
+  return worktree;
+}
+
+test("integrate_branch, conclude_merge and branch_status act on a linked worktree named by worktreePath", async (t) => {
+  const f = await fixture(t);
+  const linked = await branchWithCommit(f, "integration", "initial.txt", "integration\n");
+  await branchWithCommit(f, "feature/one", "one.txt", "one\n");
+  await branchWithCommit(f, "feature/two", "initial.txt", "two\n");
+  const integrationBefore = await checked(linked, ["rev-parse", "HEAD"]);
+  const primaryHead = await checked(f.root, ["rev-parse", "HEAD"]);
+  const run = realTools(f);
+
+  const merged = await run("integrate_branch", { sourceBranch: "feature/one", targetBranch: "integration", worktreePath: linked });
+  assert.equal(merged.details.status, "merge_commit");
+  assert.equal(merged.details.verified.repository.worktreeRoot, linked);
+  const mergedHead = await checked(linked, ["rev-parse", "HEAD"]);
+  assert.equal(await checked(linked, ["rev-parse", "HEAD^1"]), integrationBefore);
+  await assert.rejects(run("integrate_branch", { sourceBranch: "feature/one", targetBranch: "integration" }), /must already have the requested target branch checked out/);
+
+  const kept = await run("integrate_branch", { sourceBranch: "feature/two", targetBranch: "integration", worktreePath: linked, keepConflicts: true });
+  assert.equal(kept.details.status, "conflict_kept");
+  assert.equal(kept.details.worktreeRoot, linked);
+  assert.equal(await checked(linked, ["rev-parse", "MERGE_HEAD"]), await checked(f.root, ["rev-parse", "feature/two"]));
+  await assert.rejects(run("conclude_merge", { action: "abort" }), /no merge is in progress/);
+
+  await writeFile(join(linked, "initial.txt"), "resolved\n");
+  const concluded = await run("conclude_merge", { action: "conclude", worktreePath: linked });
+  assert.equal(concluded.details.status, "concluded");
+  assert.equal(concluded.details.repoRoot, linked);
+  assert.equal(concluded.details.branch, "integration");
+  assert.deepEqual(concluded.details.parents.first, mergedHead);
+  assert.equal(await checked(linked, ["show", "HEAD:initial.txt"]), "resolved");
+
+  const status = await run("branch_status", { worktreePath: linked });
+  assert.equal(status.details.repoRoot, linked);
+  assert.equal(status.details.currentBranch, "integration");
+  assert.equal((await run("branch_status", {})).details.currentBranch, "main");
+  assert.equal(await checked(f.root, ["rev-parse", "HEAD"]), primaryHead);
+  assert.equal(await checked(f.root, ["status", "--porcelain"]), "");
+});
+
+test("worktreePath outside the current repository's worktree roots is refused before acting", async (t) => {
+  const f = await fixture(t);
+  const linked = await branchWithCommit(f, "integration", "initial.txt", "integration\n");
+  await mkdir(join(linked, "sub"));
+  const other = join(f.temp, "other");
+  await mkdir(other);
+  await checked(other, ["init", "--initial-branch=main"]);
+  const run = realTools(f);
+  const calls = [
+    ["integrate_branch", { sourceBranch: "main", targetBranch: "integration" }],
+    ["conclude_merge", { action: "abort" }],
+    ["branch_status", {}],
+  ];
+  for (const [name, params] of calls) {
+    const before = f.calls.length;
+    await assert.rejects(run(name, { ...params, worktreePath: "linked" }), /worktreePath must be an absolute path/);
+    assert.equal(f.calls.length, before);
+    for (const path of [other, f.remote, join(linked, "sub"), join(f.temp, "missing")]) {
+      await assert.rejects(run(name, { ...params, worktreePath: path }), /worktreePath must exactly match a registered worktree/);
+    }
+  }
+  assert.equal(await checked(linked, ["rev-parse", "HEAD"]), await checked(f.root, ["rev-parse", "integration"]));
+  assert.ok(f.calls.every((args) => !["merge", "commit", "add"].includes(args[0])));
+});
+
 test("base updates preserve upstream configuration when fetching restores a missing tracking ref", async (t) => {
   const f = await fixture(t);
   await checked(f.root, ["switch", "--track", "-c", "feature", "origin/main"]);

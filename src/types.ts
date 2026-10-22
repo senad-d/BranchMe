@@ -88,6 +88,8 @@ export interface IntegrateBranchToolInput {
   targetBranch: string;
   /** Leave a conflicted merge in progress for conclude_merge instead of aborting it. */
   keepConflicts?: boolean;
+  /** Absolute root of another worktree of the same repository; omitted means the current one. */
+  worktreePath?: string;
 }
 
 export interface RetireBranchToolInput {
@@ -448,6 +450,8 @@ export interface IntegrateBranchConflictKeptDetails {
   status: "conflict_kept";
   mergeExecuted: true;
   request: IntegrateBranchToolInput;
+  /** Canonical root of the worktree holding the kept merge. */
+  worktreeRoot: string;
   /** targetHead is the unchanged HEAD; sourceHead is the commit recorded in MERGE_HEAD. */
   heads: IntegrateBranchHeads;
   conflict: {
@@ -469,6 +473,8 @@ export type ConcludeMergeAction = "conclude" | "abort";
 
 export interface ConcludeMergeToolInput {
   action: ConcludeMergeAction;
+  /** Absolute root of another worktree of the same repository; omitted means the current one. */
+  worktreePath?: string;
 }
 
 export interface ConcludeMergeConcludedDetails {

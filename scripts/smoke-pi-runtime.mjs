@@ -19,7 +19,7 @@ const expectedBranchMeTools = [
   { name: "fetch_remote", properties: ["prune", "remote"], required: [] },
   { name: "track_branch", properties: ["branchName", "remote", "remoteBranch"], required: ["branchName"] },
   { name: "update_from_base", properties: ["baseBranch", "keepConflicts", "remote"], required: ["baseBranch"] },
-  { name: "conclude_merge", properties: ["action"], required: ["action"], enums: { action: ["conclude", "abort"] } },
+  { name: "conclude_merge", properties: ["action", "worktreePath"], required: ["action"], enums: { action: ["conclude", "abort"] } },
   { name: "pull_request_status", properties: ["headBranch", "number"], required: [] },
   { name: "pull_request_feedback", properties: ["headBranch", "number"], required: [] },
   { name: "reply_pull_request_feedback", properties: ["body", "number", "resolve", "threadId"], required: ["number", "body"] },
@@ -27,7 +27,7 @@ const expectedBranchMeTools = [
   { name: "label_pull_request", properties: ["labels", "number"], required: ["number", "labels"] },
   {
     name: "branch_status",
-    properties: ["ancestry"],
+    properties: ["ancestry", "worktreePath"],
     required: [],
     objects: {
       ancestry: {
@@ -44,7 +44,7 @@ const expectedBranchMeTools = [
   { name: "rebase_branch", properties: [], required: [] },
   { name: "push_branch", properties: [], required: [] },
   { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title"], required: [] },
-  { name: "integrate_branch", properties: ["keepConflicts", "sourceBranch", "targetBranch"], required: ["sourceBranch", "targetBranch"] },
+  { name: "integrate_branch", properties: ["keepConflicts", "sourceBranch", "targetBranch", "worktreePath"], required: ["sourceBranch", "targetBranch"] },
   {
     name: "retire_branch",
     properties: ["branchName", "expectedHead", "force", "targetBranch"],

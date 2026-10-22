@@ -1,8 +1,13 @@
 # Changelog
 
+## 0.3.15 - Unreleased
+
+- `integrate_branch`, `conclude_merge` and `branch_status` accept optional `worktreePath`, so one git agent session can act on several worktrees of the same repository. It must be the absolute root of the primary checkout or a registered linked worktree with the same Git common directory; relative, missing, subdirectory, bare and foreign paths are refused. The tool then runs as if the session cwd were that worktree (control worktree, clean checks, `keepConflicts`, and the per-worktree mutation queue). A `conflict_kept` result now names its `worktreeRoot`.
+
 ## 0.3.14 - Unreleased
 
 - A Git mutation that fails because another git process holds `index.lock`, `HEAD.lock` or a ref lock is retried every 250 ms for up to 10 seconds, then fails with git's error plus "The lock was still held after waiting 10 s."; lock files are never removed, and cancellation interrupts the wait without another mutation attempt. Local Git reads (status and the other snapshot reads) time out after 30 seconds instead of 5, for slow or emulated git under parallel agents.
+
 ## 0.3.13 - Unreleased
 
 - Added optional `integrate_branch.keepConflicts` (default `false`). When true, a conflicted local integration returns `conflict_kept` with the merge left in progress for `conclude_merge` to finish after resolution or abort; default conflict handling still aborts and verifies restoration. Updated schemas, prompt guidance, documentation, and real-Git regression coverage.

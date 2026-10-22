@@ -6,7 +6,7 @@ import {
   LABEL_PULL_REQUEST_TOOL_NAME, PULL_REQUEST_FILES_TOOL_NAME, PULL_REQUEST_LABEL_LIMIT, PULL_REQUEST_STATUS_TOOL_NAME,
   REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME, TRACK_BRANCH_TOOL_NAME, UPDATE_FROM_BASE_TOOL_NAME,
 } from "../constants.ts";
-import { getGitRoot, requireCurrentBranch, safeWorktreeValue } from "../git.ts";
+import { getGitRoot, requireCurrentBranch, resolveRepositoryWorktreeCwd, safeWorktreeValue } from "../git.ts";
 import { concludeMerge, formatConflictPathList } from "../git-integration.ts";
 import { findGitHubPullRequest, getGitHubPullRequest, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
 import {
@@ -222,14 +222,17 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       "Before conclude_merge with action conclude, a file-editing step must remove every <<<<<<<, |||||||, =======, and >>>>>>> marker line from the listed paths; conclude_merge refuses and names the paths that still contain markers.",
       "conclude_merge with action conclude stages only the currently unmerged paths and uses Git's prepared merge message; unrelated unstaged edits stay unstaged and are not part of the merge commit. Git commits the entire index, including previously staged entries: do not stage unrelated edits during the merge.",
       "conclude_merge with action abort restores the branch with git merge --abort and verifies a clean idle checkout; conclude_merge refuses when no merge is in progress.",
+      "conclude_merge worktreePath lets one session act on another worktree of the same repository; omit it for the current one.",
     ],
     parameters: Type.Object({
       action: StringEnum(["conclude", "abort"] as const, {
         description: "conclude stages the resolved formerly unmerged paths and commits the merge; abort runs git merge --abort and verifies restoration.",
       }),
+      worktreePath: Type.Optional(Type.String({ minLength: 1, description: "Absolute root path of another worktree of the same repository to act on; omit for the current one." })),
     }, { additionalProperties: false }),
     async execute(_id, params, signal, _update, ctx) {
-      const details = await concludeMerge(pi, ctx, params, signal);
+      const target = params.worktreePath === undefined ? ctx : { cwd: await resolveRepositoryWorktreeCwd(pi, ctx, params.worktreePath, signal) };
+      const details = await concludeMerge(pi, target, params, signal);
       return { content: [{ type: "text", text: formatConcludeMerge(details) }], details };
     },
   });

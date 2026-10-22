@@ -45,6 +45,7 @@ import {
   rebaseCurrentBranch,
   removeWorktree,
   requireCurrentBranch,
+  resolveRepositoryWorktreeCwd,
   validateBranchName,
   withRepositoryMutationQueue,
 } from "../git.ts";
@@ -125,6 +126,7 @@ const BranchStatusParametersSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    worktreePath: Type.Optional(Type.String({ minLength: 1, description: "Absolute root path of another worktree of the same repository to act on; omit for the current one." })),
   },
   { additionalProperties: false },
 );
@@ -134,6 +136,7 @@ const IntegrateBranchParametersSchema = Type.Object(
     sourceBranch: Type.String({ minLength: 1, description: "Exact existing local source branch to integrate." }),
     targetBranch: Type.String({ minLength: 1, description: "Exact existing local target branch already checked out in the clean control worktree." }),
     keepConflicts: Type.Optional(Type.Boolean({ description: "When true, a conflicted merge is left in progress (MERGE_HEAD set, conflicted paths unmerged) for conclude_merge instead of being aborted; defaults to false." })),
+    worktreePath: Type.Optional(Type.String({ minLength: 1, description: "Absolute root path of another worktree of the same repository to act on; omit for the current one." })),
   },
   { additionalProperties: false },
 );
@@ -588,10 +591,12 @@ export function registerBranchMeTools(host: Pick<ExtensionAPI, "registerTool" | 
       "Use branch_status as a read-only refresh; branch_status never mutates files, Git state, or GitHub state.",
       "Use targeted branch_status ancestry verification only after integrate_branch completes; do not issue branch_status in the same parallel tool batch as integrate_branch.",
       "Use branch_status ancestry with a remote-tracking target such as origin/main after fetch_branch completes to prove a branch is contained in the fetched baseline; branch_status never checks out or resets remote-tracking refs.",
+      "branch_status worktreePath lets one session act on another worktree of the same repository; omit it for the current one.",
     ],
     parameters: BranchStatusParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const details = await collectGitContext(pi, ctx, {
+      const target = params.worktreePath === undefined ? ctx : { cwd: await resolveRepositoryWorktreeCwd(pi, ctx, params.worktreePath, signal) };
+      const details = await collectGitContext(pi, target, {
         signal,
         ancestry: params.ancestry,
         env: options.env,
@@ -599,7 +604,7 @@ export function registerBranchMeTools(host: Pick<ExtensionAPI, "registerTool" | 
       });
 
       try {
-        details.githubRepository ??= await resolveGitHubRepository(pi, ctx, signal, options.env);
+        details.githubRepository ??= await resolveGitHubRepository(pi, target, signal, options.env);
       } catch (error) {
         if (signal?.aborted) throw error;
         // Repository resolution is optional compatibility metadata; context collection is authoritative.
@@ -783,10 +788,12 @@ export function registerBranchMeTools(host: Pick<ExtensionAPI, "registerTool" | 
       "After integrate_branch completes, run any targeted branch_status ancestry proof separately; never place integrate_branch and branch_status in the same parallel tool batch.",
       "A conflict result from integrate_branch means the merge was automatically aborted and restoration was verified unless keepConflicts is true; semantic conflict analysis belongs to a separate delegated workflow, not integrate_branch.",
       "Pass keepConflicts: true to integrate_branch only when a file-editing step will resolve the listed paths; the result conflict_kept leaves the merge in progress with MERGE_HEAD set, and conclude_merge must then conclude or abort it before any other Git mutation.",
+      "integrate_branch worktreePath lets one session act on another worktree of the same repository; omit it for the current one.",
     ],
     parameters: IntegrateBranchParametersSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const details = await integrateBranch(pi, ctx, params, signal);
+      const target = params.worktreePath === undefined ? ctx : { cwd: await resolveRepositoryWorktreeCwd(pi, ctx, params.worktreePath, signal) };
+      const details = await integrateBranch(pi, target, params, signal);
       return {
         content: [{ type: "text", text: formatIntegrateBranch(details) }],
         details,
