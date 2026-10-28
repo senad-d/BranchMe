@@ -11,6 +11,15 @@ test("known blockers name the cause and the resolving call", () => {
   assert.equal(blockerGuidance("title is required."), null);
 });
 
+test("Git timeouts do not mislabel local failures as unreachable remotes", () => {
+  for (const command of ["git diff", "git status", "git fetch"]) {
+    const guidance = blockerGuidance(`${command} failed (killed): command was killed or timed out`);
+    assert.match(guidance, /git was killed or did not finish within the time limit/u);
+    assert.match(guidance, /local Git performance\/state for local commands/u);
+    assert.doesNotMatch(guidance, /report the remote as unreachable|slow or unreachable network/u);
+  }
+});
+
 test("wrapped tools append guidance to errors once and pass results through", async () => {
   const failing = withBlockerGuidance({ name: "x", execute: async () => { throw new Error("Already on branch 'main'."); } });
   await assert.rejects(failing.execute("id", {}, undefined), (error) => {

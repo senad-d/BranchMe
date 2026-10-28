@@ -35,6 +35,80 @@ export interface ListBranchesToolInput {
   patterns?: string[];
 }
 
+export interface GitStatusToolInput {
+  paths?: string[];
+  worktreePath?: string;
+  after?: string;
+}
+
+export interface GitStatusEntry {
+  kind: "tracked" | "untracked" | "conflict";
+  /** Display only unless reusablePath is true. */
+  path: string;
+  originalPath?: string;
+  reusablePath: boolean;
+  indexStatus: string;
+  worktreeStatus: string;
+  submodule: string;
+  /** Present only for explicitly filtered, reusable paths. No file content is returned. */
+  worktreeExpectation?: { fingerprint: string | null; reason?: string };
+}
+
+export interface GitStatusDetails {
+  action: "git_status";
+  repoRoot: string;
+  head: string | null;
+  branch: string | null;
+  detached: boolean;
+  index: string;
+  snapshot: string;
+  operations: string[];
+  filtered: boolean;
+  pathFilters: string[];
+  hasChanges: boolean;
+  total: number;
+  entries: GitStatusEntry[];
+  offset: number;
+  complete: boolean;
+  next: string | null;
+}
+
+export type GitDiffMode = "unstaged" | "staged" | "range";
+export type GitDiffOutput = "patch" | "stat" | "name-status";
+
+export interface GitDiffToolInput {
+  mode?: GitDiffMode;
+  baseRef?: string;
+  targetRef?: string;
+  mergeBase?: boolean;
+  output?: GitDiffOutput;
+  paths?: string[];
+  contextLines?: number;
+  worktreePath?: string;
+}
+
+export interface GitDiffDetails {
+  action: "git_diff";
+  repoRoot: string;
+  mode: GitDiffMode;
+  output: GitDiffOutput;
+  /** Redacted/abbreviated literal filter previews, not reusable path identities. */
+  pathFilters: string[];
+  comparison?: {
+    baseHead: string;
+    targetHead: string;
+    /** The captured base commit, or the unique merge base when requested. */
+    diffBaseHead: string;
+  };
+  hasDifferences: boolean;
+  /** Redacted, control-escaped, bounded display text, not an apply-ready patch. */
+  diff: string;
+  truncated: boolean;
+  /** Counts after redaction/control escaping, before truncation. */
+  totalBytes: number;
+  totalLines: number;
+}
+
 export interface FetchRemoteToolInput {
   remote?: string;
   prune?: boolean;

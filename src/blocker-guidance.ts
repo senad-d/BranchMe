@@ -24,8 +24,8 @@ const BLOCKER_RULES: readonly BlockerRule[] = [
   },
   {
     pattern: /\(killed\)|was killed or timed out/iu,
-    why: "git did not finish within the time limit (slow or unreachable network).",
-    resolve: "retry the same call once; if it times out again, report the remote as unreachable and stop.",
+    why: "git was killed or did not finish within the time limit.",
+    resolve: "retry the same call once; if it fails again, report the interrupted command and stop. Check local Git performance/state for local commands, and connectivity/credentials for network commands; a timeout alone does not prove the remote is unreachable.",
   },
   {
     pattern: /\[rejected\]|non-fast-forward|\(fetch first\)|Updates were rejected/iu,
@@ -50,12 +50,12 @@ const BLOCKER_RULES: readonly BlockerRule[] = [
   {
     pattern: /Tracked files have uncommitted changes/iu,
     why: "the named tracked files have uncommitted changes.",
-    resolve: "commit them with commitme when they are approved for this step, or hand them to the step that owns them; then retry. Untracked files are never the blocker.",
+    resolve: "inspect git_status; have the owning workflow commit/preserve approved edits, or use restore_paths only with explicit discard authorization and fresh preview expectations. Then retry. Untracked files are never the blocker.",
   },
   {
     pattern: /has staged, unstaged, untracked, or unmerged changes/iu,
     why: "the selected worktree has uncommitted changes, including possible untracked files.",
-    resolve: "commit approved changes with commitme or preserve them outside the worktree, then retry. remove_worktree with discardChanges: true requires explicit authorization to discard them; land_branch never discards uncommitted changes.",
+    resolve: "have the owning workflow commit approved changes or preserve them outside the worktree, then retry. remove_worktree with discardChanges: true requires explicit authorization to discard them; land_branch never discards uncommitted changes.",
   },
   {
     pattern: /occupied by \d+ registered worktree|already checked out in a worktree|occupies multiple worktrees|became occupied/iu,
@@ -80,7 +80,7 @@ const BLOCKER_RULES: readonly BlockerRule[] = [
   {
     pattern: /no upstream is configured/iu,
     why: "the current branch has no upstream.",
-    resolve: "push_branch publishes the branch and sets its upstream; track_branch sets one for an existing remote branch.",
+    resolve: "use list_remotes then set_upstream for an existing remote-tracking branch; push_branch publishes and sets tracking, while track_branch creates a new local tracking checkout.",
   },
   {
     pattern: /GitHub token is required/iu,
@@ -121,6 +121,21 @@ const BLOCKER_RULES: readonly BlockerRule[] = [
     pattern: /PR merge evidence does not match/iu,
     why: "the pull request is not merged, or names a different head or base branch than the landing request.",
     resolve: "read pull_request_status for the PR and retry land_branch once with its exact head and base branch names.",
+  },
+  {
+    pattern: /Configuration changed|configuration fingerprint|retry list_remotes|fresh.*config/iu,
+    why: "repository configuration no longer matches the inspected state.",
+    resolve: "read list_remotes and use its fresh configuration fingerprint for the explicitly authorized setup action.",
+  },
+  {
+    pattern: /Conflict index changed|Conflict continuation is stale/iu,
+    why: "conflict versions changed since inspection.",
+    resolve: "restart git_conflicts without after and inspect the new index stages.",
+  },
+  {
+    pattern: /HEAD\/index changed|Selected files changed|Selected working files changed|fresh HEAD\/index|preview expectations/iu,
+    why: "file/index expectations are stale or missing.",
+    resolve: "read git_status for fresh HEAD/index values and request a new restore_paths preview if discarding edits is explicitly authorized; never retry with guessed fingerprints.",
   },
   {
     pattern: /moved after|changed while|moved concurrently|changed during/iu,

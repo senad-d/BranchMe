@@ -40,33 +40,6 @@ import {
 const LOCAL_HEAD_SHA = "a".repeat(40);
 const REMOTE_BASE_SHA = "b".repeat(40);
 const STALE_REMOTE_HEAD_SHA = "c".repeat(40);
-const EXPECTED_BRANCHME_TOOL_NAMES = [
-  "list_branches",
-  "fetch_remote",
-  "track_branch",
-  "update_from_base",
-  "conclude_merge",
-  "pull_request_status",
-  "pull_request_feedback",
-  "reply_pull_request_feedback",
-  "pull_request_files",
-  "label_pull_request",
-  BRANCH_STATUS_TOOL_NAME,
-  CHANGE_BRANCH_TOOL_NAME,
-  INIT_REPOSITORY_TOOL_NAME,
-  CREATE_BRANCH_TOOL_NAME,
-  CREATE_WORKTREE_TOOL_NAME,
-  FETCH_BRANCH_TOOL_NAME,
-  INTEGRATE_BRANCH_TOOL_NAME,
-  LAND_BRANCH_TOOL_NAME,
-  LIST_WORKTREES_TOOL_NAME,
-  PULL_BRANCH_TOOL_NAME,
-  PULL_REQUEST_TOOL_NAME,
-  PUSH_BRANCH_TOOL_NAME,
-  REBASE_BRANCH_TOOL_NAME,
-  REMOVE_WORKTREE_TOOL_NAME,
-  RETIRE_BRANCH_TOOL_NAME,
-];
 
 function result(overrides = {}) {
   return { stdout: "", stderr: "", code: 0, killed: false, ...overrides };
@@ -381,23 +354,19 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
     pi.commands.map((command) => command.name),
     [BRANCHME_COMMAND_NAME],
   );
-  assert.equal(EXPECTED_BRANCHME_TOOL_NAMES.length, 25);
-  assert.deepEqual([...BRANCHME_TOOL_NAMES].sort(), [...EXPECTED_BRANCHME_TOOL_NAMES].sort());
-  assert.equal(pi.tools.length, EXPECTED_BRANCHME_TOOL_NAMES.length);
-  assert.equal(new Set(pi.tools.map((tool) => tool.name)).size, EXPECTED_BRANCHME_TOOL_NAMES.length);
-  assert.deepEqual(
-    pi.tools.map((tool) => tool.name).sort(),
-    [...EXPECTED_BRANCHME_TOOL_NAMES].sort(),
-  );
+  const expectedNames = [...BRANCHME_TOOL_NAMES].sort();
+  const registeredNames = pi.tools.map((tool) => tool.name).sort();
+  assert.equal(new Set(expectedNames).size, expectedNames.length, "canonical tool names must be unique");
+  assert.equal(new Set(registeredNames).size, registeredNames.length, "tools must be registered exactly once");
+  assert.deepEqual(registeredNames, expectedNames);
 
   for (const tool of pi.tools) {
     assert.equal(typeof tool.description, "string", `${tool.name} description missing`);
-    assert.ok(tool.description.includes(tool.name), `${tool.name} description must name the tool explicitly`);
+    assert.ok(tool.description.trim().length > 0, `${tool.name} description empty`);
     assert.equal(typeof tool.promptSnippet, "string", `${tool.name} promptSnippet missing`);
     assert.ok(tool.promptSnippet.length > 0, `${tool.name} promptSnippet empty`);
-    assert.ok(tool.promptSnippet.includes(tool.name), `${tool.name} promptSnippet must name the tool explicitly`);
+    assert.equal(tool.promptSnippet.startsWith(`${tool.name}:`), false, `${tool.name} promptSnippet must not repeat Pi's name prefix`);
     assert.ok(Array.isArray(tool.promptGuidelines), `${tool.name} promptGuidelines missing`);
-    assert.ok(tool.promptGuidelines.length > 0, `${tool.name} promptGuidelines empty`);
     assert.ok(
       tool.promptGuidelines.every((guideline) => guideline.includes(tool.name)),
       `${tool.name} promptGuidelines must name the tool explicitly`,
@@ -409,6 +378,21 @@ test("branchMeExtension registers exactly the BranchMe command and prompt-ready 
   assert.equal(pi.commands.some((command) => /template/i.test(command.name)), false);
   assert.equal(pi.tools.some((tool) => /template|greet|hello/i.test(tool.name)), false);
   assert.equal(pi.tools.some((tool) => /continue_merge|abort_merge|ancestry/i.test(tool.name)), false);
+});
+
+test("agent tool contracts never require an output size and landing warns about cleanup and switching", () => {
+  const pi = makePi();
+  registerBranchMeTools(pi);
+  const sizingFields = new Set(["length", "limit", "maxbytes", "maxlines", "contextlines"]);
+  for (const tool of pi.tools) {
+    for (const field of tool.parameters.required ?? []) {
+      assert.equal(sizingFields.has(field.toLowerCase()), false, `${tool.name} must not require an agent to estimate ${field}`);
+    }
+  }
+  const landing = toolByName(pi, LAND_BRANCH_TOOL_NAME);
+  assert.match(landing.description, /including ignored files/u);
+  assert.match(landing.promptGuidelines.join(" "), /may switch a tracked-clean primary source checkout.*never switches a dirty checkout/u);
+  assert.doesNotMatch([landing.description, ...landing.promptGuidelines].join("\n"), /without switching branches|never switches branches/u);
 });
 
 test("init_repository exposes a strict current-directory schema and initialization guidance", () => {
@@ -423,12 +407,12 @@ test("init_repository exposes a strict current-directory schema and initializati
     assert.equal(unsupported in tool.parameters.properties, false);
   }
 
-  assert.match(tool.description, /current working directory.*new non-bare Git repository/iu);
+  assert.match(tool.description, /non-bare Git repository.*current directory/iu);
+  assert.match(tool.description, /refuses existing or nested repositories/iu);
   const guidance = tool.promptGuidelines.join(" ");
-  assert.match(guidance, /explicitly asks to initialize the current working directory/iu);
-  assert.match(guidance, /defaults to main.*never accepts or infers a path/iu);
-  assert.match(guidance, /rejects reinitialization and nested repositories/iu);
-  assert.match(guidance, /by itself.*before using repository-dependent Git tools/iu);
+  assert.match(guidance, /user explicitly requests initialization here/iu);
+  assert.match(guidance, /finish it before repository-dependent tools/iu);
+  assert.match(tool.parameters.properties.initialBranch.description, /defaults to main/iu);
 
   const content = formatInitRepository({
     action: "init_repository",
@@ -471,16 +455,15 @@ test("integrate_branch exposes a strict schema and explicit sequencing guidance"
     assert.equal(unsupported in tool.parameters.properties, false);
   }
 
-  assert.ok(tool.description.includes(INTEGRATE_BRANCH_TOOL_NAME));
-  assert.ok(tool.promptSnippet.includes(INTEGRATE_BRANCH_TOOL_NAME));
+  assert.match(tool.description, /local source branch.*already-checked-out local target/u);
+  assert.match(tool.promptSnippet, /Merge local branches/u);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(INTEGRATE_BRANCH_TOOL_NAME)));
   const guidance = tool.promptGuidelines.join(" ");
-  assert.match(guidance, /user explicitly wants/iu);
-  assert.match(guidance, /current clean control worktree.*targetBranch checked out/iu);
-  assert.match(guidance, /local refs already contain.*never fetches or pushes/iu);
-  assert.match(guidance, /never batch integrate_branch with other Git mutations/iu);
-  assert.match(guidance, /branch_status ancestry proof separately.*same parallel tool batch/iu);
-  assert.match(guidance, /automatically aborted.*separate delegated workflow/iu);
+  assert.match(guidance, /requested local merge/iu);
+  assert.match(guidance, /worktree must be clean with targetBranch already checked out/iu);
+  assert.match(tool.description, /does not fetch.*conflicts abort unless explicitly kept/iu);
+  assert.match(guidance, /run integrate_branch alone, then any verification/iu);
+  assert.match(guidance, /planned editing step.*conclude_merge to commit or abort before another Git mutation/iu);
 });
 
 test("integrate_branch formats all verified outcomes with bounded sanitized content", () => {
@@ -630,17 +613,16 @@ test("retire_branch exposes an exact strict schema and explicit destructive sequ
     assert.equal(unsupported in tool.parameters.properties, false);
   }
 
-  assert.ok(tool.description.includes(RETIRE_BRANCH_TOOL_NAME));
-  assert.ok(tool.promptSnippet.includes(RETIRE_BRANCH_TOOL_NAME));
+  assert.match(tool.description, /unoccupied local branch at an expected commit/u);
+  assert.match(tool.promptSnippet, /Delete a local branch/u);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(RETIRE_BRANCH_TOOL_NAME)));
   const guidance = tool.promptGuidelines.join(" ");
-  assert.match(guidance, /user explicitly intends to delete one exact local branch/iu);
-  assert.match(guidance, /fresh expected commit and ancestry proof with branch_status.*exact commit was already supplied/iu);
-  assert.match(guidance, /branch_status and retire_branch sequentially.*same parallel tool batch/iu);
-  assert.match(guidance, /retire_branch by itself.*another Git mutation/iu);
-  assert.match(guidance, /force: true.*explicit user authorization for unmerged data loss/iu);
-  assert.match(guidance, /remove_worktree and retire_branch.*separate sequential operations/iu);
-  assert.match(guidance, /never directly deletes a remote or remote-tracking branch/iu);
+  assert.match(guidance, /explicitly requested deletion/iu);
+  assert.match(guidance, /fresh expectedHead and ancestry with branch_status/iu);
+  assert.match(guidance, /run retire_branch alone, after removing any linked worktree/iu);
+  assert.match(guidance, /verification and deletion must be sequential/iu);
+  assert.match(guidance, /force requires explicit authorization for unmerged data loss/iu);
+  assert.match(tool.description, /remote branches and worktrees remain untouched/iu);
 });
 
 test("retire_branch formats merged and forced-unmerged outcomes with bounded local-only content", () => {
@@ -755,17 +737,16 @@ test("worktree tools expose strict schemas and named handoff-oriented prompt gui
   assert.equal(createTool.parameters.required.includes("baseRef"), false);
 
   for (const tool of [listTool, createTool, removeTool]) {
-    assert.ok(tool.description.includes(tool.name));
-    assert.ok(tool.promptSnippet.includes(tool.name));
+    assert.ok(tool.description.trim().length > 0);
+    assert.match(tool.promptSnippet, /checkout|worktree/u);
     assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(tool.name)));
   }
-  assert.match(createTool.promptGuidelines.join(" "), /explicitly requests.*exact absolute worktreePath/i);
-  assert.match(createTool.promptGuidelines.join(" "), /never infer a filesystem path silently/i);
-  assert.match(createTool.promptGuidelines.join(" "), /Do not batch.*wait.*handoff\.cwd/i);
-  assert.match(removeTool.promptGuidelines.join(" "), /explicitly requests.*exact absolute worktreePath/i);
-  assert.match(removeTool.promptGuidelines.join(" "), /never infer a filesystem path silently/i);
-  assert.match(removeTool.promptGuidelines.join(" "), /deleteIgnored: true.*explicitly authorizes deleting all ignored files/iu);
-  assert.match(removeTool.promptGuidelines.join(" "), /Do not batch.*non-ready handoff/i);
+  assert.match(createTool.promptGuidelines.join(" "), /explicitly requested creation.*approved absolute path/i);
+  assert.match(createTool.promptGuidelines.join(" "), /never invent a destination/i);
+  assert.match(createTool.promptGuidelines.join(" "), /finish create_worktree.*verify ready handoff\.cwd.*before handing/i);
+  assert.match(removeTool.promptGuidelines.join(" "), /explicitly requested removal.*approved absolute path/i);
+  assert.match(removeTool.promptGuidelines.join(" "), /separate explicit authorization for discardChanges and deleteIgnored.*all ignored content/iu);
+  assert.match(removeTool.promptGuidelines.join(" "), /wait for remove_worktree.*non-ready handoff.*before dependent/i);
 });
 
 test("list_worktrees returns structured details and a compact bounded inventory", async () => {
@@ -1005,7 +986,7 @@ test("branch_status has strict schema, refresh guidance, and shared current Git 
   assert.match(tool.promptSnippet, /refresh/i);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(BRANCH_STATUS_TOOL_NAME)));
   assert.match(tool.promptGuidelines.join(" "), /automatic Git context/i);
-  assert.match(tool.promptGuidelines.join(" "), /after integrate_branch completes.*same parallel tool batch/iu);
+  assert.match(tool.promptGuidelines.join(" "), /wait for preceding integrate_branch or fetch_branch/iu);
   assert.doesNotMatch(tool.promptGuidelines.join(" "), /before change_branch|before create_branch|before push_branch|before pull_request/i);
 
   const output = await tool.execute("call-1", {}, undefined, undefined, ctx);
@@ -1250,7 +1231,7 @@ test("branch_status keeps explicit caller cancellation observable", async () => 
   assert.deepEqual(pi.calls, []);
 });
 
-test("create_branch schema accepts only branchName and constructs git switch", async () => {
+test("create_branch schema accepts an optional base/selector and defaults to current HEAD", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
@@ -1263,7 +1244,7 @@ test("create_branch schema accepts only branchName and constructs git switch", a
   const tool = toolByName(pi, CREATE_BRANCH_TOOL_NAME);
 
   assert.deepEqual(tool.parameters.required, ["branchName"]);
-  assert.deepEqual(Object.keys(tool.parameters.properties), ["branchName"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["branchName", "baseRef", "worktreePath"]);
   assert.equal(tool.parameters.additionalProperties, false);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(CREATE_BRANCH_TOOL_NAME)));
 
@@ -1289,13 +1270,13 @@ test("change_branch schema switches existing local branches and reports safe det
   const tool = toolByName(pi, CHANGE_BRANCH_TOOL_NAME);
 
   assert.deepEqual(tool.parameters.required, ["branchName"]);
-  assert.deepEqual(Object.keys(tool.parameters.properties), ["branchName"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["branchName", "worktreePath"]);
   assert.equal(tool.parameters.additionalProperties, false);
   for (const unsupported of ["baseRef", "force", "stash", "discard", "create", "owner", "repo", "path"]) {
     assert.equal(unsupported in tool.parameters.properties, false);
   }
-  assert.ok(tool.description.includes(CHANGE_BRANCH_TOOL_NAME));
-  assert.ok(tool.promptSnippet.includes(CHANGE_BRANCH_TOOL_NAME));
+  assert.match(tool.description, /existing local branch/u);
+  assert.match(tool.promptSnippet, /Switch to an existing local branch/u);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(CHANGE_BRANCH_TOOL_NAME)));
 
   const output = await tool.execute("call-change", { branchName: "feature/tool" }, undefined, undefined, ctx);
@@ -1362,11 +1343,11 @@ test("fetch_branch has a strict optional schema and fetches the configured upstr
   registerBranchMeTools(pi);
   const tool = toolByName(pi, FETCH_BRANCH_TOOL_NAME);
 
-  assert.deepEqual(Object.keys(tool.parameters.properties), ["remote", "branch"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["remote", "branch", "worktreePath"]);
   assert.equal(tool.parameters.required, undefined);
   assert.equal(tool.parameters.additionalProperties, false);
-  assert.ok(tool.description.includes(FETCH_BRANCH_TOOL_NAME));
-  assert.ok(tool.promptSnippet.includes(FETCH_BRANCH_TOOL_NAME));
+  assert.match(tool.description, /one remote branch/u);
+  assert.match(tool.promptSnippet, /Fetch one remote branch/u);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(FETCH_BRANCH_TOOL_NAME)));
 
   const output = await tool.execute("call-fetch", {}, undefined, undefined, ctx);
@@ -1432,7 +1413,7 @@ test("fetch_branch fetches an explicit remote branch without touching the curren
   assert.deepEqual(remoteOnlyPi.calls, []);
 });
 
-test("pull_branch has a strict empty schema and fast-forwards the clean current branch", async () => {
+test("pull_branch has an optional worktree selector and fast-forwards the clean current branch", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "main\n" },
@@ -1446,10 +1427,10 @@ test("pull_branch has a strict empty schema and fast-forwards the clean current 
   registerBranchMeTools(pi);
   const tool = toolByName(pi, PULL_BRANCH_TOOL_NAME);
 
-  assert.deepEqual(tool.parameters.properties, {});
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["worktreePath"]);
   assert.equal(tool.parameters.additionalProperties, false);
-  assert.ok(tool.description.includes(PULL_BRANCH_TOOL_NAME));
-  assert.ok(tool.promptSnippet.includes(PULL_BRANCH_TOOL_NAME));
+  assert.match(tool.description, /current branch from its configured upstream/u);
+  assert.match(tool.promptSnippet, /Fast-forward the current branch/u);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(PULL_BRANCH_TOOL_NAME)));
 
   const output = await tool.execute("call-pull", {}, undefined, undefined, ctx);
@@ -1468,7 +1449,7 @@ test("pull_branch has a strict empty schema and fast-forwards the clean current 
   assert.equal(pi.calls.some((call) => ["rebase", "stash", "add", "commit", "push"].includes(call.args[0])), false);
 });
 
-test("rebase_branch has a strict empty schema and rebases the clean current branch onto upstream", async () => {
+test("rebase_branch has optional base/selector inputs and defaults to the configured upstream", async () => {
   const pi = makePi({
     ["rev-parse\0--show-toplevel"]: { stdout: "/repo\n" },
     ["symbolic-ref\0--quiet\0--short\0HEAD"]: { stdout: "feature/current\n" },
@@ -1481,12 +1462,12 @@ test("rebase_branch has a strict empty schema and rebases the clean current bran
   registerBranchMeTools(pi);
   const tool = toolByName(pi, REBASE_BRANCH_TOOL_NAME);
 
-  assert.deepEqual(tool.parameters.properties, {});
+  assert.deepEqual(Object.keys(tool.parameters.properties), ["baseRef", "worktreePath"]);
   assert.equal(tool.parameters.additionalProperties, false);
-  assert.ok(tool.description.includes(REBASE_BRANCH_TOOL_NAME));
-  assert.ok(tool.promptSnippet.includes(REBASE_BRANCH_TOOL_NAME));
+  assert.match(tool.description, /rewriting local commits/u);
+  assert.match(tool.promptSnippet, /Rebase current commits onto upstream/u);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(REBASE_BRANCH_TOOL_NAME)));
-  assert.match(tool.promptGuidelines.join(" "), /explicitly requests rebasing|rewrites local commit history/i);
+  assert.match(tool.promptGuidelines.join(" "), /explicit authorization to rewrite local history/i);
 
   const output = await tool.execute("call-rebase", {}, undefined, undefined, ctx);
 
@@ -1537,7 +1518,7 @@ test("push_branch pushes current branch with and without upstream", async () => 
   registerBranchMeTools(upstreamPi);
   const upstreamTool = toolByName(upstreamPi, PUSH_BRANCH_TOOL_NAME);
 
-  assert.deepEqual(upstreamTool.parameters.properties, {});
+  assert.deepEqual(Object.keys(upstreamTool.parameters.properties), ["worktreePath"]);
   assert.equal(upstreamTool.parameters.additionalProperties, false);
   assert.ok(upstreamTool.promptGuidelines.every((guideline) => guideline.includes(PUSH_BRANCH_TOOL_NAME)));
 
@@ -1852,10 +1833,10 @@ test("pull_request has an optional-field strict schema and rejects repository pa
   assert.equal("owner" in tool.parameters.properties, false);
   assert.equal("repo" in tool.parameters.properties, false);
   assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(PULL_REQUEST_TOOL_NAME)));
-  assert.ok(tool.promptGuidelines.some((guideline) => /push_branch.*completed/i.test(guideline)));
+  assert.ok(tool.promptGuidelines.some((guideline) => /finish push_branch before pull_request/i.test(guideline)));
   const guidance = tool.promptGuidelines.join(" ");
-  assert.match(guidance, /system or developer instructions.*AGENTS\.md.*skills.*delegated\/subagent prompts/iu);
-  assert.match(guidance, /without a separate end-user confirmation/iu);
+  assert.match(guidance, /authorized by the active workflow.*delegated instructions/iu);
+  assert.match(guidance, /without separate confirmation/iu);
   assert.doesNotMatch(guidance, /only when the user explicitly asks/iu);
 });
 

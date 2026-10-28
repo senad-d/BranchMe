@@ -9,6 +9,8 @@ import {
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
   FETCH_BRANCH_TOOL_NAME,
+  GIT_DIFF_CONTEXT_LIMIT,
+  GIT_DIFF_PATH_LIMIT,
   INIT_REPOSITORY_TOOL_NAME,
   INTEGRATE_BRANCH_TOOL_NAME,
   LAND_BRANCH_TOOL_NAME,
@@ -139,6 +141,45 @@ test("BranchMe tool schemas accept valid runtime inputs without executing tools"
     body: "",
     draft: false,
   });
+});
+
+test("new shell-free schemas remain strict and accept explicit safety expectations", () => {
+  const tools = registeredTools();
+  const expected = { expectedHead: "a".repeat(40), expectedIndex: "b".repeat(64) };
+  const examples = {
+    git_log: { ref: "HEAD", excludeRef: "main", paths: ["src"] },
+    git_show: { output: "file", path: "file.txt" },
+    git_conflicts: { path: "file.txt", stage: 2, expectedIndex: "b".repeat(64) },
+    list_remotes: {},
+    add_remote: { name: "origin", url: "https://github.com/owner/repo.git", expectedConfig: "c".repeat(64) },
+    set_upstream: { branchName: "main", upstream: "origin/main", expectedConfig: "c".repeat(64) },
+    stage_changes: { paths: ["file.txt"], ...expected },
+    unstage_changes: { paths: ["file.txt"], ...expected, expectedHead: null },
+    restore_paths: { paths: ["file.txt"], ...expected, preview: true },
+    revert_changes: { commit: "a".repeat(40), ...expected },
+    pull_request_checks: { number: 7 },
+    edit_pull_request: { number: 7, body: "", draft: false },
+    merge_pull_request: { number: 7, expectedHead: "a".repeat(40), mergeMethod: "squash" },
+  };
+  for (const [name, args] of Object.entries(examples)) { assertValid(tools.get(name), args); assertInvalid(tools.get(name), { ...args, arbitraryGitArgs: [] }); }
+  assertInvalid(tools.get("stage_changes"), { paths: [] });
+  assertInvalid(tools.get("merge_pull_request"), { number: 7, expectedHead: "a".repeat(40), mergeMethod: "admin" });
+  assertInvalid(tools.get("restore_paths"), { paths: ["file.txt"], ...expected, expectedFiles: [{ path: "file.txt", fingerprint: "c".repeat(64), force: true }] });
+});
+
+test("runtime schema validation enforces bounded git_status inputs", () => {
+  const tool = registeredTools().get("git_status");
+  assertValid(tool, {});
+  assertValid(tool, { paths: ["src"], worktreePath: "/tmp/linked", after: `v1.${"a".repeat(64)}.50` });
+  for (const input of [null, { paths: [] }, { paths: Array(26).fill("x") }, { after: "bad" }, { force: true }]) assertInvalid(tool, input);
+});
+
+test("runtime schema validation enforces strict bounded git_diff inputs", () => {
+  const tool = registeredTools().get("git_diff");
+  assertValid(tool, {});
+  assertValid(tool, { mode: "range", baseRef: "main", targetRef: "HEAD", mergeBase: true, output: "stat", paths: ["src"], contextLines: 0 });
+  assertValid(tool, { mode: "staged", worktreePath: "/tmp/linked" });
+  for (const input of [null, { mode: "all" }, { paths: [] }, { paths: Array(GIT_DIFF_PATH_LIMIT + 1).fill("x") }, { contextLines: GIT_DIFF_CONTEXT_LIMIT + 1 }, { baseRef: "" }, { output: "binary" }, { force: true }]) assertInvalid(tool, input);
 });
 
 test("runtime schema validation enforces strict init_repository inputs", () => {
@@ -309,7 +350,9 @@ test("runtime schema validation rejects invalid create_branch arguments and forb
   assertInvalid(tool, {});
   assertInvalid(tool, { branchName: "" });
   assertInvalid(tool, { branchName: {} });
-  for (const forbidden of ["baseRef", "force", "owner", "repo", "path"]) {
+  assertValid(tool, { ...valid, baseRef: "origin/main", worktreePath: "/tmp/linked" });
+  assertInvalid(tool, { ...valid, baseRef: "" });
+  for (const forbidden of ["force", "owner", "repo", "path"]) {
     assertInvalid(tool, { ...valid, [forbidden]: "forbidden" });
   }
 });

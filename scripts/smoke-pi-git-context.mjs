@@ -4,6 +4,7 @@ import { accessSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BRANCHME_TOOL_NAMES } from "../src/constants.ts";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const localPiBinary = fileURLToPath(
@@ -82,57 +83,15 @@ function verifierSource() {
 import { join } from "node:path";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 
-const expectedTools = [
-  "list_branches",
-  "fetch_remote",
-  "track_branch",
-  "update_from_base",
-  "conclude_merge",
-  "pull_request_status",
-  "pull_request_feedback",
-  "reply_pull_request_feedback",
-  "pull_request_files",
-  "label_pull_request",
-  "branch_status",
-  "change_branch",
-  "create_branch",
-  "create_worktree",
-  "fetch_branch",
-  "init_repository",
-  "integrate_branch",
-  "land_branch",
-  "list_worktrees",
-  "pull_branch",
-  "pull_request",
-  "push_branch",
-  "rebase_branch",
-  "remove_worktree",
-  "retire_branch",
-];
-const forbiddenSmokeTools = new Set([
-  "fetch_remote",
-  "track_branch",
-  "update_from_base",
-  "conclude_merge",
-  "pull_request_status",
-  "pull_request_feedback",
-  "reply_pull_request_feedback",
-  "pull_request_files",
-  "label_pull_request",
-  "create_worktree",
-  "fetch_branch",
-  "init_repository",
-  "integrate_branch",
-  "land_branch",
-  "pull_branch",
-  "pull_request",
-  "push_branch",
-  "remove_worktree",
-  "retire_branch",
-]);
+const expectedTools = ${JSON.stringify(BRANCHME_TOOL_NAMES)};
+
+function allowedSmokeTool(name) {
+  const scenario = process.env.BRANCHME_SMOKE_SCENARIO;
+  return (scenario === "refresh" && name === "branch_status") || (scenario === "diff" && name === "git_diff") || (scenario === "status" && name === "git_status");
+}
 let fetchCalls = 0;
 let forbiddenToolCalls = 0;
-let refreshMutationCreated = false;
+let fixtureMutationCreated = false;
 let toolCalls = 0;
 
 globalThis.fetch = async () => {
@@ -173,15 +132,15 @@ function textStream(model, text) {
   return stream;
 }
 
-function toolCallStream(model) {
+function toolCallStream(model, name = "branch_status", args = {}) {
   const stream = createAssistantMessageEventStream();
   const output = assistantMessage(model);
-  const toolCall = { type: "toolCall", id: "branchme-smoke-refresh", name: "branch_status", arguments: {} };
+  const toolCall = { type: "toolCall", id: "branchme-smoke-" + name + "-" + toolCalls, name, arguments: args };
   output.content.push(toolCall);
   output.stopReason = "toolUse";
   stream.push({ type: "start", partial: output });
   stream.push({ type: "toolcall_start", contentIndex: 0, partial: output });
-  stream.push({ type: "toolcall_delta", contentIndex: 0, delta: "{}", partial: output });
+  stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(args), partial: output });
   stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: output });
   stream.push({ type: "done", reason: "toolUse", message: output });
   stream.end();
@@ -194,16 +153,15 @@ function fail(model, message) {
 
 function verifyTools(context) {
   const available = new Set(getCurrentTools(context.messages).map((tool) => tool.name));
-  return expectedTools.length === 25 &&
-    expectedTools.every((name) => available.has(name)) &&
+  return expectedTools.every((name) => available.has(name)) &&
     !available.has("git_context") &&
     !available.has("continue_merge") &&
     !available.has("abort_merge");
 }
 
-function toolResultText(context) {
+function toolResultText(context, toolName = "branch_status") {
   const result = [...context.messages].reverse().find(
-    (message) => message.role === "toolResult" && message.toolName === "branch_status",
+    (message) => message.role === "toolResult" && message.toolName === toolName,
   );
   if (!result) return null;
   return result.content.filter((item) => item.type === "text").map((item) => item.text).join("\\n");
@@ -240,6 +198,29 @@ function streamSmokeModel(model, context) {
     return textStream(model, 'BRANCHME_GIT_CONTEXT_SMOKE:{"ok":true,"scenario":"refresh"}');
   }
 
+  if (scenario === "diff") {
+    const result = toolResultText(context, "git_diff");
+    if (!result) return toolCallStream(model, "git_diff");
+    for (const expected of ["git_diff: changes found (unstaged, patch)", "Comparison: index -> working tree", "Paths: all tracked paths", "Output: complete", "+agent diff smoke"]) {
+      if (!result.includes(expected)) return fail(model, "default git_diff result missing " + expected);
+    }
+    if (result.includes("dirty.txt")) return fail(model, "git_diff included an untracked file");
+    if (toolCalls !== 1) return fail(model, "diff scenario did not invoke git_diff exactly once");
+    return textStream(model, 'BRANCHME_GIT_CONTEXT_SMOKE:{"ok":true,"scenario":"diff"}');
+  }
+
+  if (scenario === "status") {
+    const result = toolResultText(context, "git_status");
+    if (!result) return toolCallStream(model, "git_status");
+    if (result.includes("Output: incomplete")) {
+      const cursor = /after: "(v1[.][a-f0-9]{64}[.][0-9]+)"/.exec(result)?.[1];
+      if (!cursor || toolCalls !== 1) return fail(model, "status pagination missing or repeated");
+      return toolCallStream(model, "git_status", { after: cursor });
+    }
+    if (!result.includes("Output: complete") || !result.includes("smoke-status-064.txt") || toolCalls !== 2) return fail(model, "status enumeration incomplete");
+    return textStream(model, 'BRANCHME_GIT_CONTEXT_SMOKE:{"ok":true,"scenario":"status"}');
+  }
+
   if (scenario === "non-git") {
     if (!systemPrompt.includes("Git context: unavailable (current directory is not a Git repository).")) {
       return fail(model, "non-Git context fallback missing");
@@ -252,14 +233,22 @@ function streamSmokeModel(model, context) {
 }
 
 export default function branchMeGitContextVerifier(pi) {
+  pi.on("session_start", () => pi.setActiveTools(expectedTools));
   pi.on("before_agent_start", async (_event, ctx) => {
-    if (process.env.BRANCHME_SMOKE_SCENARIO !== "refresh" || refreshMutationCreated) return;
-    await writeFile(join(ctx.cwd, "smoke-refresh.txt"), "created after automatic snapshot\\n", "utf8");
-    refreshMutationCreated = true;
+    const scenario = process.env.BRANCHME_SMOKE_SCENARIO;
+    if (!["refresh", "diff", "status"].includes(scenario) || fixtureMutationCreated) return;
+    if (scenario === "refresh") await writeFile(join(ctx.cwd, "smoke-refresh.txt"), "created after automatic snapshot\\n", "utf8");
+    else if (scenario === "status") {
+      for (let i = 0; i < 65; i++) await writeFile(join(ctx.cwd, "smoke-status-" + String(i).padStart(3, "0") + ".txt"), "status fixture\\n", "utf8");
+    } else await writeFile(join(ctx.cwd, "tracked.txt"), "agent diff smoke\\n", "utf8");
+    fixtureMutationCreated = true;
   });
   pi.on("tool_execution_start", (event) => {
     toolCalls += 1;
-    if (forbiddenSmokeTools.has(event.toolName)) forbiddenToolCalls += 1;
+    if (!allowedSmokeTool(event.toolName)) forbiddenToolCalls += 1;
+  });
+  pi.on("tool_call", (event) => {
+    if (!allowedSmokeTool(event.toolName)) return { block: true, reason: "Git-context smoke permits only the scenario's designated read-only tool." };
   });
   pi.registerProvider("branchme-smoke", {
     name: "BranchMe Smoke",
@@ -333,10 +322,12 @@ try {
 
   runScenario(piBinary, tempRoot, verifierPath, gitWorkspace, "no-tool", "Report the current branch and working-tree state without calling a tool.");
   runScenario(piBinary, tempRoot, verifierPath, gitWorkspace, "refresh", "Use branch_status to refresh after the local change.");
+  runScenario(piBinary, tempRoot, verifierPath, gitWorkspace, "diff", "Inspect the unstaged diff with git_diff using default arguments; do not estimate any output length.");
+  runScenario(piBinary, tempRoot, verifierPath, gitWorkspace, "status", "Enumerate all changed paths using git_status and follow continuation until complete. Bash is unavailable.");
   runScenario(piBinary, tempRoot, verifierPath, nonGitWorkspace, "non-git", "Report whether Git context is available without calling a tool.");
 
   console.log(
-    "Pi Git-context smoke passed: automatic no-tool context, one branch_status refresh after a local change, credential-free PR lookup, and non-Git startup all passed without network access.",
+    "Pi Git-context smoke passed: automatic no-tool context, one branch_status refresh, one default-argument git_diff, complete two-page git_status with no Bash available, credential-free PR lookup, and non-Git startup all passed without network access.",
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

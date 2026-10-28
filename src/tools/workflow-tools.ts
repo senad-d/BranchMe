@@ -69,12 +69,10 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: PULL_REQUEST_STATUS_TOOL_NAME,
     label: "Pull Request Status",
-    description: "pull_request_status reads one same-repository GitHub PR by number, or the most recently updated PR for a head branch (current branch by default). Reports open/closed/merged state and exact head/base/merge identities. No mutations; not a CI-check or review-approval verdict.",
-    promptSnippet: "pull_request_status: inspect open, closed, or merged PR state and immutable commit identities",
+    description: "Read a GitHub PR's open, closed, or merged state and commit identities. Does not certify CI success or review approval.",
+    promptSnippet: "Check PR lifecycle state",
     promptGuidelines: [
-      "Use pull_request_status with number for exact lifecycle verification; number and headBranch are mutually exclusive.",
-      "Without number, pull_request_status returns the most recently updated PR for headBranch or the current branch. Prefer its exact number for subsequent checks.",
-      "pull_request_status never merges, edits, closes, or deletes a PR and does not claim CI checks or review requirements passed.",
+      "Branch lookup in pull_request_status selects the latest updated PR, not only open PRs; prefer its exact number afterward.",
     ],
     parameters: Type.Object({
       number: Type.Optional(Type.Integer({ minimum: 1, description: "Exact PR number; mutually exclusive with headBranch." })),
@@ -98,12 +96,10 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: PULL_REQUEST_FEEDBACK_TOOL_NAME,
     label: "Pull Request Feedback",
-    description: "pull_request_feedback reads what a same-repository GitHub PR asks to be fixed: unresolved review threads (with thread ids) and their comments, review summaries, conversation comments (with ids), each with author and time and comments by the token's own user marked (you), and the head commit's failing checks with their file:line annotations and the log tail of up to three failing GitHub Actions jobs. Resolved and outdated threads are counted, not listed. No mutations.",
-    promptSnippet: "pull_request_feedback: read a PR's unresolved review comments and failing checks with their log tails",
+    description: "Read unresolved PR reviews, conversation comments, and failing CI checks with annotations and log tails. Read-only.",
+    promptSnippet: "Read PR feedback and CI failures",
     promptGuidelines: [
-      "Use pull_request_feedback with number to collect the review comments and failing checks a follow-up must address; number and headBranch are mutually exclusive.",
-      "Without number, pull_request_feedback reads the most recently updated PR for headBranch or the current branch.",
-      "pull_request_feedback never comments, resolves threads, reruns checks, or edits the PR; a job log that cannot be read is reported per check, not as a failure of the call.",
+      "Branch lookup in pull_request_feedback selects the latest updated PR; prefer its exact number afterward. Unreadable job logs are reported per check.",
     ],
     parameters: Type.Object({
       number: Type.Optional(Type.Integer({ minimum: 1, description: "Exact PR number; mutually exclusive with headBranch." })),
@@ -128,17 +124,15 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME,
     label: "Reply To Pull Request Feedback",
-    description: "reply_pull_request_feedback posts one reply on a pull request of this GitHub repository (including one opened from a fork): with threadId it replies in that review thread and, with resolve: true, resolves the thread; without threadId it posts one conversation comment. Works on open, merged and closed PRs. The thread must belong to the PR; nothing else is changed.",
-    promptSnippet: "reply_pull_request_feedback: answer a PR review thread (optionally resolving it) or post a PR comment",
+    description: "Post a PR comment or review-thread reply, optionally resolving the thread.",
+    promptSnippet: "Comment on a PR or reply to review",
     promptGuidelines: [
-      "Use reply_pull_request_feedback with the thread ids pull_request_feedback reports ([thread <id>]); one call per thread, the body states what was done or why not.",
-      "Pass reply_pull_request_feedback resolve: true only for a thread whose request is fixed or already addressed; leave a thread open when it needs a person's decision.",
-      "Without threadId, reply_pull_request_feedback posts one conversation comment on the PR; conversation comments cannot be resolved.",
-      "reply_pull_request_feedback never edits or deletes comments, approves, requests changes, merges, or closes a PR.",
+      "Use reply_pull_request_feedback once per thread, describing the fix or why it was not made.",
+      "Resolve with reply_pull_request_feedback only when the request is addressed; leave threads needing a person's decision open.",
     ],
     parameters: Type.Object({
       number: Type.Integer({ minimum: 1, description: "PR number." }),
-      body: Type.String({ minLength: 1, maxLength: PULL_REQUEST_REPLY_BODY_LIMIT_CHARS, description: "Markdown reply." }),
+      body: Type.String({ minLength: 1, maxLength: PULL_REQUEST_REPLY_BODY_LIMIT_CHARS, description: "Markdown text to publish as a new PR comment or thread reply, not an edit to an existing comment." }),
       threadId: Type.Optional(Type.String({ minLength: 1, description: "Review thread id from pull_request_feedback; omit for a conversation comment." })),
       resolve: Type.Optional(Type.Boolean({ description: "Resolve the thread after replying; requires threadId." })),
     }, { additionalProperties: false }),
@@ -153,12 +147,9 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: PULL_REQUEST_FILES_TOOL_NAME,
     label: "Pull Request Files",
-    description: "pull_request_files lists the changed files of a pull request of this GitHub repository (path, change type, additions, deletions; the first 100, with a count of the rest) and its current labels. No mutations.",
-    promptSnippet: "pull_request_files: list a PR's changed files and current labels",
-    promptGuidelines: [
-      "Use pull_request_files to see which areas of the repository a pull request touches, for example before choosing its labels.",
-      "pull_request_files never reads file contents or diffs, and never changes the pull request.",
-    ],
+    description: "List a PR's changed file paths, line counts, and current labels. Does not return patches or file contents.",
+    promptSnippet: "List files changed by a PR",
+    promptGuidelines: [],
     parameters: Type.Object({
       number: Type.Integer({ minimum: 1, description: "PR number." }),
     }, { additionalProperties: false }),
@@ -173,11 +164,10 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: LABEL_PULL_REQUEST_TOOL_NAME,
     label: "Label Pull Request",
-    description: "label_pull_request adds labels that already exist in this GitHub repository to one of its pull requests (1 to 5 per call). A label that does not exist is refused before anything changes; existing labels on the pull request stay.",
-    promptSnippet: "label_pull_request: add existing repository labels to a PR",
+    description: "Add existing repository labels to a PR, preserving its current labels. Refuses unknown labels.",
+    promptSnippet: "Add labels to a PR",
     promptGuidelines: [
-      "Use label_pull_request only with label names the assignment or the repository's labels name exactly; it never creates, renames or removes labels.",
-      "label_pull_request adds labels and keeps the pull request's existing ones.",
+      "Use label_pull_request only with exact existing label names from the assignment or repository.",
     ],
     parameters: Type.Object({
       number: Type.Integer({ minimum: 1, description: "PR number." }),
@@ -194,16 +184,14 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: UPDATE_FROM_BASE_TOOL_NAME,
     label: "Update From Base",
-    description: "update_from_base fetches one remote base and merges its captured commit into the clean current feature branch with verified no-op, fast-forward, merge-commit, or conflict results. A conflict is automatically aborted with restoration verified unless keepConflicts is true, which leaves the conflicted merge in progress for conclude_merge. Never rebases, pushes, stashes, or changes upstream configuration.",
-    promptSnippet: "update_from_base: merge a fresh remote base into the current feature without rewriting published history; keepConflicts keeps a conflicted merge in progress",
+    description: "Fetch and merge a remote base into the current branch without rewriting history. Conflicts abort unless explicitly kept.",
+    promptSnippet: "Merge a fresh remote base",
     promptGuidelines: [
-      "Use update_from_base only when asked to update the current feature branch from an explicit baseBranch; remote defaults to origin.",
-      "Run update_from_base by itself. It fetches the base and uses the fixed normal-merge policy; by default conflicts are automatically aborted with restoration verified and the conflict paths are listed.",
-      "Pass keepConflicts: true to update_from_base only when a file-editing step will resolve the listed paths; the result conflict_kept leaves MERGE_HEAD set, and conclude_merge must then conclude or abort it before any other Git mutation.",
-      "update_from_base preserves published history and upstream configuration; it never resolves conflict content itself.",
+      "Use update_from_base only for a requested remote-base update; run it alone.",
+      "Keep update_from_base conflicts only with a planned editing step; for conflict_kept, use conclude_merge to commit or abort before another Git mutation.",
     ],
     parameters: Type.Object({
-      baseBranch: Type.String({ minLength: 1, description: "Exact base branch on the remote, for example main." }),
+      baseBranch: Type.String({ minLength: 1, description: "Branch name on remote to fetch and merge, for example main, not origin/main. The current branch is the merge destination." }),
       remote: Type.Optional(Type.String({ minLength: 1, description: "Configured remote; defaults to origin." })),
       keepConflicts: Type.Optional(Type.Boolean({ description: "When true, a conflicted merge is left in progress (MERGE_HEAD set, conflicted paths unmerged) for conclude_merge instead of being aborted; defaults to false." })),
     }, { additionalProperties: false }),
@@ -215,18 +203,15 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: CONCLUDE_MERGE_TOOL_NAME,
     label: "Conclude Merge",
-    description: "conclude_merge finishes or abandons the in-progress merge on the current checkout, normally one kept by update_from_base or integrate_branch with keepConflicts: true. action \"conclude\" checks unmerged working-tree paths and staged blobs for default/custom-sized conflict marker lines, stages exactly the unmerged paths, checks the candidate index again, and commits the full index with Git's prepared merge message, then verifies the two-parent result; action \"abort\" runs git merge --abort and verifies restoration. conclude_merge never stages other changes, accepts no commit message, and never pushes.",
-    promptSnippet: "conclude_merge: commit or abort the kept in-progress merge after conflict markers are removed",
+    description: "Commit or abort an existing merge. Concluding stages resolved conflicts and commits the entire index; it does not resolve conflicts.",
+    promptSnippet: "Commit or abort an existing merge",
     promptGuidelines: [
-      "Use conclude_merge only after update_from_base or integrate_branch reported conflict_kept, or when a single-head merge is otherwise in progress on the current checkout; run conclude_merge by itself. Multi-head merges are refused before mutation.",
-      "Before conclude_merge with action conclude, a file-editing step must remove every <<<<<<<, |||||||, =======, and >>>>>>> marker line from the listed paths; conclude_merge refuses and names the paths that still contain markers.",
-      "conclude_merge with action conclude stages only the currently unmerged paths and uses Git's prepared merge message; unrelated unstaged edits stay unstaged and are not part of the merge commit. Git commits the entire index, including previously staged entries: do not stage unrelated edits during the merge.",
-      "conclude_merge with action abort restores the branch with git merge --abort and verifies a clean idle checkout; conclude_merge refuses when no merge is in progress.",
-      "conclude_merge worktreePath lets one session act on another worktree of the same repository; omit it for the current one.",
+      "Before conclude_merge, resolve conflicts and remove all marker lines, including diff3/custom-sized markers; both working-tree and index content are checked. This editing requirement does not apply to abort.",
+      "Run conclude_merge alone. Concluding commits the entire index, including previously staged entries; do not stage unrelated edits.",
     ],
     parameters: Type.Object({
       action: StringEnum(["conclude", "abort"] as const, {
-        description: "conclude stages the resolved formerly unmerged paths and commits the merge; abort runs git merge --abort and verifies restoration.",
+        description: "conclude: after conflicts are resolved, stage currently unmerged paths and commit the entire index as a merge. abort: abandon the merge and verify restoration. Neither action resolves conflict contents.",
       }),
       worktreePath: Type.Optional(Type.String({ minLength: 1, description: "Absolute root path of another worktree of the same repository to act on; omit for the current one." })),
     }, { additionalProperties: false }),
@@ -239,17 +224,15 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
   pi.registerTool({
     name: TRACK_BRANCH_TOOL_NAME,
     label: "Track Branch",
-    description: "track_branch fetches one exact remote branch, creates and checks out a new local tracking branch, and verifies HEAD/upstream. Requires a clean idle checkout. Never forces, stashes, commits, or pushes.",
-    promptSnippet: "track_branch: join an existing remote branch with a verified local tracking checkout",
+    description: "Fetch an existing remote branch, create a new local tracking branch, and switch to it.",
+    promptSnippet: "Check out a remote branch locally",
     promptGuidelines: [
-      "Use track_branch only when explicitly asked to create and check out a local branch tracking an existing remote branch.",
-      "Run track_branch by itself; it fetches before checkout. Supply branchName and optionally remote (default origin) and remoteBranch (default branchName).",
-      "track_branch rejects existing local branches and dirty or in-progress worktrees; it never stashes or discards changes.",
+      "Use track_branch only for requested remote-branch checkout; run it alone. Existing local branches require change_branch.",
     ],
     parameters: Type.Object({
-      branchName: Type.String({ minLength: 1, description: "New local branch name." }),
+      branchName: Type.String({ minLength: 1, description: "Unused local branch name to create and switch to; existing local branches require change_branch." }),
       remote: Type.Optional(Type.String({ minLength: 1, description: "Configured remote; defaults to origin." })),
-      remoteBranch: Type.Optional(Type.String({ minLength: 1, description: "Existing branch on that remote; defaults to branchName." })),
+      remoteBranch: Type.Optional(Type.String({ minLength: 1, description: "Existing branch name on remote, for example topic, not origin/topic; defaults to branchName." })),
     }, { additionalProperties: false }),
     async execute(_id, params, signal, _update, ctx) {
       const details = await trackBranch(pi, ctx, params, signal);

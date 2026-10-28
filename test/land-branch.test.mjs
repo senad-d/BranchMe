@@ -221,7 +221,7 @@ test("tracked changes keep the source checked out and the summary says how to re
   assert.equal(await git(f.root, ["symbolic-ref", "--short", "HEAD"]), sourceBranch);
   const summary = formatLandBranch(receipt);
   assert.match(summary, /refused: "README.md"/u);
-  assert.match(summary, /\nBlocked: .*\nResolve: commit them with commitme/u);
+  assert.match(summary, /\nBlocked: .*\nResolve: inspect git_status;.*explicit discard authorization/u);
 });
 
 test("dirty target is skipped independently of successful worktree removal and branch retirement", async (t) => {
@@ -425,11 +425,11 @@ test("registration is lazy and exposes strict landing schema and safety guidance
   assert.deepEqual(Object.keys(tool.parameters.properties), ["sourceBranch", "targetBranch", "remote", "worktreePath", "pullRequestNumber"]);
   assert.equal(tool.parameters.additionalProperties, false);
   const guidance = tool.promptGuidelines.join(" ");
-  assert.match(guidance, /cwd-independent/u);
-  assert.match(guidance, /run from the repository root/u);
-  assert.match(guidance, /deletes ignored files/u);
-  assert.match(guidance, /never touches a dirty checkout/u);
-  assert.match(guidance, /pull request merged on the host/u);
+  assert.match(guidance, /outside the worktree being removed/u);
+  assert.match(guidance, /preserve needed ignored files/u);
+  assert.match(guidance, /never switches a dirty checkout or discards uncommitted changes/u);
+  assert.match(guidance, /squash\/rebase merges supply pullRequestNumber/u);
+  assert.match(tool.description, /after a verified merge/iu);
 });
 
 async function rewrittenFixture(t, mode = "squash") {

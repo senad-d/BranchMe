@@ -2,6 +2,18 @@ export const EXTENSION_DISPLAY_NAME = "BranchMe";
 export const BRANCHME_COMMAND_NAME = "branchme";
 
 export const BRANCH_STATUS_TOOL_NAME = "branch_status";
+export const GIT_DIFF_TOOL_NAME = "git_diff";
+export const GIT_STATUS_TOOL_NAME = "git_status";
+export const GIT_LOG_TOOL_NAME = "git_log";
+export const GIT_SHOW_TOOL_NAME = "git_show";
+export const GIT_CONFLICTS_TOOL_NAME = "git_conflicts";
+export const LIST_REMOTES_TOOL_NAME = "list_remotes";
+export const ADD_REMOTE_TOOL_NAME = "add_remote";
+export const SET_UPSTREAM_TOOL_NAME = "set_upstream";
+export const STAGE_CHANGES_TOOL_NAME = "stage_changes";
+export const UNSTAGE_CHANGES_TOOL_NAME = "unstage_changes";
+export const RESTORE_PATHS_TOOL_NAME = "restore_paths";
+export const REVERT_CHANGES_TOOL_NAME = "revert_changes";
 export const LIST_BRANCHES_TOOL_NAME = "list_branches";
 export const TRACK_BRANCH_TOOL_NAME = "track_branch";
 export const UPDATE_FROM_BASE_TOOL_NAME = "update_from_base";
@@ -16,6 +28,9 @@ export const REBASE_BRANCH_TOOL_NAME = "rebase_branch";
 export const PUSH_BRANCH_TOOL_NAME = "push_branch";
 export const PULL_REQUEST_TOOL_NAME = "pull_request";
 export const PULL_REQUEST_STATUS_TOOL_NAME = "pull_request_status";
+export const PULL_REQUEST_CHECKS_TOOL_NAME = "pull_request_checks";
+export const EDIT_PULL_REQUEST_TOOL_NAME = "edit_pull_request";
+export const MERGE_PULL_REQUEST_TOOL_NAME = "merge_pull_request";
 export const PULL_REQUEST_FEEDBACK_TOOL_NAME = "pull_request_feedback";
 export const REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME = "reply_pull_request_feedback";
 export const PULL_REQUEST_FILES_TOOL_NAME = "pull_request_files";
@@ -30,6 +45,18 @@ export const PULL_REQUEST_AUTOFILL_ENV_NAME = "BRANCHME_PR_AUTOFILL";
 
 export const BRANCHME_TOOL_NAMES = [
   BRANCH_STATUS_TOOL_NAME,
+  GIT_DIFF_TOOL_NAME,
+  GIT_STATUS_TOOL_NAME,
+  GIT_LOG_TOOL_NAME,
+  GIT_SHOW_TOOL_NAME,
+  GIT_CONFLICTS_TOOL_NAME,
+  LIST_REMOTES_TOOL_NAME,
+  ADD_REMOTE_TOOL_NAME,
+  SET_UPSTREAM_TOOL_NAME,
+  STAGE_CHANGES_TOOL_NAME,
+  UNSTAGE_CHANGES_TOOL_NAME,
+  RESTORE_PATHS_TOOL_NAME,
+  REVERT_CHANGES_TOOL_NAME,
   LIST_BRANCHES_TOOL_NAME,
   TRACK_BRANCH_TOOL_NAME,
   UPDATE_FROM_BASE_TOOL_NAME,
@@ -47,6 +74,9 @@ export const BRANCHME_TOOL_NAMES = [
   PUSH_BRANCH_TOOL_NAME,
   PULL_REQUEST_TOOL_NAME,
   PULL_REQUEST_STATUS_TOOL_NAME,
+  PULL_REQUEST_CHECKS_TOOL_NAME,
+  EDIT_PULL_REQUEST_TOOL_NAME,
+  MERGE_PULL_REQUEST_TOOL_NAME,
   PULL_REQUEST_FEEDBACK_TOOL_NAME,
   REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME,
   PULL_REQUEST_FILES_TOOL_NAME,
@@ -77,6 +107,17 @@ export const GIT_CONTEXT_VALUE_LIMIT_CHARS = 512;
 export const GIT_CONTEXT_SUMMARY_LIMIT_CHARS = 4_000;
 export const PULL_REQUEST_AUTOFILL_COMMIT_LIMIT = 20;
 export const PULL_REQUEST_AUTOFILL_SUBJECT_LIMIT_CHARS = 256;
+export const GIT_DIFF_OUTPUT_LIMIT_BYTES = 32 * 1024;
+export const GIT_DIFF_OUTPUT_LIMIT_LINES = 1_000;
+export const GIT_DIFF_PATH_LIMIT = 25;
+export const GIT_STATUS_PAGE_LIMIT = 50;
+export const GIT_STATUS_PAGE_BYTES = 24 * 1024;
+export const GIT_STATUS_RAW_LIMIT_BYTES = 4 * 1024 * 1024;
+export const GIT_STATUS_FILE_LIMIT_BYTES = 8 * 1024 * 1024;
+export const GIT_STATUS_CURSOR_LIMIT_CHARS = 100;
+export const GIT_DIFF_CONTEXT_LIMIT = 20;
+export const GIT_DIFF_CONTEXT_DEFAULT_LINES = 3;
+export const GIT_DIFF_PATH_PREVIEW_LIMIT_CHARS = 128;
 export const GIT_BRANCH_RAW_OUTPUT_LIMIT_BYTES = 128 * 1024;
 export const GIT_BRANCH_ENTRY_LIMIT = 200;
 export const GIT_BRANCH_PATTERN_LIMIT = 25;

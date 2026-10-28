@@ -346,8 +346,9 @@ test("discovery tools have strict compatible schemas and named prompt guidance",
   const list = registered.get("list_branches");
   for (const tool of [fetch, list]) {
     assert.equal(tool.parameters.additionalProperties, false);
-    assert.ok(tool.description.includes(tool.name));
-    assert.ok(tool.promptSnippet.includes(tool.name));
+    assert.ok(tool.description.trim().length > 0);
+    assert.ok(tool.promptSnippet.trim().length > 0);
+    assert.equal(tool.promptSnippet.startsWith(`${tool.name}:`), false);
     assert.ok(tool.promptGuidelines.every((line) => line.includes(tool.name)));
   }
   const fetchSchema = Compile(fetch.parameters);

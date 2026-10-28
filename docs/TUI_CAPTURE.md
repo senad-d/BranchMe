@@ -34,6 +34,14 @@ Commands only show info; BranchMe tools perform actions.
 
 ## Discovery and PR lifecycle
 
+- `git_status` — enumerate staged/unstaged/untracked/conflicted paths across bounded pages; repeat filters/worktreePath with next as after until complete. Stale continuation requires a restart; reuse only reusablePath paths. Explicit filters request bounded file fingerprints, never content.
+- `git_diff` — read unstaged (default), staged, or ref-range diffs; supports merge-base comparisons, literal root-relative paths, and patch/stat/name-status output. Redacted display is capped at 1,000 lines / 32 KiB; never stages or writes files/refs. Requires Git with `--no-lazy-fetch` support.
+- `git_log` / `git_show` — inspect older commits and historical blobs without checkout; history continuation pins commits and merge comparisons need an explicit parent.
+- `git_conflicts` — read available base/ours/theirs index stages without resolving; missing stages are normal, and ours/theirs depend on the operation.
+- `list_remotes` / `add_remote` / `set_upstream` — inspect remote destinations, add an unused credential-free remote, or configure branch tracking with expected configuration fingerprints; no hidden fetch.
+- `stage_changes` / `unstage_changes` — exact approved paths and fresh HEAD/index expectations; preserve working files and never commit.
+- `restore_paths` — preview first, then apply only with explicit discard authorization and fresh per-file fingerprints; protects untracked files and logical index entries.
+- `revert_changes` — prepare one non-merge commit inverse without committing; conflicts attempt verified abort/restoration, successful owned operation state is quit without discarding the inverse.
 - `list_branches` — discover local/cached remote refs, upstream counts, and occupancy; optional `kind` and Git glob `patterns` filter before limits.
 - `fetch_remote` — refresh all branch refs for one configured remote (default origin); optional `prune: true` deletes only its stale cached branch refs. Wait before `list_branches`.
 - Issue discovery: `fetch_remote({ remote: "origin", prune: true })`, then `list_branches({ kind: "remote-tracking", patterns: ["origin/feat/23", "origin/feat/23-*"] })`.
@@ -41,6 +49,9 @@ Commands only show info; BranchMe tools perform actions.
 - `track_branch` — fetch an existing remote branch and verify a new clean local tracking checkout.
 - `update_from_base` — fetch and merge an explicit base into the current clean feature, preserving published history and upstream; a conflict is aborted unless `keepConflicts: true` leaves it in progress.
 - `conclude_merge` — `action: "conclude"` commits the kept merge once every conflict marker is removed; `action: "abort"` restores the branch.
+- `pull_request_checks` — inspect all run/status states and available host readiness for an exact head; partial/unknown/pending/no-check states never imply approval.
+- `edit_pull_request` — change explicit title/body/draft fields of an open PR, preserving omitted fields.
+- `merge_pull_request` — explicitly authorized ready host merge with expected-head lease and selected method; no bypass, cleanup, or remote branch deletion.
 - `pull_request_status` — inspect a PR by number, or the latest PR for a head branch; not a CI/review verdict.
 - `pull_request_feedback` — read a PR's unresolved review comments and failing checks with log tails.
 - `reply_pull_request_feedback` — reply to a PR review thread (optionally resolving it) or post a PR comment.
@@ -76,10 +87,12 @@ Commands only show info; BranchMe tools perform actions.
 - Keep `git` available. Existing-repository tools run inside a Git repo; `init_repository` targets only the exact current non-repository directory.
 - For PRs: GitHub `origin` and `GITHUB_TOKEN` or `GH_TOKEN` (environment or `.env`).
 - Optional: set `BRANCHME_PR_AUTOFILL=true` in the environment or `.env` to generate omitted PR fields.
-- `fetch_branch` without `branch`, `pull_branch`, and `rebase_branch` require a configured upstream.
+- `fetch_branch` without `branch`, `pull_branch`, and default `rebase_branch` require a configured upstream; explicit rebase baseRef does not.
+- `create_branch` and `rebase_branch` accept captured baseRef values; fetch separately and prefer update_from_base for published features.
+- Branch-dependent tools accept a verified same-repository worktreePath without changing Pi's cwd; mutating tool calls are serialized across worktrees in this process.
 - `pull_branch` and `rebase_branch` require a clean working tree.
 - `rebase_branch` rewrites local commits only when explicitly requested and auto-aborts on failure.
-- BranchMe never creates user-authored commits or force-pushes; only `conclude_merge` stages, and only the resolved conflict paths.
+- BranchMe never creates ordinary commits or force-pushes and has no CommitMe integration. Guarded index/restore/revert tools and the existing Git-generated merge commits remain explicit actions.
 ```
 
 ## Panel: Tiny mode: clean branch with token

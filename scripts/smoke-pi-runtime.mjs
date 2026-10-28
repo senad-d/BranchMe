@@ -5,6 +5,8 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import assert from "node:assert/strict";
+import { BRANCHME_TOOL_NAMES } from "../src/constants.ts";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const localPiBinary = fileURLToPath(
@@ -15,13 +17,33 @@ const smokeTimeoutMs = 20_000;
 const runtimeVerifierCommandName = "branchmeverify";
 const runtimeVerifierMarker = "BRANCHME_RUNTIME_VERIFY:";
 const expectedBranchMeTools = [
+  {
+    name: "git_diff",
+    properties: ["baseRef", "contextLines", "mergeBase", "mode", "output", "paths", "targetRef", "worktreePath"],
+    required: [],
+    enums: { mode: ["unstaged", "staged", "range"], output: ["patch", "stat", "name-status"] },
+  },
+  { name: "git_status", properties: ["after", "paths", "worktreePath"], required: [] },
+  { name: "git_log", properties: ["after", "excludeRef", "paths", "ref", "worktreePath"], required: [] },
+  { name: "git_show", properties: ["output", "parent", "path", "ref", "worktreePath"], required: [], enums: { output: ["summary", "patch", "file"] } },
+  { name: "git_conflicts", properties: ["after", "expectedIndex", "path", "stage", "worktreePath"], required: [] },
+  { name: "list_remotes", properties: [], required: [] },
+  { name: "add_remote", properties: ["expectedConfig", "name", "url"], required: ["name", "url", "expectedConfig"] },
+  { name: "set_upstream", properties: ["branchName", "expectedConfig", "unset", "upstream"], required: ["branchName", "expectedConfig"] },
+  { name: "stage_changes", properties: ["expectedHead", "expectedIndex", "paths", "worktreePath"], required: ["paths", "expectedHead", "expectedIndex"] },
+  { name: "unstage_changes", properties: ["expectedHead", "expectedIndex", "paths", "worktreePath"], required: ["paths", "expectedHead", "expectedIndex"] },
+  { name: "restore_paths", properties: ["discardChanges", "expectedFiles", "expectedHead", "expectedIndex", "paths", "preview", "sourceRef", "worktreePath"], required: ["paths", "expectedHead", "expectedIndex"] },
+  { name: "revert_changes", properties: ["commit", "expectedHead", "expectedIndex", "worktreePath"], required: ["commit", "expectedHead", "expectedIndex"] },
+  { name: "pull_request_checks", properties: ["after", "number"], required: ["number"] },
+  { name: "edit_pull_request", properties: ["body", "draft", "number", "title"], required: ["number"] },
+  { name: "merge_pull_request", properties: ["expectedHead", "mergeMethod", "number"], required: ["number", "expectedHead", "mergeMethod"], enums: { mergeMethod: ["merge", "squash", "rebase"] } },
   { name: "list_branches", properties: ["kind", "patterns"], required: [], enums: { kind: ["local", "remote-tracking"] } },
   { name: "fetch_remote", properties: ["prune", "remote"], required: [] },
-  { name: "track_branch", properties: ["branchName", "remote", "remoteBranch"], required: ["branchName"] },
-  { name: "update_from_base", properties: ["baseBranch", "keepConflicts", "remote"], required: ["baseBranch"] },
+  { name: "track_branch", properties: ["branchName", "remote", "remoteBranch", "worktreePath"], required: ["branchName"] },
+  { name: "update_from_base", properties: ["baseBranch", "keepConflicts", "remote", "worktreePath"], required: ["baseBranch"] },
   { name: "conclude_merge", properties: ["action", "worktreePath"], required: ["action"], enums: { action: ["conclude", "abort"] } },
-  { name: "pull_request_status", properties: ["headBranch", "number"], required: [] },
-  { name: "pull_request_feedback", properties: ["headBranch", "number"], required: [] },
+  { name: "pull_request_status", properties: ["headBranch", "number", "worktreePath"], required: [] },
+  { name: "pull_request_feedback", properties: ["headBranch", "number", "worktreePath"], required: [] },
   { name: "reply_pull_request_feedback", properties: ["body", "number", "resolve", "threadId"], required: ["number", "body"] },
   { name: "pull_request_files", properties: ["number"], required: ["number"] },
   { name: "label_pull_request", properties: ["labels", "number"], required: ["number", "labels"] },
@@ -36,14 +58,14 @@ const expectedBranchMeTools = [
       },
     },
   },
-  { name: "change_branch", properties: ["branchName"], required: ["branchName"] },
+  { name: "change_branch", properties: ["branchName", "worktreePath"], required: ["branchName"] },
   { name: "init_repository", properties: ["initialBranch"], required: [] },
-  { name: "create_branch", properties: ["branchName"], required: ["branchName"] },
-  { name: "fetch_branch", properties: ["branch", "remote"], required: [] },
-  { name: "pull_branch", properties: [], required: [] },
-  { name: "rebase_branch", properties: [], required: [] },
-  { name: "push_branch", properties: [], required: [] },
-  { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title"], required: [] },
+  { name: "create_branch", properties: ["baseRef", "branchName", "worktreePath"], required: ["branchName"] },
+  { name: "fetch_branch", properties: ["branch", "remote", "worktreePath"], required: [] },
+  { name: "pull_branch", properties: ["worktreePath"], required: [] },
+  { name: "rebase_branch", properties: ["baseRef", "worktreePath"], required: [] },
+  { name: "push_branch", properties: ["worktreePath"], required: [] },
+  { name: "pull_request", properties: ["baseBranch", "body", "draft", "headBranch", "title", "worktreePath"], required: [] },
   { name: "integrate_branch", properties: ["keepConflicts", "sourceBranch", "targetBranch", "worktreePath"], required: ["sourceBranch", "targetBranch"] },
   {
     name: "retire_branch",
@@ -114,6 +136,11 @@ function summarizeOutput(value) {
 }
 
 function runtimeVerifierSource() {
+  assert.deepEqual(
+    expectedBranchMeTools.map((tool) => tool.name).sort(),
+    [...BRANCHME_TOOL_NAMES].sort(),
+    "runtime schema contracts must cover every canonical BranchMe tool exactly once",
+  );
   return `const expectedTools = ${JSON.stringify(expectedBranchMeTools, null, 2)};
 const commandName = ${JSON.stringify(runtimeVerifierCommandName)};
 const marker = ${JSON.stringify(runtimeVerifierMarker)};
@@ -167,16 +194,23 @@ function hasExtensionSourceMetadata(sourceInfo) {
   );
 }
 
-function verifyTool(tool, expected, activeTools, toolSnippets) {
+function verifyTool(tool, expected, activeTools, toolSnippets, systemPrompt) {
   const failures = [];
   const schema = schemaSummary(tool.parameters);
   const guidelines = Array.isArray(tool.promptGuidelines) ? tool.promptGuidelines : [];
   const sourceInfo = tool.sourceInfo ?? null;
   const sourceMetadataValid = hasExtensionSourceMetadata(sourceInfo);
   const active = activeTools.has(expected.name);
-  const descriptionMentionsName = typeof tool.description === "string" && tool.description.includes(expected.name);
+  const descriptionValid = typeof tool.description === "string" && tool.description.trim().length > 0 &&
+    !tool.description.startsWith(expected.name);
   const promptSnippet = toolSnippets[expected.name];
-  const promptSnippetMentionsName = typeof promptSnippet === "string" && promptSnippet.includes(expected.name);
+  const promptSnippetValid = typeof promptSnippet === "string" && promptSnippet.trim().length > 0 &&
+    promptSnippet === promptSnippet.trim() && !/[\\r\\n]/u.test(promptSnippet) &&
+    !promptSnippet.startsWith(expected.name + ":");
+  const promptLine = "- " + expected.name + ": " + promptSnippet;
+  const toolsSection = systemPrompt.split("<tools>\\n")[1]?.split("\\n</tools>")[0] ?? "";
+  const promptLineRenderedOnce = promptSnippetValid &&
+    toolsSection.split("\\n").filter((line) => line === promptLine).length === 1;
 
   if (!active) failures.push(expected.name + " is registered but not active");
   if (!schema.strict) failures.push(expected.name + " schema does not set additionalProperties: false");
@@ -198,9 +232,9 @@ function verifyTool(tool, expected, activeTools, toolSnippets) {
     objects[propertyName] = verification;
     failures.push(...verification.failures.map((failure) => expected.name + " " + failure));
   }
-  if (!descriptionMentionsName) failures.push(expected.name + " description does not name the tool");
-  if (!promptSnippetMentionsName) failures.push(expected.name + " prompt snippet is missing or does not name the tool");
-  if (guidelines.length === 0) failures.push(expected.name + " has no prompt guidelines");
+  if (!descriptionValid) failures.push(expected.name + " description must be nonempty without a repeated tool-name prefix");
+  if (!promptSnippetValid) failures.push(expected.name + " prompt snippet must be a nonempty single line without its own name prefix");
+  if (!promptLineRenderedOnce) failures.push(expected.name + " prompt snippet was not rendered exactly once with Pi's name prefix");
   if (!guidelines.every((guideline) => typeof guideline === "string" && guideline.includes(expected.name))) {
     failures.push(expected.name + " prompt guidelines do not consistently name the tool");
   }
@@ -216,8 +250,9 @@ function verifyTool(tool, expected, activeTools, toolSnippets) {
     required: schema.required,
     objects,
     promptGuidelines: guidelines.length,
-    descriptionMentionsName,
-    promptSnippetMentionsName,
+    descriptionValid,
+    promptSnippetValid,
+    promptLineRenderedOnce,
     sourceMetadataValid,
     source: sourceInfo?.source ?? null,
     scope: sourceInfo?.scope ?? null,
@@ -236,11 +271,11 @@ export default function branchMeRuntimeVerifier(pi) {
       const toolSnippets = promptOptions.toolSnippets && typeof promptOptions.toolSnippets === "object"
         ? promptOptions.toolSnippets
         : {};
+      const systemPrompt = ctx.getSystemPrompt();
       const byName = new Map(allTools.map((tool) => [tool.name, tool]));
       const failures = [];
       const tools = [];
 
-      if (expectedTools.length !== 25) failures.push("runtime verifier did not expect exactly twenty-five BranchMe tools");
       for (const forbiddenName of ["continue_merge", "abort_merge"]) {
         if (byName.has(forbiddenName) || activeTools.has(forbiddenName)) {
           failures.push(forbiddenName + " must not be registered or active");
@@ -258,7 +293,7 @@ export default function branchMeRuntimeVerifier(pi) {
           continue;
         }
 
-        const verification = verifyTool(tool, expected, activeTools, toolSnippets);
+        const verification = verifyTool(tool, expected, activeTools, toolSnippets, systemPrompt);
         tools.push(verification);
         failures.push(...verification.failures);
       }
@@ -306,7 +341,7 @@ function assertRuntimeVerification(output) {
   }
 
   const verifiedNames = Array.isArray(verification.tools) ? verification.tools.map((tool) => tool.name).sort((left, right) => left.localeCompare(right)) : [];
-  const expectedNames = expectedBranchMeTools.map((tool) => tool.name).sort((left, right) => left.localeCompare(right));
+  const expectedNames = [...BRANCHME_TOOL_NAMES].sort((left, right) => left.localeCompare(right));
   if (verifiedNames.join("\0") !== expectedNames.join("\0")) {
     throw new Error(`Pi runtime BranchMe tool verification returned unexpected tools: ${verifiedNames.join(", ") || "<none>"}.`);
   }

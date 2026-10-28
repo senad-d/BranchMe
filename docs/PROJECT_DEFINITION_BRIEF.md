@@ -15,7 +15,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 - Exported extension function: `branchMeExtension`
 - Repository URL: `https://github.com/senad-d/branchme`
 - One-sentence pitch: Verified Pi tools for Git repository initialization plus current-repository branch, integration, retirement, linked-worktree, push, and GitHub pull request workflows.
-- Tool count: twenty-five strict agent-callable tools.
+- Tool surface: strict agent-callable tools, listed in the integration table below.
 
 ## 3. Users and use cases
 
@@ -38,11 +38,11 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - Create or reuse an exact matching open PR in the resolved current GitHub repository; inspect lifecycle/commit identities with `pull_request_status`.
   - Verify exact host-merge evidence through `land_branch.pullRequestNumber` for squash/rebase cleanup without falsifying graph ancestry.
 - Non-goals:
-  - No staging, direct working-tree edits, user-authored commits, commit-message input/generation, diff generation, stashing, resets, or force pushes. Explicit `integrate_branch` may let Git create its standard merge commit for divergent histories.
+  - No user-authored commits, commit-message input/generation, stashing, resets, force pushes, or arbitrary file editing. Guarded exact-path staging/unstaging, explicitly authorized tracked-file restoration, and no-commit inverse preparation are supported independently of CommitMe. Explicit read-only `git_diff` inspection is supported; automatic context remains metadata-only. Explicit `integrate_branch` may let Git create its standard merge commit for divergent histories.
   - No automatic Pi cwd changes, process/session creation, or copying of `.env` and other ignored/untracked files into linked worktrees.
   - No bulk or pattern local-branch deletion, inferred retirement targets, server-side remote deletion, arbitrary remote-tracking deletion, automatic worktree removal during retirement, or reset-based retirement rollback. Explicit `fetch_remote.prune` only removes stale cached branch refs for one selected remote.
   - No GitHub CLI dependency or cross-repository pull requests.
-  - No labels, reviewers, projects, or issue-linking behavior.
+  - No reviewer, project, or issue-linking administration. Existing-repository PR labeling is supported.
 
 ## 4. Pi integration surface
 
@@ -50,6 +50,21 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 | --- | --- | --- | --- |
 | Command | `/branchme` | Compact TUI status and workflow panel | Informational; no Git or GitHub mutations |
 | Command | `/branchme help` | Runtime requirements and workflow guidance | Informational; no actions |
+| Tool | `git_log` | Inspect paginated local commit history | Captured start/exclusion commits, literal paths, shallow/unborn reporting; no fetch |
+| Tool | `git_show` | Inspect one commit or historical blob | Explicit merge parent, root comparisons, bounded text and binary/oversized summaries |
+| Tool | `git_conflicts` | Inspect available conflict index stages | Paginated paths, optional expected index, absent-stage reporting; never resolves/stages |
+| Tool | `list_remotes` | Inspect remote destinations | Bounded configured/effective previews and configuration fingerprint; no network |
+| Tool | `add_remote` | Add one unused remote | Credential-free HTTPS/SSH, no URL rewriting/overwrite/fetch; expected configuration |
+| Tool | `set_upstream` | Set/unset named local branch tracking | Existing configured tracking ref; expected configuration; no ref/file changes |
+| Tool | `stage_changes` | Stage approved exact files | Fresh HEAD/index expectations; no directories/force/commit; working bytes preserved |
+| Tool | `unstage_changes` | Unstage approved exact files | Captured HEAD or unborn additions; working bytes and unrelated index entries preserved |
+| Tool | `restore_paths` | Preview/apply guarded tracked-file restoration | Explicit discard and per-file expectations; logical index preserved; untracked content protected |
+| Tool | `revert_changes` | Prepare a no-commit inverse | One contained non-merge commit; verified conflict abort; owned successful operation quit |
+| Tool | `pull_request_checks` | Inspect all check states and host readiness | Captured head, bounded pages, explicit unknown/partial/pending/no-check states |
+| Tool | `edit_pull_request` | Update explicit PR metadata | Open PR only; preserve omitted title/body/draft fields; reconcile ambiguous outcomes |
+| Tool | `merge_pull_request` | Perform authorized guarded host merge | Expected-head lease, ready host policy, enabled explicit method; no cleanup/bypass |
+| Tool | `git_status` | Enumerate complete per-file status | Literal filters, same-repository worktree selection, snapshot-bound continuation, index/worktree states, operations, safe expectation fingerprints; no content returned or mutation |
+| Tool | `git_diff` | Inspect unstaged, staged, or captured ref-range changes | Optional merge base, literal root-relative filters, patch/stat/name-status output, same-repository worktree selector; redacted/escaped display capped at 1,000 lines / 32 KiB; no artifact or automatic diff collection |
 | Tool | `list_branches` | Discover local and cached remote-tracking refs | Bounded, read-only; optional kind/glob patterns filter before limits; includes upstream counts and occupancy |
 | Tool | `fetch_remote` | Refresh one remote's full branch cache | Optional stale tracking-ref pruning; no local-ref, tag, checkout, or upstream changes; files ref backend required |
 | Tool | `track_branch` | Join an existing remote branch | Narrow fetch, clean idle checkout, verified HEAD/upstream |
@@ -71,13 +86,15 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 | Tool | `change_branch` | Switch to an existing local branch | Rejects dirty worktrees |
 | Tool | `fetch_branch` | Refresh a configured upstream or explicit remote branch's tracking ref | Explicit fetch refspec; no checkout change |
 | Tool | `pull_branch` | Fast-forward the clean current branch | No rebase, merge commit, or autostash |
-| Tool | `rebase_branch` | Rebase the clean current branch onto its upstream | Explicit history rewrite; automatic abort attempt on failure |
-| Tool | `create_branch` | Create and check out a new branch from current `HEAD` | Fails when invalid or already present |
+| Tool | `rebase_branch` | Rebase onto configured upstream or explicit captured local base | Explicit rewrite; no fetch/force-push; explicit-base failure verifies restoration |
+| Tool | `create_branch` | Create and check out a new branch at HEAD or explicit captured base | No fetch/inferred tracking; fails when invalid or already present |
 | Tool | `push_branch` | Push or publish the current branch | Explicit remote/refspec behavior |
 | Tool | `pull_request` | Preflight branch state and create a GitHub pull request | Current repository only; autofill is opt-in |
 | Event | `before_agent_start` | Append fresh bounded Git context to the system prompt | Read-only collection; no worktree inventory |
 | UI | TUI panel | Compact BranchMe workflow/configuration view | Responsive and width-bounded |
 | Resource | none | No bundled skills, prompts, or themes | Package remains extension-focused |
+
+Branch-dependent tools support optional verified same-repository `worktreePath` selection without changing Pi's cwd. Branch-inferred PR reads reject it with exact-number lookup. Mutating tool calls use an outer process-wide coordinator before existing root/common-directory queues; external writers are not locked out. See [shell-free workflows](SHELL_FREE_WORKFLOWS.md) for contracts, limits, authorization, and recovery details.
 
 ## 5. Architecture
 
@@ -92,6 +109,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - `src/tools/workflow-tools.ts`
   - `src/git.ts`
   - `src/git-discovery.ts`
+  - `src/git-diff.ts`
   - `src/git-workflow.ts`
   - `src/git-integration.ts`
   - `src/git-retirement.ts`
@@ -99,7 +117,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
   - `src/github.ts`
   - `src/ui/branchme-panel.ts`
 - Module boundaries:
-  - The extension entry point registers the informational command, twenty-five tools, and automatic context hook.
+  - The extension entry point registers the informational command, the canonical tool inventory, and automatic context hook.
   - `src/git-workflow.ts` and `src/tools/workflow-tools.ts` own verified remote tracking, base updates, and the new PR status registration.
   - The context module owns bounded read-only collection, prompt formatting, targeted ancestry rendering, and the `before_agent_start` hook; automatic context never runs ancestry queries.
   - The command and UI modules own mode-safe informational help/status behavior and never invoke mutations.
@@ -123,7 +141,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 - Repository initialization: `init_repository` creates in-place `.git` metadata only in pi's canonical current directory after rejecting existing or nested repositories; it creates an unborn branch but no commit or project file.
 - Active-checkout mutations: explicit branch switching, creation, pull, rebase, and integration operations can update Git metadata and working-tree files through Git. Explicit retirement can delete one exact local branch ref. Push and fetch operations can update remote or remote-tracking refs through Git.
 - Linked-worktree mutations: `create_worktree` can create a checkout directory outside the active checkout after canonical destination and repository-boundary validation. `remove_worktree` can recursively remove only an exact verified linked-worktree directory after clean and ignored-entry preflights.
-- BranchMe does not directly edit project files, stage content, create user-authored commits, accept commit messages, copy local-only files into new worktrees, delete the retained branch during removal, or mutate worktrees through slash commands. `integrate_branch` may cause Git to create a standard merge commit under the verified boundary below; `retire_branch` may delete one exact local branch ref only under the separate leased boundary below.
+- BranchMe does not create user-authored commits, accept commit messages, copy local-only files into new worktrees, delete the retained branch during removal, or mutate worktrees through slash commands. Exact-path index changes, guarded Git restoration, and no-commit inverses are explicit tool actions; no CommitMe integration exists. `integrate_branch` may cause Git to create a standard merge commit under the verified boundary below; `retire_branch` may delete one exact local branch ref only under the separate leased boundary below.
 
 Standalone removal retains its branch and requires explicit `deleteIgnored: true` authorization to delete ignored residue. `land_branch` is a combined post-merge alternative: it authorizes deletion of ignored residue, uses the fetched remote-tracking target for leased retirement, reports each outcome, and syncs the local target last. See [README landing contract](../README.md#post-merge-cleanup-in-one-call) and [security boundary](../SECURITY.md#post-merge-landing-boundary).
 

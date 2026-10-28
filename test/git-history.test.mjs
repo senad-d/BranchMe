@@ -1,0 +1,91 @@
+import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import test from "node:test";
+import { getGitLog, getGitShow } from "../src/git-history.ts";
+import { READ_RAW_BYTES } from "../src/git-read.ts";
+import { checked, fixture, state } from "./helpers/git-fixture.mjs";
+
+test("git_log continuation stays pinned when HEAD moves and supports excluded bases, paths, unborn and shallow history", async (t) => {
+  const f = await fixture(t);
+  const initial = await checked(f.root, ["rev-parse", "HEAD"]);
+  for (let i = 0; i < 27; i++) await checked(f.root, ["commit", "--allow-empty", "-m", `older-${i}`]);
+  const before = await state(f.root);
+  const page = await getGitLog(f.pi, { cwd: f.root });
+  assert.equal(page.commits.length, 25);
+  assert.equal(page.complete, false);
+  await checked(f.root, ["commit", "--allow-empty", "-m", "new tip"]);
+  const rest = await getGitLog(f.pi, { cwd: f.root }, { after: page.next });
+  assert.equal(rest.start, page.start);
+  assert.equal(rest.commits.length, 3);
+  assert.equal(rest.complete, true);
+  assert.equal(rest.commits.at(-1).head, initial);
+  await assert.rejects(getGitLog(f.pi, { cwd: f.root }, { after: page.next, paths: ["other"] }));
+  assert.equal((await getGitLog(f.pi, { cwd: f.root }, { excludeRef: "HEAD" })).commits.length, 0);
+  assert.equal((await getGitLog(f.pi, { cwd: f.root }, { paths: ["file.txt"] })).commits.length, 1);
+  assert.deepEqual((await state(f.root)).index, before.index);
+  const unborn = await fixture(t, true);
+  assert.equal((await getGitLog(unborn.pi, { cwd: unborn.root })).unborn, true);
+  const shallow = join(f.temp, "shallow");
+  await checked(f.temp, ["clone", "--depth=1", `file://${f.root}`, shallow]);
+  assert.equal((await getGitLog(f.pi, { cwd: shallow })).shallow, true);
+});
+
+test("git_show inspects roots, changes, literal historical blobs, symlinks and binaries without state changes", async (t) => {
+  const f = await fixture(t);
+  const rootCommit = await checked(f.root, ["rev-parse", "HEAD"]);
+  const root = await getGitShow(f.pi, { cwd: f.root }, { output: "patch" });
+  assert.equal(root.comparisonBase, null);
+  assert.match(root.text, /\+initial/u);
+  await writeFile(join(f.root, "file.txt"), "new\n");
+  await writeFile(join(f.root, "*.txt"), "literal secret\n");
+  await writeFile(join(f.root, "binary"), Buffer.from([0, 255]));
+  await checked(f.root, ["add", "."]);
+  await checked(f.root, ["commit", "-m", "change"]);
+  const before = await state(f.root);
+  const historic = await getGitShow(f.pi, { cwd: f.root }, { ref: rootCommit, output: "file", path: "file.txt" });
+  assert.equal(historic.text, "initial\n");
+  const literal = await getGitShow(f.pi, { cwd: f.root }, { output: "file", path: "*.txt" });
+  assert.equal(literal.text, "literal secret\n");
+  assert.equal((await getGitShow(f.pi, { cwd: f.root }, { output: "file", path: "binary" })).binary, true);
+  await assert.rejects(getGitShow(f.pi, { cwd: f.root }, { output: "file", path: "absent" }));
+  const diff = await getGitShow(f.pi, { cwd: f.root }, { output: "patch" });
+  assert.equal(diff.comparisonBase, rootCommit);
+  assert.match(diff.text, /\+new/u);
+  assert.deepEqual(await state(f.root), before);
+});
+
+test("git_show requires explicit merge parent and rejects invalid parent selection", async (t) => {
+  const f = await fixture(t);
+  await checked(f.root, ["switch", "-c", "side"]);
+  await writeFile(join(f.root, "side"), "side"); await checked(f.root, ["add", "."]); await checked(f.root, ["commit", "-m", "side"]);
+  await checked(f.root, ["switch", "main"]);
+  await checked(f.root, ["commit", "--allow-empty", "-m", "main"]);
+  await checked(f.root, ["merge", "--no-edit", "side"]);
+  await assert.rejects(getGitShow(f.pi, { cwd: f.root }), /explicit/u);
+  assert.ok((await getGitShow(f.pi, { cwd: f.root }, { parent: 1 })).text.includes("side"));
+  assert.equal((await getGitShow(f.pi, { cwd: f.root }, { parent: 2 })).text, "");
+  await assert.rejects(getGitShow(f.pi, { cwd: f.root }, { parent: 3 }));
+});
+
+test("history reads disable helpers, sanitize and bound output, support worktrees and reject unsafe inputs", async (t) => {
+  const f = await fixture(t);
+  await checked(f.root, ["config", "core.fsmonitor", "sh -c 'exit 77'"]);
+  await checked(f.root, ["config", "log.showSignature", "true"]);
+  await writeFile(join(f.root, "huge"), "ghp_privateToken\n\u001b[31m\n" + "a".repeat(100000));
+  await writeFile(join(f.root, "oversized"), Buffer.alloc(READ_RAW_BYTES + 1));
+  await checked(f.root, ["add", "."]); await checked(f.root, ["commit", "-m", "ghp_subjectSecret"]);
+  const huge = await getGitShow(f.pi, { cwd: f.root }, { output: "file", path: "huge" });
+  assert.equal(huge.truncated, true);
+  assert.doesNotMatch(JSON.stringify(huge), /ghp_privateToken|ghp_subjectSecret/u);
+  assert.ok(Buffer.byteLength(huge.text) <= 32768);
+  assert.equal((await getGitShow(f.pi, { cwd: f.root }, { output: "file", path: "oversized" })).truncated, true);
+  const linked = join(f.temp, "linked"); await checked(f.root, ["worktree", "add", "-b", "linked", linked]);
+  assert.equal((await getGitLog(f.pi, { cwd: f.root }, { worktreePath: linked })).repoRoot, linked);
+  await mkdir(join(linked, "sub"));
+  await assert.rejects(getGitLog(f.pi, { cwd: f.root }, { worktreePath: join(linked, "sub") }));
+  for (const args of [{ ref: "--all" }, { paths: ["../x"] }, { after: "bad" }, { force: true }]) await assert.rejects(getGitLog(f.pi, { cwd: f.root }, args));
+  for (const args of [{ output: "file" }, { path: ".git/config" }, { ref: "HEAD:file" }, { parent: 0 }]) await assert.rejects(getGitShow(f.pi, { cwd: f.root }, args));
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(getGitLog(f.pi, { cwd: f.root }, {}, controller.signal), { name: "AbortError" });
+});

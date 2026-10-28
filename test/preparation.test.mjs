@@ -64,7 +64,12 @@ test("packaged project brief describes current worktree behavior", async () => {
   const projectBrief = await readProjectFile("docs/PROJECT_DEFINITION_BRIEF.md");
 
   assert.ok(packageJson.files.includes("docs/**/*.md"));
-  assert.match(projectBrief, /twenty-five strict agent-callable tools/i);
+  assert.match(projectBrief, /strict agent-callable tools/i);
+  assert.deepEqual(
+    [...projectBrief.matchAll(/^\| Tool \| `(\w+)` \|/gmu)].map((match) => match[1]).sort(),
+    [...BRANCHME_TOOL_NAMES].sort(),
+    "the project brief must document every canonical tool exactly once",
+  );
   for (const toolName of ["init_repository", "list_worktrees", "create_worktree", "remove_worktree", "retire_branch"]) {
     assert.match(projectBrief, new RegExp(`\\b${toolName}\\b`, "u"));
   }
@@ -142,7 +147,6 @@ test("branch retirement contracts are bounded and registered atomically", async 
   const tools = await readProjectFile("src/tools/branchme-tools.ts");
 
   assert.equal(RETIRE_BRANCH_TOOL_NAME, "retire_branch");
-  assert.equal(BRANCHME_TOOL_NAMES.length, 25);
   assert.equal(BRANCHME_TOOL_NAMES.includes(RETIRE_BRANCH_TOOL_NAME), true);
   assert.equal(constants.match(/export const RETIRE_BRANCH_TOOL_NAME\b/gu)?.length, 1);
   assert.match(tools, /name: RETIRE_BRANCH_TOOL_NAME,/u);
@@ -211,13 +215,20 @@ test("public documentation describes implemented behavior", async () => {
     /BranchMe (?:never|does not|doesn't)[^.\n]*delete (?:local )?branches/iu,
     "active documentation still makes a blanket no-local-branch-deletion claim",
   );
-  assert.match(activeDocumentation, /twenty-five (?:agent-callable )?tools/iu);
+  assert.match(activeDocumentation, /agent-callable tools/iu);
   assert.match(activeDocumentation, /git update-ref --no-deref -d/iu);
   assert.match(activeDocumentation, /branch\.<(?:branchName|name)>\.\*/u);
   assert.match(activeDocumentation, /remote-tracking refs? (?:are|remain) untouched/iu);
 
   const readme = activeDocs[0];
+  const toolReference = readme.slice(readme.indexOf("## Tools\n"), readme.indexOf("## Workflow and Boundaries\n"));
+  assert.deepEqual(
+    [...toolReference.matchAll(/^\| `(\w+)` \|/gmu)].map((match) => match[1]).sort(),
+    [...BRANCHME_TOOL_NAMES].sort(),
+    "README must document every canonical tool exactly once",
+  );
   assert.match(readme, /branch_status/);
+  assert.match(readme, /git_diff/);
   assert.match(readme, new RegExp(INIT_REPOSITORY_TOOL_NAME, "u"));
   assert.match(readme, /change_branch/);
   assert.match(readme, /create_branch/);

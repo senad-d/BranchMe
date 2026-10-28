@@ -1656,7 +1656,7 @@ function worktreeCreationFailure(
   );
 }
 
-async function resolveWorktreeBaseCommit(
+export async function resolveWorktreeBaseCommit(
   pi: Pick<ExtensionAPI, "exec">,
   ctx: GitCommandContext,
   baseRef: string,
@@ -2745,6 +2745,7 @@ export async function createLocalBranch(
   ctx: GitCommandContext,
   branchName: string,
   signal?: AbortSignal,
+  baseRef?: string,
 ): Promise<CreateBranchDetails> {
   const repoRoot = await getGitRoot(pi, ctx, signal);
   const rootCtx = { cwd: repoRoot };
@@ -2757,11 +2758,19 @@ export async function createLocalBranch(
       throw new Error(`Local branch '${redactSecrets(branchName)}' already exists.`);
     }
 
-    await runGit(pi, rootCtx, ["switch", "-c", branchName], {
+    let base: string | undefined;
+    if (baseRef !== undefined) {
+      validateBranchNameInput(baseRef, "baseRef");
+      if ((await getGitOperationState(pi, rootCtx, signal)).active.length) throw new Error("An in-progress Git operation must be completed or aborted first.");
+      await requireNoTrackedChanges(pi, rootCtx, "create_branch", signal);
+      base = await resolveWorktreeBaseCommit(pi, rootCtx, baseRef, signal);
+    }
+    await runGit(pi, rootCtx, ["switch", ...(base ? ["--no-overwrite-ignore"] : []), "-c", branchName, ...(base ? [base] : [])], {
       signal,
       timeout: GIT_MUTATION_TIMEOUT_MS,
     });
     const head = await getVerifiedRefCommit(pi, rootCtx, "HEAD", "HEAD", signal);
+    if (base && (head !== base || (await getCurrentBranch(pi, rootCtx, signal)).currentBranch !== branchName)) throw new Error("Branch creation postconditions are uncertain; inspect git_status before continuing.");
 
     return { repoRoot, previousBranch: safeDetail(previousBranch), newBranch: safeDetail(branchName), head };
   });
