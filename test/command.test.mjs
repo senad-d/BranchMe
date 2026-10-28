@@ -173,6 +173,7 @@ test("/branchme help returns concise workflow and requirements through UI modes"
   assert.doesNotMatch(ctx.notifications[0].message, /\| Tool \|/);
   assert.equal(pi.calls.length, 0);
   assert.equal(getBranchMeHelpText().includes("Commands only show info"), true);
+  assert.match(getBranchMeHelpText(), /commit_changes.*never pushes/);
 });
 
 test("/branchme help writes only in print mode when no UI is available", async () => {

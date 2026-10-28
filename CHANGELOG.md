@@ -2,6 +2,7 @@
 
 ## 0.3.16 - Unreleased
 
+- Added `commit_changes`, ported from CommitMe with the same behavior: `action: "gather"` returns read-only bounded commit context; `action: "commit"` commits an explicit subject or drafts one with the active model; `paths`, `steeringPrompt`, `confirm`, and unsafe-file approval work as before. The tool uses BranchMe's Git runner, lock retry, redacted Git errors, 30-second mutation timeout, worktree routing, tool mutation coordinator, and blocker guidance. Commits now stage and commit from the repository root, fixing CommitMe's failure when Pi runs in a subdirectory. The `/commitme` command is not included. Uninstall `@senad-d/commitme` to avoid two commit tools.
 - Resolved Sonar findings in Git inspection, guarded index/restoration/revert operations, remote configuration, and GitHub PR workflows: extracted focused helpers, parallelized independent bounded reads, retained bounded filesystem concurrency, made alphabetical sorting explicit, and simplified validation and error formatting. Preserved strict rejection of null diff modes and added mixed-case remote sorting regression coverage.
 
 ## 0.3.15 - Unreleased

@@ -1,6 +1,6 @@
 # Git workflows without Bash
 
-BranchMe and CommitMe remain independent. BranchMe does not create ordinary commits, generate commit messages, load another extension, or hand work to a commit tool automatically. Editing code and running tests still require separate development tools.
+Ordinary commits happen only through explicit `commit_changes` calls. No other tool creates ordinary commits, generates commit messages, or hands work to `commit_changes` automatically. Editing code and running tests still require separate development tools.
 
 ## Inspection
 

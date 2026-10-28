@@ -2,7 +2,7 @@
   "name": "@senad-d/branchme",
   "version": "0.3.16",
   "type": "module",
-  "description": "Pi extension for verified Git repository initialization, branch, worktree, integration, retirement, push, and pull request workflows.",
+  "description": "Pi extension for verified Git repository initialization, commit, branch, worktree, integration, retirement, push, and pull request workflows.",
   "license": "MIT",
   "author": "Senad Dizdarević <112484166+senad-d@users.noreply.github.com>",
   "repository": {
@@ -26,6 +26,8 @@
     "git-workflow",
     "github",
     "github-pr",
+    "commit-message",
+    "conventional-commits",
     "pull-request",
     "branch-workflow",
     "automation",
@@ -75,8 +77,8 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^1.0.2",
-    "@earendil-works/pi-coding-agent": "^1.0.2",
+    "@earendil-works/pi-ai": "^1.3.0",
+    "@earendil-works/pi-coding-agent": "^1.3.0",
     "@earendil-works/pi-tui": "^1.0.2",
     "@types/node": "^26.0.1",
     "typebox": "^1.2.18",

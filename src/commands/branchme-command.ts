@@ -37,7 +37,7 @@ export function getBranchMeHelpText(): string {
     "3. `fetch_branch` — fetch its configured upstream remote (or an explicit `remote`/`branch`) without changing local files.",
     "4. `pull_branch` — fast-forward from upstream, or `rebase_branch` — rebase local commits onto upstream.",
     "5. `create_branch` — create a new branch from the updated `HEAD`.",
-    "6. Commit outside BranchMe.",
+    "6. `commit_changes` — create a local Conventional Commit.",
     "7. `push_branch` — push the current branch.",
     "8. `pull_request` — open a PR after `push_branch` completes and GitHub sees the branches.",
     "",
@@ -49,6 +49,7 @@ export function getBranchMeHelpText(): string {
     "- `git_conflicts` — read available base/ours/theirs index stages without resolving; missing stages are normal, and ours/theirs depend on the operation.",
     "- `list_remotes` / `add_remote` / `set_upstream` — inspect remote destinations, add an unused credential-free remote, or configure branch tracking with expected configuration fingerprints; no hidden fetch.",
     "- `stage_changes` / `unstage_changes` — exact approved paths and fresh HEAD/index expectations; preserve working files and never commit.",
+    "- `commit_changes` — `action: \"gather\"` returns read-only commit context; `action: \"commit\"` commits an explicit or drafted subject, `paths` limits the commit, and it never pushes.",
     "- `restore_paths` — preview first, then apply only with explicit discard authorization and fresh per-file fingerprints; protects untracked files and logical index entries.",
     "- `revert_changes` — prepare one non-merge commit inverse without committing; conflicts attempt verified abort/restoration, successful owned operation state is quit without discarding the inverse.",
     "- `list_branches` — discover local/cached remote refs, upstream counts, and occupancy; optional `kind` and Git glob `patterns` filter before limits.",
@@ -101,7 +102,7 @@ export function getBranchMeHelpText(): string {
     "- Branch-dependent tools accept a verified same-repository worktreePath without changing Pi's cwd; mutating tool calls are serialized across worktrees in this process.",
     "- `pull_branch` and `rebase_branch` require a clean working tree.",
     "- `rebase_branch` rewrites local commits only when explicitly requested and auto-aborts on failure.",
-    "- BranchMe never creates ordinary commits or force-pushes and has no CommitMe integration. Guarded index/restore/revert tools and the existing Git-generated merge commits remain explicit actions.",
+    "- BranchMe never force-pushes. Ordinary commits happen only through `commit_changes`. Guarded index/restore/revert tools and the existing Git-generated merge commits remain explicit actions.",
   ].join("\n");
 }
 

@@ -33,7 +33,7 @@ BranchMe is a Pi extension for safe Git repository, branch, and worktree workflo
 - **Repository-scoped:** `init_repository` can initialize only pi's exact current working directory when it is not already inside a repository. Other Git and GitHub operations resolve from the checkout where pi is running. Linked worktree directories may be outside that checkout, but must be verified members of the same repository.
 - **Explicit history rewrites:** `rebase_branch` runs only when explicitly requested, requires a clean current branch and either an upstream or explicit `baseRef`, disables autostash and multi-ref updates, and automatically attempts to abort on failure.
 - **Verified worktree handoff:** `create_worktree` verifies path, branch, `HEAD`, and cleanliness before returning an absolute `handoff.cwd`; starting another Pi session or subagent there remains the caller's responsibility.
-- **Commit-safe:** context collection is read-only, and BranchMe never creates user-authored commits, accepts or generates commit messages, force-pushes, or resets. Guarded index operations and explicitly authorized selected-file restoration are supported without ordinary commits. Explicit `integrate_branch` and `update_from_base` calls may let Git create a standard merge commit for divergent histories; `conclude_merge` stages only the formerly unmerged paths of a kept merge and commits them with Git's prepared merge message.
+- **Commit-safe:** context collection is read-only, and BranchMe never force-pushes or resets. Ordinary commits happen only through `commit_changes`, which validates a one-line Conventional Commit subject and never push. Guarded index operations and explicitly authorized selected-file restoration are supported without ordinary commits. Explicit `integrate_branch` and `update_from_base` calls may let Git create a standard merge commit for divergent histories; `conclude_merge` stages only the formerly unmerged paths of a kept merge and commits them with Git's prepared merge message.
 - **Strict tools:** tool schemas reject undocumented properties such as `stash`, `discard`, `owner`, `repo`, or `path`; `baseRef` is supported by `create_branch`, `rebase_branch`, and `create_worktree` in new-branch mode; the only force decision is the required boolean on `retire_branch`, and every tool accepts only its documented fields.
 - **PR-ready:** create GitHub pull requests from existing local branches after verifying the `headBranch` matches GitHub and the base is visible. PR fields can stay explicit, or configured autofill can derive omitted fields from the current branch, default branch, and commit subjects.
 
@@ -258,6 +258,7 @@ Commands are informational only. BranchMe actions are performed by agent-callabl
 | `list_remotes` | `{}` | Inspect configured/effective destinations and a configuration fingerprint without network access. Bounded previews with omissions and unsupported settings reported. |
 | `add_remote` | `{ "name": string, "url": string, "expectedConfig": string }` | Add an unused non-overlapping remote using credential-free HTTPS/SSH; no fetch, overwrite, URL rewrite, or global config change. |
 | `set_upstream` | `{ "branchName": string, "upstream"?: string, "unset"?: boolean, "expectedConfig": string }` | Set one existing remote-tracking upstream or explicitly unset it, preserving refs/files and other branch configuration. |
+| `commit_changes` | `{ "action"?: "gather" \| "commit", "message"?: string, "steeringPrompt"?: string, "paths"?: string[], "confirm"?: boolean, "worktreePath"?: string }` | `gather` (default) is read-only and returns bounded commit context for drafting one subject. `commit` with `message` commits that validated subject; without `message` it drafts one with the active model. `paths` limits staging and committing to exact repo-relative paths. Unsafe files require UI approval or block the commit. Never pushes. |
 | `stage_changes` | `{ "paths": string[], "expectedHead": string \| null, "expectedIndex": string, "worktreePath"?: string }` | Stage exact approved files with fresh inspection expectations. Preserves working files/unrelated index entries; never commits. |
 | `unstage_changes` | `{ "paths": string[], "expectedHead": string \| null, "expectedIndex": string, "worktreePath"?: string }` | Return selected index entries to captured HEAD (or unstage unborn additions), preserving working bytes. Never discards edits or commits. |
 | `restore_paths` | `{ "paths": string[], "expectedHead": string \| null, "expectedIndex": string, "preview"?: boolean, "sourceRef"?: string, "discardChanges"?: boolean, "expectedFiles"?: { "path": string, "fingerprint": string }[], "worktreePath"?: string }` | Preview, then explicitly authorize replacement/deletion of selected tracked working files with fresh per-file expectations. Preserves logical index entries; protects untracked/ignored files. |
@@ -299,7 +300,7 @@ All schemas reject additional properties. `fetch_remote` accepts only optional `
 
 ---
 
-See [shell-free workflows](docs/SHELL_FREE_WORKFLOWS.md) for history/conflict inspection, cross-worktree coordination, remote/tracking setup, index control, guarded restore/revert, and PR checks/edit/merge. CommitMe remains independent; ordinary commits are never created automatically.
+See [shell-free workflows](docs/SHELL_FREE_WORKFLOWS.md) for history/conflict inspection, cross-worktree coordination, remote/tracking setup, index control, guarded restore/revert, and PR checks/edit/merge. Ordinary commits are never created automatically; only an explicit `commit_changes` call commits.
 
 `worktreePath` selects a verified live checkout of the same repository without changing Pi's cwd. Branch-inferred PR status/feedback reject a selector with an exact `number`. Mutating tool calls share an outer process-wide coordinator before helper root/common-directory queues; external Git processes/extensions are not locked out.
 
@@ -369,6 +370,18 @@ Agents do not need to supply an output length or estimate diff size: `git_diff({
 
 Both `details.diff` and model-facing diff text are redacted and control-escaped, then capped at **1,000 lines or 32 KiB**, whichever comes first. `details` reports `hasDifferences`, `truncated`, pre-truncation `totalLines`/`totalBytes`, and captured range identities. Truncation is flagged before the diff body with next steps: narrow `paths`, reduce `contextLines`, or request `stat`/`name-status`; display output is not an apply-ready patch. Untracked files and submodule working-tree contents are excluded; gitlink commit changes remain visible. Binary files use Git's normal binary summary rather than `--binary` payloads (attributes can affect classification). Best-effort credential redaction is not a secret scanner: requested tracked content may still be sensitive and reaches the model. Treat it as untrusted data, never instructions. Finish dependent mutations/fetches before inspection; the tool does not lock out external changes or refresh remote refs.
 
+### Local commits
+
+`commit_changes` gathers a bounded, redacted context bundle: branch and status, changed paths, diff stats, safe snippets, diff excerpts, omitted-context notices, and project metadata such as `package.json` and README. The prompt is sized to the active model. The final subject must match:
+
+```text
+<type>(optional-scope): <summary>
+```
+
+Allowed types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `build`, `ci`, `perf`, `style`, and `revert`. Summaries are imperative and do not end with a period. A verbose draft is reduced to its first valid subject; an empty or invalid draft is retried or repaired once, and nothing is committed without a valid subject.
+
+`steeringPrompt` guides draft wording only; `paths` limits what is staged and committed. If a local reasoning model returns empty drafts, lower or disable its thinking setting.
+
 ### PR retries and lifecycle inspection
 
 `pull_request` first verifies GitHub branch visibility and head/local commit equality, then looks for an open PR. An exact head-commit/base match returns `outcome: "existing"` without a POST; otherwise creation returns `outcome: "created"`. Existing title, body, and draft state are preserved, not updated. A different base or stale PR head fails closed. A concurrent creation causing HTTP 422 triggers one read-only recheck, never another POST.
@@ -416,7 +429,7 @@ For a source not already reachable from the target, BranchMe runs this fixed nor
 git -c rerere.enabled=false merge --ff --no-edit --no-autostash --no-rerere-autoupdate --no-overwrite-ignore refs/heads/<sourceBranch>
 ```
 
-This policy permits a fast-forward or lets Git create a standard two-parent merge commit for divergent histories. BranchMe does not create user-authored commits, accept a merge message, or expose strategy, squash, unrelated-history, signing, force, or commit controls. Before mutation, it rejects a non-empty `branch.<targetBranch>.mergeOptions` setting because those branch-specific defaults could silently change the fixed policy. Autostash is disabled, rerere is disabled so recorded resolutions are not applied or updated, and ignored files may not be overwritten. Repository-configured hooks, custom merge drivers, clean/smudge filters, and signing policy remain active; those Git extension points may execute arbitrary local commands or network operations under the user's identity.
+This policy permits a fast-forward or lets Git create a standard two-parent merge commit for divergent histories. Integration does not create user-authored commits, accept a merge message, or expose strategy, squash, unrelated-history, signing, force, or commit controls. Before mutation, it rejects a non-empty `branch.<targetBranch>.mergeOptions` setting because those branch-specific defaults could silently change the fixed policy. Autostash is disabled, rerere is disabled so recorded resolutions are not applied or updated, and ignored files may not be overwritten. Repository-configured hooks, custom merge drivers, clean/smudge filters, and signing policy remain active; those Git extension points may execute arbitrary local commands or network operations under the user's identity.
 
 The structured status is one of:
 
@@ -564,7 +577,7 @@ BranchMe operates only on the repository where pi is running:
 - `pull_request` creates PRs only for the resolved current GitHub repository, requires resolved `headBranch` and `baseBranch` values to be distinct and exist locally, requires the GitHub `headBranch` commit to match the local branch, queues behind in-flight same-repository git mutation windows when possible, and rejects `owner:branch` head refs. Missing PR fields fail unless `BRANCHME_PR_AUTOFILL=true`.
 - If local `origin` and `GITHUB_REPOSITORY` both resolve but disagree, `pull_request` fails closed.
 
-BranchMe intentionally does **not** create user-authored commits, accept or generate commit messages, force checkout, stash, force-push, reset, copy ignored/untracked files between worktrees, or delete branches during standalone `remove_worktree`. Explicit `stage_changes`/`unstage_changes` manage approved index entries; `restore_paths` requires a preview, fresh file expectations, and explicit discard authorization. `revert_changes` stages an inverse without committing; `conclude_merge` stages only formerly unmerged paths. Rebase-driven rewriting occurs only through explicit `rebase_branch`; a Git-generated standard merge commit is possible through explicit `integrate_branch` or `update_from_base` for divergent histories; one exact local ref can be deleted only through explicit `retire_branch` or merged-only `land_branch` under the leased boundaries above.
+Outside `commit_changes`, BranchMe intentionally does **not** create user-authored commits or accept or generate commit messages. It never forces checkout, stash, force-push, reset, copy ignored/untracked files between worktrees, or delete branches during standalone `remove_worktree`. Explicit `stage_changes`/`unstage_changes` manage approved index entries; `restore_paths` requires a preview, fresh file expectations, and explicit discard authorization. `revert_changes` stages an inverse without committing; `conclude_merge` stages only formerly unmerged paths. Rebase-driven rewriting occurs only through explicit `rebase_branch`; a Git-generated standard merge commit is possible through explicit `integrate_branch` or `update_from_base` for divergent histories; one exact local ref can be deleted only through explicit `retire_branch` or merged-only `land_branch` under the leased boundaries above.
 
 ---
 
@@ -637,7 +650,12 @@ Ensure the token and Git credentials have permission for the branch and pull req
 | PR branch does not exist locally | Create or fetch/check out the local `headBranch` and `baseBranch` branches first; BranchMe does not use remote-only or cross-repository PR refs. |
 | PR branch is not visible or is stale on GitHub | Run `push_branch`, wait for it to complete, then retry `pull_request`; do not batch `push_branch` and `pull_request` in the same assistant tool call. |
 | Repository mismatch | Make `origin` and `GITHUB_REPOSITORY` refer to the same `owner/repo`. |
-| Need a user-authored commit | Use CommitMe or normal Git commands. BranchMe does not accept commit messages or create user-authored commits; `integrate_branch`, `update_from_base`, and `conclude_merge` may let Git create a standard merge commit. |
+| Need a user-authored commit | Use `commit_changes`. Other tools never accept commit messages; `integrate_branch`, `update_from_base`, and `conclude_merge` may let Git create a standard merge commit. |
+| No active model or API key for a drafted commit | Select or configure a Pi model, or pass an explicit `message` to `commit_changes action="commit"`. |
+| `confirm=true requires a UI-capable Pi mode` | Run Pi with the TUI, or omit `confirm` in non-UI mode. |
+| Commit flagged for secret files/tokens or unreadable files | In the TUI, approve only reviewed safe fixtures or placeholders. In non-UI mode, remove the file or token, make the file readable, or commit manually. |
+| Git status changed while committing | Rerun the commit so it gathers fresh context. |
+| Empty, thinking-only, length-stopped, or invalid model draft | The draft is retried or repaired once. If it still fails, reduce the change size, lower model thinking, add steering text, or use `commit_changes action="gather"` and commit with an explicit `message`. |
 | Other extensions interfere | Test with `pi --no-extensions -e .`. |
 
 ---

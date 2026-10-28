@@ -4,6 +4,7 @@ import { registerInspectionTools } from "./inspection-tools.ts";
 import { withWorktreeRouting } from "./worktree-routing.ts";
 import { registerMutationTools } from "./mutation-tools.ts";
 import { registerGitHubLifecycleTools } from "./github-lifecycle-tools.ts";
+import { registerCommitTools } from "./commit-tools.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -600,6 +601,7 @@ export function registerBranchMeTools(host: Pick<ExtensionAPI, "registerTool" | 
   registerInspectionTools(pi, options);
   registerMutationTools(pi, options);
   registerGitHubLifecycleTools(pi, options);
+  registerCommitTools(pi);
   pi.registerTool({
     name: GIT_DIFF_TOOL_NAME,
     label: "Git Diff",

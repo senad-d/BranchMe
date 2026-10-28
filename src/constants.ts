@@ -12,6 +12,7 @@ export const ADD_REMOTE_TOOL_NAME = "add_remote";
 export const SET_UPSTREAM_TOOL_NAME = "set_upstream";
 export const STAGE_CHANGES_TOOL_NAME = "stage_changes";
 export const UNSTAGE_CHANGES_TOOL_NAME = "unstage_changes";
+export const COMMIT_CHANGES_TOOL_NAME = "commit_changes";
 export const RESTORE_PATHS_TOOL_NAME = "restore_paths";
 export const REVERT_CHANGES_TOOL_NAME = "revert_changes";
 export const LIST_BRANCHES_TOOL_NAME = "list_branches";
@@ -55,6 +56,7 @@ export const BRANCHME_TOOL_NAMES = [
   SET_UPSTREAM_TOOL_NAME,
   STAGE_CHANGES_TOOL_NAME,
   UNSTAGE_CHANGES_TOOL_NAME,
+  COMMIT_CHANGES_TOOL_NAME,
   RESTORE_PATHS_TOOL_NAME,
   REVERT_CHANGES_TOOL_NAME,
   LIST_BRANCHES_TOOL_NAME,
@@ -150,3 +152,98 @@ export const PULL_REQUEST_REPLY_BODY_LIMIT_CHARS = 4_000;
 export const PULL_REQUEST_LABEL_LIMIT = 5;
 export const GITHUB_GRAPHQL_TIMEOUT_MS = 15_000;
 export const GITHUB_JOB_LOG_TIMEOUT_MS = 30_000;
+
+export const DEFAULT_DIFF_FILE_LIMIT = 24;
+export const DEFAULT_DIFF_MAX_LINES = 360;
+export const DEFAULT_DIFF_MAX_BYTES = 28_000;
+export const DEFAULT_PROJECT_CONTEXT_FILE_LIMIT = 10;
+export const DEFAULT_PROJECT_FILE_MAX_LINES = 80;
+export const DEFAULT_PROJECT_FILE_MAX_BYTES = 8_000;
+export const DEFAULT_PROMPT_MAX_BYTES = 48_000;
+export const COMPACT_PROMPT_MAX_BYTES = 28_000;
+export const LARGE_PROMPT_MAX_BYTES = 56_000;
+export const DEFAULT_PROMPT_MAX_LINES = 1_200;
+export const COMPACT_PROMPT_MAX_LINES = 900;
+export const LARGE_PROMPT_MAX_LINES = 1_500;
+export const DEFAULT_STEERING_PROMPT_MAX_LINES = 80;
+export const DEFAULT_STEERING_PROMPT_MAX_BYTES = 4_000;
+export const DEFAULT_DRAFT_MAX_TOKENS = 1_024;
+export const DEFAULT_DRAFT_RETRY_MAX_TOKENS = 1_536;
+export const DRAFT_REPAIR_MAX_TOKENS = 1_024;
+export const DRAFT_RETRY_MAX_ATTEMPTS = 1;
+
+export const COMMIT_PROMPT_SECTION_BUDGETS = {
+  compact: {
+    steeringPrompt: { maxBytes: 1_500, maxLines: 30 },
+    repositorySummary: { maxBytes: 1_500, maxLines: 40 },
+    changedFiles: { maxBytes: 3_000, maxLines: 90 },
+    diffStats: { maxBytes: 2_000, maxLines: 70 },
+    changedFileSnippets: { maxBytes: 4_500, maxLines: 150 },
+    diffExcerpts: { maxBytes: 5_500, maxLines: 190 },
+    omittedContext: { maxBytes: 1_500, maxLines: 50 },
+    projectMetadata: { maxBytes: 1_500, maxLines: 60 },
+  },
+  default: {
+    steeringPrompt: { maxBytes: 2_500, maxLines: 50 },
+    repositorySummary: { maxBytes: 2_000, maxLines: 50 },
+    changedFiles: { maxBytes: 5_000, maxLines: 150 },
+    diffStats: { maxBytes: 3_500, maxLines: 110 },
+    changedFileSnippets: { maxBytes: 9_000, maxLines: 280 },
+    diffExcerpts: { maxBytes: 12_000, maxLines: 380 },
+    omittedContext: { maxBytes: 2_500, maxLines: 80 },
+    projectMetadata: { maxBytes: 3_000, maxLines: 100 },
+  },
+  large: {
+    steeringPrompt: { maxBytes: 3_000, maxLines: 60 },
+    repositorySummary: { maxBytes: 2_500, maxLines: 60 },
+    changedFiles: { maxBytes: 6_000, maxLines: 180 },
+    diffStats: { maxBytes: 4_000, maxLines: 130 },
+    changedFileSnippets: { maxBytes: 12_000, maxLines: 360 },
+    diffExcerpts: { maxBytes: 16_000, maxLines: 480 },
+    omittedContext: { maxBytes: 3_000, maxLines: 100 },
+    projectMetadata: { maxBytes: 4_000, maxLines: 130 },
+  },
+} as const;
+
+export const CONVENTIONAL_COMMIT_TYPES = [
+  "feat",
+  "fix",
+  "refactor",
+  "docs",
+  "test",
+  "chore",
+  "build",
+  "ci",
+  "perf",
+  "style",
+  "revert",
+] as const;
+
+export const CONVENTIONAL_COMMIT_TYPE_DESCRIPTIONS = {
+  feat: "new feature",
+  fix: "bug fix",
+  refactor: "code change without behavior change",
+  docs: "documentation only",
+  test: "tests only",
+  chore: "maintenance",
+  build: "build system or dependency changes",
+  ci: "CI/CD changes",
+  perf: "performance improvement",
+  style: "formatting only",
+  revert: "revert a previous commit",
+} as const satisfies Record<(typeof CONVENTIONAL_COMMIT_TYPES)[number], string>;
+
+export const PROJECT_METADATA_CANDIDATES = [
+  "package.json",
+  "README.md",
+  "CHANGELOG.md",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod",
+  "pom.xml",
+  "build.gradle",
+  "deno.json",
+  "tsconfig.json",
+  "AGENTS.md",
+  "CLAUDE.md",
+] as const;

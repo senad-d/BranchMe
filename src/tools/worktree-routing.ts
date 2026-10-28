@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { resolveRepositoryWorktreeCwd, withRepositoryMutationQueue } from "../git.ts";
 
-const ROUTED = new Set(["create_branch", "change_branch", "track_branch", "fetch_branch", "pull_branch", "rebase_branch", "push_branch", "update_from_base", "pull_request", "pull_request_status", "pull_request_feedback"]);
+const ROUTED = new Set(["commit_changes", "create_branch", "change_branch", "track_branch", "fetch_branch", "pull_branch", "rebase_branch", "push_branch", "update_from_base", "pull_request", "pull_request_status", "pull_request_feedback"]);
 const READ_ONLY = new Set(["branch_status", "list_branches", "list_worktrees", "git_status", "git_diff", "git_log", "git_show", "git_conflicts", "pull_request_status", "pull_request_feedback", "pull_request_files", "list_remotes", "pull_request_checks"]);
 type Tool = { name: string; parameters: unknown; execute: (...args: never[]) => Promise<unknown> };
 

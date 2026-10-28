@@ -42,5 +42,5 @@ try {
 
   const github = await prepare();
   runScenario(github, "github", { GITHUB_TOKEN: "smoke-fixture-token" });
-  console.log("Shell-free Pi workflows passed: history/blob inspection, exact-path index/restore/revert, remote/upstream setup, cross-worktree bases, conflict versions, and mocked PR checks/edit/merge. Only scenario BranchMe tools were active; no Bash/CommitMe or live HTTP was available.");
+  console.log("Shell-free Pi workflows passed: history/blob inspection, exact-path index/restore/revert, remote/upstream setup, cross-worktree bases, conflict versions, and mocked PR checks/edit/merge. Only scenario BranchMe tools were active; no Bash or live HTTP was available.");
 } finally { for (const fn of cleanup.reverse()) await fn(); }

@@ -32,6 +32,7 @@ const expectedBranchMeTools = [
   { name: "set_upstream", properties: ["branchName", "expectedConfig", "unset", "upstream"], required: ["branchName", "expectedConfig"] },
   { name: "stage_changes", properties: ["expectedHead", "expectedIndex", "paths", "worktreePath"], required: ["paths", "expectedHead", "expectedIndex"] },
   { name: "unstage_changes", properties: ["expectedHead", "expectedIndex", "paths", "worktreePath"], required: ["paths", "expectedHead", "expectedIndex"] },
+  { name: "commit_changes", properties: ["action", "confirm", "message", "paths", "steeringPrompt", "worktreePath"], required: [], enums: { action: ["gather", "commit"] } },
   { name: "restore_paths", properties: ["discardChanges", "expectedFiles", "expectedHead", "expectedIndex", "paths", "preview", "sourceRef", "worktreePath"], required: ["paths", "expectedHead", "expectedIndex"] },
   { name: "revert_changes", properties: ["commit", "expectedHead", "expectedIndex", "worktreePath"], required: ["commit", "expectedHead", "expectedIndex"] },
   { name: "pull_request_checks", properties: ["after", "number"], required: ["number"] },
