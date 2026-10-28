@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { restorePaths } from "../src/git-restore.ts";
@@ -26,6 +26,24 @@ test("restore preview/apply preserves partial staging and unrelated files; stale
   await writeFile(join(f.root, "file.txt"), "newer\n");
   await assert.rejects(restorePaths(f.pi, { cwd: f.root }, { ...args, expectedFiles: preview.expectedFiles, discardChanges: true }), /changed/u);
   await assert.rejects(restorePaths(f.pi, { cwd: f.root }, { ...await expectations(f, ["unrelated"]), preview: true }), /untracked/u);
+});
+
+test("no-commit revert ignores unrelated ignored files and refuses an ignored file at a path the commit touches", async (t) => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, ".gitignore"), "deps/\n.env\n"); await checked(f.root, ["add", ".gitignore"]); await checked(f.root, ["commit", "-m", "ignore"]);
+  await mkdir(join(f.root, "deps"), { recursive: true }); await writeFile(join(f.root, "deps", "lib.js"), "x"); await writeFile(join(f.root, ".env"), "TOKEN=1\n");
+  await writeFile(join(f.root, "file.txt"), "changed\n"); await checked(f.root, ["commit", "-am", "change"]);
+  const commit = await checked(f.root, ["rev-parse", "HEAD"]);
+  const result = await revertChanges(f.pi, { cwd: f.root }, { ...await expectations(f), commit });
+  assert.deepEqual(result.stagedPaths, ["file.txt"]);
+  assert.equal(await readFile(join(f.root, ".env"), "utf8"), "TOKEN=1\n");
+  const g = await fixture(t);
+  await writeFile(join(g.root, "secret.env"), "tracked\n"); await checked(g.root, ["add", "secret.env"]); await checked(g.root, ["commit", "-m", "add"]);
+  await checked(g.root, ["rm", "-q", "secret.env"]); await writeFile(join(g.root, ".gitignore"), "secret.env\n"); await checked(g.root, ["add", ".gitignore"]); await checked(g.root, ["commit", "-m", "drop"]);
+  const drop = await checked(g.root, ["rev-parse", "HEAD"]);
+  await writeFile(join(g.root, "secret.env"), "local only\n");
+  await assert.rejects(revertChanges(g.pi, { cwd: g.root }, { ...await expectations(g), commit: drop }), /ignored local-only files at paths the commit touches \(secret\.env\)/u);
+  assert.equal(await readFile(join(g.root, "secret.env"), "utf8"), "local only\n");
 });
 
 test("explicit-source restore pins commits and can delete only an approved tracked path absent from source", async (t) => {

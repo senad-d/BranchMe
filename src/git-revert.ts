@@ -8,13 +8,13 @@ async function revertInside(host: GitAPI, reader: GitReader, input: RevertInput)
   await requireSimpleIndex(reader);
   const before = await getGitStatus(reader.pi, reader.ctx, {}, reader.signal, reader.tokens);
   if (before.head !== input.expectedHead || before.index !== input.expectedIndex || before.hasChanges) throw new Error("No-commit revert requires fresh HEAD/index expectations and a clean idle checkout.");
-  if ((await readGit(reader, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"])).stdout) throw new Error("No-commit revert refuses ignored local-only files; preserve them outside the checkout first.");
   const metadata = (await readGit(reader, ["rev-list", "--parents", "-n", "1", input.commit, "--"])).stdout.trim().split(" ");
   if (metadata[0] !== input.commit || metadata.length > 2 || !metadata.every(validOid) || !(await isCommitAncestor(reader.pi, reader.ctx, input.commit, input.expectedHead, reader.signal))) throw new Error("Revert requires one non-merge commit already contained in current HEAD.");
   if (metadata[1]) {
     const tree = await readGit(reader, ["ls-tree", "-r", "--format=%(objectmode)", metadata[1]]);
     if (tree.stdout.split("\n").includes("160000")) throw new Error("Reverts introducing gitlinks are unsupported.");
   }
+  await refuseIgnoredTouched(reader, input.commit);
   const branch = (await getCurrentBranch(reader.pi, reader.ctx, reader.signal)).currentBranch;
   const refs = (await readGit(reader, ["show-ref"])).stdout;
   const config = (await readGit(reader, ["config", "--null", "--list"])).stdout;
@@ -57,6 +57,16 @@ async function verifyRevert(host: GitAPI, final: GitReader, input: RevertInput, 
   const after = await getGitStatus(final.pi, final.ctx, {}, undefined, final.tokens);
   if (after.index !== applied.index || after.head !== before.head || after.operations.length || (await getCurrentBranch(final.pi, final.ctx)).currentBranch !== branch || (await readGit(final, ["show-ref"])).stdout !== refs || (await readGit(final, ["config", "--null", "--list"])).stdout !== config) throw new Error("Revert postconditions are uncertain; inspect git_status before another mutation.");
   return { action: "revert_changes", commit: input.commit, head: after.head, index: after.index, committed: false, stagedPaths: after.entries.map((entry) => entry.path), pathsComplete: after.complete, note: "Inverse changes are staged, not committed. Enumerate git_status for all paths; ordinary commit creation is a separate explicit workflow." };
+}
+// Git may overwrite an ignored file when a revert brings a tracked path back, so
+// only ignored files at paths the commit touches block it; .env, .pi/ and
+// installed dependencies elsewhere do not (a whole-checkout listing passed the
+// 4 MiB read cap in a repository with node_modules).
+async function refuseIgnoredTouched(reader: GitReader, commit: string) {
+  const touched = (await readGit(reader, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root", commit, "--"])).stdout.split("\0").filter(Boolean);
+  if (!touched.length) return;
+  const ignored = (await readGit(reader, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ...touched.map((path) => `:(literal)${path}`)])).stdout.split("\0").filter(Boolean);
+  if (ignored.length) throw new Error(`No-commit revert refuses ignored local-only files at paths the commit touches (${ignored.slice(0, 5).join(", ")}); preserve them outside the checkout first.`);
 }
 function validOid(value: string): boolean { return OBJECT_ID.test(value); }
 export async function revertChanges(host: GitAPI, ctx: GitCommandContext, input: RevertInput, signal?: AbortSignal, tokens: readonly string[] = []) {

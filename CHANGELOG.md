@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.17 - Unreleased
+
+- `revert_changes` refuses only ignored files at the paths the reverted commit touches, which Git could overwrite. Before, any ignored file in the checkout (`.env`, `.pi/`, `node_modules`) refused the revert, and in a repository with installed dependencies the whole-checkout listing passed the 4 MiB read cap first ("Local Git inspection exceeded the 4 MiB safety limit"), so the tool could not run in a working project.
+
 ## 0.3.16 - Unreleased
 
 - Added `commit_changes`, ported from CommitMe with the same behavior: `action: "gather"` returns read-only bounded commit context; `action: "commit"` commits an explicit subject or drafts one with the active model; `paths`, `steeringPrompt`, `confirm`, and unsafe-file approval work as before. The tool uses BranchMe's Git runner, lock retry, redacted Git errors, 30-second mutation timeout, worktree routing, tool mutation coordinator, and blocker guidance. Commits now stage and commit from the repository root, fixing CommitMe's failure when Pi runs in a subdirectory. The `/commitme` command is not included. Uninstall `@senad-d/commitme` to avoid two commit tools.

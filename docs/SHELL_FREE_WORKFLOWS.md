@@ -59,7 +59,7 @@ Restoration is limited to currently index-tracked files. Untracked/ignored files
 
 ## Prepare a no-commit revert
 
-`revert_changes({ commit, expectedHead, expectedIndex, worktreePath? })` applies the inverse of one full-ID non-merge commit already contained in HEAD. It requires clean idle state and refuses ignored local-only files. HEAD, branch, refs, and configuration remain unchanged; inverse changes are staged and ordinary commit creation remains a separate explicit workflow.
+`revert_changes({ commit, expectedHead, expectedIndex, worktreePath? })` applies the inverse of one full-ID non-merge commit already contained in HEAD. It requires clean idle state and refuses ignored local-only files at the paths the commit touches; ignored files elsewhere do not block it. HEAD, branch, refs, and configuration remain unchanged; inverse changes are staged and ordinary commit creation remains a separate explicit workflow.
 
 Conflicts attempt `git revert --abort` and verify restoration. A successful `--no-commit` application may still leave REVERT_HEAD; BranchMe verifies ownership, then uses `git revert --quit` to clear only that operation while preserving its index/worktree result. This is not a general sequencer continuation API. Uncertain recovery requires a person; no reset, stash, commit, or private recovery state is introduced. Returned paths may be partial; enumerate `git_status` for every resulting path.
 
