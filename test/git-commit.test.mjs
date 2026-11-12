@@ -40,6 +40,15 @@ function createExecutor(calls = []) {
   };
 }
 
+async function execReleasingIndexLock(executor, lockPath, command, args, options) {
+  const result = await executor.exec(command, args, options);
+  // Release only after staging encounters the real lock, regardless of preflight timing.
+  if (args[0] === "add" && result.code !== 0 && /index\.lock': File exists/u.test(result.stderr)) {
+    await rm(lockPath);
+  }
+  return result;
+}
+
 async function withTempRepo(fn) {
   const dir = await mkdtemp(join(tmpdir(), "commit-commit-"));
   try {
@@ -545,10 +554,9 @@ test("createCommit waits for another process's index.lock and fails with the loc
     const lockPath = join(dir, ".git", "index.lock");
     await writeFile(join(dir, "feature.ts"), "export const feature = true;\n", "utf8");
     await writeFile(lockPath, "", "utf8");
-    const released = new Promise((resolve) => setTimeout(resolve, 700)).then(() => rm(lockPath));
+    const executor = { exec: execReleasingIndexLock.bind(undefined, createExecutor(calls), lockPath) };
 
-    await createCommit(createExecutor(calls), { cwd: dir, message: "feat: add feature module" });
-    await released;
+    await createCommit(executor, { cwd: dir, message: "feat: add feature module" });
 
     const { stdout } = await execFileAsync("git", ["log", "-1", "--pretty=%s"], { cwd: dir });
     assert.equal(stdout.trim(), "feat: add feature module");

@@ -217,10 +217,9 @@ async function integrationSourceHead(
   return head;
 }
 
-function integrationWorkingTreeIsClean(workingTree: WorkingTreeDetails, allowUntracked: boolean): boolean {
-  return allowUntracked
-    ? workingTree.staged + workingTree.unstaged === 0
-    : workingTree.state === "clean";
+// Untracked files never block: git itself refuses a merge that would overwrite one.
+function integrationWorkingTreeIsClean(workingTree: WorkingTreeDetails): boolean {
+  return workingTree.staged + workingTree.unstaged === 0;
 }
 
 async function inspectIntegrationState(
@@ -242,7 +241,7 @@ async function inspectIntegrationState(
     timeout: GIT_STATUS_TIMEOUT_MS,
   });
   const workingTree = parseWorkingTreeStatus(statusResult.stdout).workingTree;
-  const clean = integrationWorkingTreeIsClean(workingTree, prepared.remoteSource === true || prepared.sourceHeadFixed === true);
+  const clean = integrationWorkingTreeIsClean(workingTree);
   const sourceIsAncestorOfTarget = await isCommitAncestor(
     pi,
     rootCtx,
@@ -776,9 +775,9 @@ export async function prepareBranchIntegration(
     timeout: GIT_STATUS_TIMEOUT_MS,
   });
   const workingTree = parseWorkingTreeStatus(statusResult.stdout).workingTree;
-  if (!integrationWorkingTreeIsClean(workingTree, remoteSource)) {
+  if (!integrationWorkingTreeIsClean(workingTree)) {
     throw new Error(
-      "The control worktree must be clean, with no staged, unstaged, untracked, or unmerged changes, before integration.",
+      "The control worktree must be clean, with no staged, unstaged, or unmerged tracked changes, before integration.",
     );
   }
 

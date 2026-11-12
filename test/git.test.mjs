@@ -816,7 +816,7 @@ test("prepareBranchIntegration rejects detached, wrong-target, and dirty control
       {
         name: "dirty control",
         options: { statusOutput: "M  staged.ts\0 M unstaged.ts\0?? untracked.ts\0UU conflict.ts\0" },
-        expected: /no staged, unstaged, untracked, or unmerged changes/iu,
+        expected: /no staged, unstaged, or unmerged tracked changes/iu,
       },
     ];
 

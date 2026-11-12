@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.18 - Unreleased
+
+- Made the real-Git commit lock-retry regression deterministic by releasing the fixture lock after staging encounters it, rather than on a fixed timer.
+- `integrate_branch` refuses only staged, unstaged or unmerged tracked changes in the control worktree, like `update_from_base`. Before, one untracked file refused every local merge, and no BranchMe tool can move a file.
+
 ## 0.3.17 - Unreleased
 
 - `revert_changes` refuses only ignored files at the paths the reverted commit touches, which Git could overwrite. Before, any ignored file in the checkout (`.env`, `.pi/`, `node_modules`) refused the revert, and in a repository with installed dependencies the whole-checkout listing passed the 4 MiB read cap first ("Local Git inspection exceeded the 4 MiB safety limit"), so the tool could not run in a working project.

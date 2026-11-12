@@ -380,6 +380,23 @@ test("real git integrateBranch fast-forwards a clean target with the approved me
   });
 });
 
+// Mission infra objective 18: one stray untracked file in the checkout refused every local merge.
+test("real git integrateBranch leaves untracked control files alone and still merges", async () => {
+  await withTempGitIntegrationRepo(async (repoRoot) => {
+    const sourceBranch = "feature/untracked-control";
+    await runGit(repoRoot, ["switch", "-c", sourceBranch]);
+    const sourceHead = await commitFile(repoRoot, "source.txt", "source\n", "add source");
+    await runGit(repoRoot, ["switch", "main"]);
+    await writeFile(join(repoRoot, "stray.txt"), "untracked\n", "utf8");
+
+    const details = await integrateBranch(makeRealGitPi(repoRoot), { cwd: repoRoot }, { sourceBranch, targetBranch: "main" });
+
+    assert.equal(details.status, "fast_forward");
+    assert.equal(await refHead(repoRoot), sourceHead);
+    assert.equal((await runGit(repoRoot, ["status", "--porcelain"])).stdout, "?? stray.txt\n");
+  });
+});
+
 test("real git integrateBranch creates one normal two-parent merge commit and preserves hooks", async () => {
   await withTempGitIntegrationRepo(async (repoRoot, temporaryRoot) => {
     const sourceBranch = "feature/divergent";
@@ -561,7 +578,7 @@ test("real git integrateBranch rejects a dirty control worktree before merge", a
     const targetBranch = "main";
     await runGit(repoRoot, ["branch", sourceBranch]);
     const targetHead = await refHead(repoRoot);
-    await writeFile(join(repoRoot, "dirty-control.txt"), "untracked control change\n", "utf8");
+    await writeFile(join(repoRoot, "README.md"), "unstaged control change\n", "utf8");
     const pi = makeRealGitPi(repoRoot);
 
     await assert.rejects(
@@ -570,7 +587,7 @@ test("real git integrateBranch rejects a dirty control worktree before merge", a
     );
 
     assert.equal(await refHead(repoRoot), targetHead);
-    assert.equal((await runGit(repoRoot, ["status", "--porcelain"])).stdout, "?? dirty-control.txt\n");
+    assert.equal((await runGit(repoRoot, ["status", "--porcelain"])).stdout, " M README.md\n");
     await assertNoMergeState(repoRoot);
     assert.equal(pi.calls.some((call) => integrationSubcommand(call.args) === "merge"), false);
     assertSafeIntegrationCalls(pi.calls);
