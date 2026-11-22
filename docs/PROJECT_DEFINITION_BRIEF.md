@@ -74,6 +74,7 @@ Originally approved on 2026-06-30. Updated to describe the implemented `0.3.1` p
 | Tool | `pull_request_status` | Read exact PR or latest PR for a head | Open/closed/merged state and commit identities; not a CI/review verdict |
 | Tool | `pull_request_feedback` | Read what a PR asks to be fixed | Unresolved review threads, review summaries, conversation comments, failing checks with annotations and Actions log tails; read-only |
 | Tool | `pull_request_files` | List a PR's changed files | Path, change type and line counts of the first 100 changed files, plus current labels; read-only |
+| Tool | `list_pull_requests` | List the repository's open PRs | Number, title, head/base branch, draft flag and labels of the 100 most recently updated open PRs; read-only |
 | Tool | `label_pull_request` | Label a PR | Adds 1-5 labels that already exist in the repository; refuses unknown labels; never removes |
 | Tool | `reply_pull_request_feedback` | Answer PR feedback | One reply in a review thread of the PR (optionally resolving it) or one conversation comment; the thread must belong to the PR; never edits, deletes, approves, merges or closes |
 | Tool | `init_repository` | Initialize the exact current directory as a new non-bare Git repository | Optional initial branch; rejects reinitialization/nesting; no path, commit, or project-file controls |

@@ -753,6 +753,13 @@ export interface PullRequestFilesDetails {
   omitted: number;
 }
 
+export interface PullRequestListDetails {
+  action: "list_pull_requests";
+  repository: GitHubRepository;
+  pullRequests: { number: number; title: string; head: string; base: string; draft: boolean; labels: string[] }[];
+  omitted: number;
+}
+
 export interface PullRequestLabelDetails {
   action: "label_pull_request";
   repository: GitHubRepository;

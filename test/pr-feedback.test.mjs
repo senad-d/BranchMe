@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  extractLogTail, formatPullRequestFeedback, formatPullRequestFiles, formatPullRequestLabel, formatPullRequestReply, getPullRequestFeedback,
-  getPullRequestFiles, labelPullRequest, replyPullRequestFeedback,
+  extractLogTail, formatPullRequestFeedback, formatPullRequestFiles, formatPullRequestLabel, formatPullRequestList, formatPullRequestReply, getPullRequestFeedback,
+  getPullRequestFiles, labelPullRequest, listPullRequests, replyPullRequestFeedback,
 } from "../src/github-feedback.ts";
 
 const repository = { owner: "example", repo: "project" };
@@ -255,6 +255,20 @@ test("pull request files list paths, change types and labels", async () => {
   const details = await getPullRequestFiles(repository, 7, token, { fetchImpl });
   assert.equal(details.omitted, 100);
   assert.equal(formatPullRequestFiles(details), "PR #7: 2 changed file(s); 100 more not listed. Labels: bug.\n- apps/api/src/main.ts (modified, +2 -1)\n- apps/web/src/app.tsx (added, +9 -0)");
+});
+
+test("open pull requests are listed by one read-only query with branches, draft flag and labels", async () => {
+  const { calls, fetchImpl } = replyFetch([{ payload: { data: { repository: { pullRequests: {
+    totalCount: 101,
+    nodes: [{ number: 9, title: "Add login", headRefName: "feat/login", baseRefName: "main", isDraft: true, labels: { nodes: [{ name: "area:web" }] } }],
+  } } } } }]);
+  const details = await listPullRequests(repository, token, { fetchImpl });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].query, /^query\(/u);
+  assert.doesNotMatch(calls[0].query, /mutation/u);
+  assert.match(calls[0].query, /states: OPEN/u);
+  assert.deepEqual(details.pullRequests, [{ number: 9, title: "Add login", head: "feat/login", base: "main", draft: true, labels: ["area:web"] }]);
+  assert.equal(formatPullRequestList(details), "1 open pull request(s); 100 more not listed.\n- #9 (draft) Add login; feat/login -> main. Labels: area:web.");
 });
 
 test("labeling refuses an unknown label before changing the pull request, then adds existing ones", async () => {

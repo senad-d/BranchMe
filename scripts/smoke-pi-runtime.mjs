@@ -47,6 +47,7 @@ const expectedBranchMeTools = [
   { name: "pull_request_feedback", properties: ["headBranch", "number", "worktreePath"], required: [] },
   { name: "reply_pull_request_feedback", properties: ["body", "number", "resolve", "threadId"], required: ["number", "body"] },
   { name: "pull_request_files", properties: ["number"], required: ["number"] },
+  { name: "list_pull_requests", properties: [], required: [] },
   { name: "label_pull_request", properties: ["labels", "number"], required: ["number", "labels"] },
   {
     name: "branch_status",

@@ -3,15 +3,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   CONCLUDE_MERGE_TOOL_NAME, GIT_CONTEXT_VALUE_LIMIT_CHARS, PULL_REQUEST_FEEDBACK_TOOL_NAME, PULL_REQUEST_REPLY_BODY_LIMIT_CHARS,
-  LABEL_PULL_REQUEST_TOOL_NAME, PULL_REQUEST_FILES_TOOL_NAME, PULL_REQUEST_LABEL_LIMIT, PULL_REQUEST_STATUS_TOOL_NAME,
+  LABEL_PULL_REQUEST_TOOL_NAME, LIST_PULL_REQUESTS_TOOL_NAME, PULL_REQUEST_FILES_TOOL_NAME, PULL_REQUEST_LABEL_LIMIT, PULL_REQUEST_STATUS_TOOL_NAME,
   REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME, TRACK_BRANCH_TOOL_NAME, UPDATE_FROM_BASE_TOOL_NAME,
 } from "../constants.ts";
 import { getGitRoot, requireCurrentBranch, resolveRepositoryWorktreeCwd, safeWorktreeValue } from "../git.ts";
 import { concludeMerge, formatConflictPathList } from "../git-integration.ts";
 import { findGitHubPullRequest, getGitHubPullRequest, resolveGitHubRepository, resolveGitHubToken } from "../github.ts";
 import {
-  formatPullRequestFeedback, formatPullRequestFiles, formatPullRequestLabel, formatPullRequestReply, getPullRequestFeedback,
-  getPullRequestFiles, labelPullRequest, replyPullRequestFeedback,
+  formatPullRequestFeedback, formatPullRequestFiles, formatPullRequestLabel, formatPullRequestList, formatPullRequestReply, getPullRequestFeedback,
+  getPullRequestFiles, labelPullRequest, listPullRequests, replyPullRequestFeedback,
 } from "../github-feedback.ts";
 import type { ConcludeMergeDetails, PullRequestStatusDetails } from "../types.ts";
 import type { BranchMeToolOptions } from "./branchme-tools.ts";
@@ -159,6 +159,21 @@ export function registerWorkflowTools(pi: Pick<ExtensionAPI, "registerTool" | "e
       const token = (await resolveGitHubToken(options.env, { cwd: rootCtx.cwd, signal })).token;
       const details = await getPullRequestFiles(repository, params.number, token, { fetchImpl: options.fetchImpl, signal });
       return { content: [{ type: "text", text: formatPullRequestFiles(details) }], details };
+    },
+  });
+  pi.registerTool({
+    name: LIST_PULL_REQUESTS_TOOL_NAME,
+    label: "List Pull Requests",
+    description: "List the repository's open PRs with number, title, head and base branch, draft flag, and labels.",
+    promptSnippet: "List open PRs of this repository",
+    promptGuidelines: [],
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_id, _params, signal, _update, ctx) {
+      const rootCtx = { cwd: await getGitRoot(pi, ctx, signal) };
+      const repository = await resolveGitHubRepository(pi, rootCtx, signal, options.env);
+      const token = (await resolveGitHubToken(options.env, { cwd: rootCtx.cwd, signal })).token;
+      const details = await listPullRequests(repository, token, { fetchImpl: options.fetchImpl, signal });
+      return { content: [{ type: "text", text: formatPullRequestList(details) }], details };
     },
   });
   pi.registerTool({

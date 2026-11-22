@@ -12,7 +12,7 @@ import {
 import { redactSecrets } from "./redaction.ts";
 import type {
   GitHubRepository, PullRequestFeedbackAnnotation, PullRequestFeedbackCheck, PullRequestFeedbackComment, PullRequestFeedbackDetails,
-  PullRequestFeedbackReview, PullRequestFeedbackThread, PullRequestFilesDetails, PullRequestLabelDetails,
+  PullRequestFeedbackReview, PullRequestFeedbackThread, PullRequestFilesDetails, PullRequestLabelDetails, PullRequestListDetails,
   PullRequestReplyDetails, PullRequestReplyInput,
 } from "./types.ts";
 
@@ -440,6 +440,40 @@ export function formatPullRequestFiles(details: PullRequestFilesDetails): string
   return [
     `PR #${details.number}: ${details.files.length} changed file(s)${omitted}. Labels: ${details.labels.join(", ") || "none"}.`,
     ...details.files.map((file) => `- ${file.path} (${file.change}, +${file.additions} -${file.deletions})`),
+  ].join("\n");
+}
+
+const OPEN_PULL_REQUESTS_QUERY = `query($owner: String!, $repo: String!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequests(states: OPEN, first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      totalCount
+      nodes { number title headRefName baseRefName isDraft labels(first: 50) { nodes { name } } }
+    }
+  }
+}`;
+
+/** The 100 most recently updated open pull requests of the repository. */
+export async function listPullRequests(repository: GitHubRepository, token: string, options: PullRequestFetchOptions = {}): Promise<PullRequestListDetails> {
+  validateGitHubRepository(repository);
+  const payload = await postGraphQL(OPEN_PULL_REQUESTS_QUERY, { owner: repository.owner, repo: repository.repo }, token, options, "GitHub open pull requests");
+  const connection = isRecord(payload.data) && isRecord(payload.data.repository) ? payload.data.repository.pullRequests : null;
+  if (!isRecord(connection)) throw new Error(`Repository ${repository.owner}/${repository.repo} was not found.`);
+  const pullRequests = nodes(connection).filter((pr) => typeof pr.number === "number").map((pr) => ({
+    number: pr.number as number,
+    title: safeText(pr.title, token, 300),
+    head: safeText(pr.headRefName, token, 255),
+    base: safeText(pr.baseRefName, token, 255),
+    draft: pr.isDraft === true,
+    labels: nodes(pr.labels).map((label) => safeText(label.name, token, 100)).filter(Boolean),
+  }));
+  return { action: "list_pull_requests", repository, pullRequests, omitted: Math.max(0, totalCount(connection) - pullRequests.length) };
+}
+
+export function formatPullRequestList(details: PullRequestListDetails): string {
+  const omitted = details.omitted > 0 ? `; ${details.omitted} more not listed` : "";
+  return [
+    `${details.pullRequests.length} open pull request(s)${omitted}.`,
+    ...details.pullRequests.map((pr) => `- #${pr.number}${pr.draft ? " (draft)" : ""} ${pr.title}; ${pr.head} -> ${pr.base}. Labels: ${pr.labels.join(", ") || "none"}.`),
   ].join("\n");
 }
 

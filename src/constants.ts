@@ -35,6 +35,7 @@ export const MERGE_PULL_REQUEST_TOOL_NAME = "merge_pull_request";
 export const PULL_REQUEST_FEEDBACK_TOOL_NAME = "pull_request_feedback";
 export const REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME = "reply_pull_request_feedback";
 export const PULL_REQUEST_FILES_TOOL_NAME = "pull_request_files";
+export const LIST_PULL_REQUESTS_TOOL_NAME = "list_pull_requests";
 export const LABEL_PULL_REQUEST_TOOL_NAME = "label_pull_request";
 export const LIST_WORKTREES_TOOL_NAME = "list_worktrees";
 export const CREATE_WORKTREE_TOOL_NAME = "create_worktree";
@@ -82,6 +83,7 @@ export const BRANCHME_TOOL_NAMES = [
   PULL_REQUEST_FEEDBACK_TOOL_NAME,
   REPLY_PULL_REQUEST_FEEDBACK_TOOL_NAME,
   PULL_REQUEST_FILES_TOOL_NAME,
+  LIST_PULL_REQUESTS_TOOL_NAME,
   LABEL_PULL_REQUEST_TOOL_NAME,
   LIST_WORKTREES_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
