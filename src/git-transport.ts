@@ -85,7 +85,8 @@ function finishGit(state: GitProcessState, resolve: (result: ExecResult) => void
   clearTimeout(state.timer);
   clearTimeout(state.killTimer);
   state.signal?.removeEventListener("abort", state.onAbort);
-  resolve({ stdout: state.stdout, stderr: state.stderr, code: code ?? 1, killed: state.killed });
+  // All received output is retained; timeout and cancellation are reported separately.
+  resolve({ stdout: state.stdout, stderr: state.stderr, code: code ?? 1, killed: state.killed, truncated: false });
 }
 
 function startGit(binary: string, args: string[], env: NodeJS.ProcessEnv, options: ExecOptions, resolve: (result: ExecResult) => void): void {
@@ -101,7 +102,7 @@ function startGit(binary: string, args: string[], env: NodeJS.ProcessEnv, option
 }
 
 function spawnGit(binary: string, args: string[], env: NodeJS.ProcessEnv, options: ExecOptions): Promise<ExecResult> {
-  if (options?.signal?.aborted) return Promise.resolve({ stdout: "", stderr: "", code: 1, killed: true });
+  if (options?.signal?.aborted) return Promise.resolve({ stdout: "", stderr: "", code: 1, killed: true, truncated: false });
   return new Promise(startGit.bind(undefined, binary, args, env, options));
 }
 

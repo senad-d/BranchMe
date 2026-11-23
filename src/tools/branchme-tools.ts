@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "./string-enum.ts";
 import { registerWorkflowTools } from "./workflow-tools.ts";
 import { registerInspectionTools } from "./inspection-tools.ts";
 import { withWorktreeRouting } from "./worktree-routing.ts";
