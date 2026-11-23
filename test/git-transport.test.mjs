@@ -58,6 +58,7 @@ test("network Git uses an absolute system executable, not a repository-controlle
   const result = await withGitTransport(networkPi, isolatedEnv({ PATH: cwd })).exec("git", ["ls-remote", "--get-url", "https://example.com/repo.git"], { cwd });
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.stdout.trim(), "https://example.com/repo.git");
+  assert.equal(result.truncated, false);
 });
 
 test("network Git accepts process and .env tokens without putting them in command output", async (t) => {
@@ -76,7 +77,7 @@ test("a pre-aborted network call does not spawn Git", async (t) => {
   const controller = new AbortController();
   controller.abort();
   const result = await withGitTransport(networkPi, isolatedEnv()).exec("git", ["ls-remote", "--get-url", "https://example.com/repo.git"], { cwd, signal: controller.signal });
-  assert.deepEqual(result, { stdout: "", stderr: "", code: 1, killed: true });
+  assert.deepEqual(result, { stdout: "", stderr: "", code: 1, killed: true, truncated: false });
 });
 
 test("network Git preserves timeout and caller cancellation", { timeout: 15_000 }, async (t) => {
@@ -90,28 +91,32 @@ test("network Git preserves timeout and caller cancellation", { timeout: 15_000 
   const transport = withGitTransport(networkPi, isolatedEnv());
   const timedOut = await transport.exec("git", ["ls-remote", url], { cwd, timeout: 50 });
   assert.equal(timedOut.killed, true);
+  assert.equal(timedOut.truncated, false);
   const controller = new AbortController();
   const pending = transport.exec("git", ["ls-remote", url], { cwd, signal: controller.signal });
   const timer = setTimeout(() => controller.abort(), 50);
   try {
-    assert.equal((await pending).killed, true);
+    const cancelled = await pending;
+    assert.equal(cancelled.killed, true);
+    assert.equal(cancelled.truncated, false);
   } finally {
     clearTimeout(timer);
   }
 });
 
-function credentialFill(host, env) {
+function credentialFill(host, cwd, env) {
   return new Promise((resolve, reject) => {
     const args = ["-c", `credential.https://github.com.helper=${TOKEN_CREDENTIAL_HELPER}`, "credential", "fill"];
-    const child = execFile("git", args, { env, timeout: 10_000 }, (error, stdout) => error ? reject(error) : resolve(stdout));
+    const child = execFile("git", args, { cwd, env, timeout: 10_000 }, (error, stdout) => error ? reject(error) : resolve(stdout));
     child.stdin.end(`protocol=https\nhost=${host}\n\n`);
   });
 }
 
-test("the token credential helper answers github.com from the child environment only", async () => {
+test("the token credential helper answers github.com from the child environment only", async (t) => {
+  const cwd = await temporaryCwd(t);
   const env = isolatedEnv({ GIT_TERMINAL_PROMPT: "0", BRANCHME_GIT_TOKEN: "ghp_transportTest" });
-  const stdout = await credentialFill("github.com", env);
-  assert.match(stdout, /^username=x-access-token$/mu);
-  assert.match(stdout, /^password=ghp_transportTest$/mu);
-  await assert.rejects(credentialFill("example.com", env));
+  const stdout = await credentialFill("github.com", cwd, env);
+  assert.ok(/^username=x-access-token$/mu.test(stdout), "credential fill must return the fixture username");
+  assert.ok(/^password=ghp_transportTest$/mu.test(stdout), "credential fill must return the fixture token");
+  await assert.rejects(credentialFill("example.com", cwd, env));
 });

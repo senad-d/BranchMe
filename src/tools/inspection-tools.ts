@@ -1,6 +1,6 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { StringEnum } from "./string-enum.ts";
 import { getGitLog, getGitShow } from "../git-history.ts";
 import { getGitConflicts } from "../git-conflicts.ts";
 import { GIT_CONFLICTS_TOOL_NAME, GIT_LOG_TOOL_NAME, GIT_SHOW_TOOL_NAME } from "../constants.ts";

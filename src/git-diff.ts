@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { constants as bufferConstants } from "node:buffer";
 import { isAbsolute, win32 } from "node:path";
 import {
   GIT_CONTEXT_VALUE_LIMIT_CHARS,
@@ -74,11 +75,20 @@ function validateDiffOptions(input: GitDiffToolInput): void {
 async function execReadOnlyGit(
   pi: Pick<ExtensionAPI, "exec">,
   tokens: readonly string[],
+  maxBuffer: number | undefined,
   command: string,
   args: string[],
   options: Parameters<ExtensionAPI["exec"]>[2],
 ) {
-  const result = await pi.exec(command, ["--no-optional-locks", "--no-lazy-fetch", "-c", "core.fsmonitor=false", ...args], options);
+  const execOptions = maxBuffer === undefined ? options : { ...options, maxBuffer };
+  const result = await pi.exec(command, ["--no-optional-locks", "--no-lazy-fetch", "-c", "core.fsmonitor=false", ...args], execOptions);
+  // Older Pi versions omit truncated. Newer Pi reports overflow as both truncated and killed.
+  if ("truncated" in result && result.truncated === true) {
+    if (maxBuffer === undefined) {
+      throw new Error("git_diff: local Git discovery exceeded the output limit; partial output was discarded.\nResolve: If using worktreePath, retry from the target worktree as your current directory. If it repeats, report a local Git discovery failure.");
+    }
+    throw new Error("git_diff: local diff exceeded the output limit; partial output was discarded.\nResolve: Retry with narrower paths, fewer contextLines, or output: 'stat' or 'name-status'.");
+  }
   if (result.killed) {
     throw new Error("git_diff: local Git read was killed or timed out.\nResolve: Retry once with narrower paths or output: 'stat'; if it repeats, report a local Git read failure. No fetch is needed to diagnose a local timeout.");
   }
@@ -188,7 +198,7 @@ async function collectDiff(
   signal?: AbortSignal,
   tokens: readonly string[] = [],
 ): Promise<GitDiffDetails> {
-  const pi = { exec: execReadOnlyGit.bind(undefined, host, tokens) };
+  const pi = { exec: execReadOnlyGit.bind(undefined, host, tokens, undefined) };
   const cwd = input.worktreePath === undefined ? ctx.cwd : await resolveRepositoryWorktreeCwd(pi, ctx, input.worktreePath, signal);
   const repoRoot = await getCanonicalGitWorktreeRoot(pi, { cwd }, signal);
   const rootCtx = { cwd: repoRoot };
@@ -207,7 +217,9 @@ async function collectDiff(
   if (mode === "staged") args.push("--cached");
   if (comparison) args.push(comparison.diffBaseHead, comparison.targetHead);
   args.push("--", ...(input.paths ?? []));
-  const result = await runGit(pi, rootCtx, args, { signal, tokens, allowFailure: true });
+  // Only the final diff needs full capture for redaction and exact pre-preview counts.
+  const diffPi = { exec: execReadOnlyGit.bind(undefined, host, tokens, bufferConstants.MAX_STRING_LENGTH) };
+  const result = await runGit(diffPi, rootCtx, args, { signal, tokens, allowFailure: true });
   if (result.code !== 0) {
     throw new Error(`git_diff: local diff failed. ${safeDiffError(result.stderr || result.stdout, tokens)}\nResolve: Check the local Git error and retry with corrected paths or repository state; no fetch was attempted.`);
   }

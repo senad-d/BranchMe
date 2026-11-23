@@ -1,6 +1,6 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type AgentToolResult, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { StringEnum } from "./string-enum.ts";
 
 import { COMMIT_CHANGES_TOOL_NAME } from "../constants.ts";
 import { CommitError, assertNoUnsafeCommitFiles, createCommit, scopeChangedFilesToPaths, validateCommitMessage } from "../git-commit.ts";

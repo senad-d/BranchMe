@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "./string-enum.ts";
 import { editPullRequest, mergePullRequest } from "../github-lifecycle.ts";
 import { PULL_REQUEST_CHECKS_TOOL_NAME, EDIT_PULL_REQUEST_TOOL_NAME, MERGE_PULL_REQUEST_TOOL_NAME } from "../constants.ts";
 import { openGitHubClient } from "../github-api.ts";
