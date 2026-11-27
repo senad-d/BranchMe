@@ -141,7 +141,6 @@ const recentLogArgs = [
 ];
 const integrationOperationMarkers = [
   "MERGE_HEAD",
-  "AUTO_MERGE",
   "rebase-merge",
   "rebase-apply",
   "CHERRY_PICK_HEAD",

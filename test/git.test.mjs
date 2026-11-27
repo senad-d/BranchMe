@@ -85,7 +85,6 @@ const recentLogArgs = [
 ];
 const integrationOperationMarkers = [
   "MERGE_HEAD",
-  "AUTO_MERGE",
   "rebase-merge",
   "rebase-apply",
   "CHERRY_PICK_HEAD",
@@ -1718,10 +1717,24 @@ test("getGitOperationState preserves marker order and deduplicates operations af
     assert.deepEqual(await getGitOperationState(pi, ctx, controller.signal), {
       active: ["merge", "rebase", "sequencer"],
       mergeHeadPresent: true,
-      autoMergePresent: true,
     });
     assert.equal(pi.calls[0].options.signal, controller.signal);
     assert.equal(pi.calls[0].options.timeout, 30_000);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("getGitOperationState reports no merge for an AUTO_MERGE left without MERGE_HEAD", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "branchme-stale-auto-merge-"));
+  try {
+    await writeFile(join(tempRoot, "AUTO_MERGE"), "tree\n");
+    const paths = integrationOperationMarkers.map(operationMarkerPath.bind(undefined, tempRoot));
+    const pi = makePi({
+      [integrationOperationStateArgs.join("\0")]: { stdout: `${paths.join("\n")}\n` },
+    });
+
+    assert.deepEqual(await getGitOperationState(pi, ctx), { active: [], mergeHeadPresent: false });
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

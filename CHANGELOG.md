@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.20 - Unreleased
+
+- Ignore a stale `AUTO_MERGE` tree when detecting active Git operations: a leftover tree without `MERGE_HEAD` no longer falsely blocks workflows. Retain active-operation detection for merge, rebase, cherry-pick, revert, and sequencer markers, with regression coverage.
+
 ## 0.3.19 - Unreleased
 
 - Added read-only `list_pull_requests`: the repository's 100 most recently updated open pull requests with number, title, head and base branch, draft flag and labels (the rest counted), in one GraphQL query. An agent asked what is open on a project can now answer without a PR number or branch.

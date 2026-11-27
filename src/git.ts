@@ -1166,12 +1166,11 @@ export type GitOperationKind = "merge" | "rebase" | "cherry-pick" | "revert" | "
 export interface GitOperationState {
   active: GitOperationKind[];
   mergeHeadPresent: boolean;
-  autoMergePresent: boolean;
 }
 
+// AUTO_MERGE is no marker: merge-ort leaves it behind after a merge ended, with no MERGE_HEAD.
 const GIT_OPERATION_MARKERS: ReadonlyArray<readonly [path: string, operation: GitOperationKind]> = [
   ["MERGE_HEAD", "merge"],
-  ["AUTO_MERGE", "merge"],
   ["rebase-merge", "rebase"],
   ["rebase-apply", "rebase"],
   ["CHERRY_PICK_HEAD", "cherry-pick"],
@@ -1218,7 +1217,6 @@ export async function getGitOperationState(
   return {
     active,
     mergeHeadPresent: presentMarkers[0] === true,
-    autoMergePresent: presentMarkers[1] === true,
   };
 }
 
