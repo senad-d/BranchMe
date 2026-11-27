@@ -5,6 +5,7 @@ import { Value } from "typebox/value";
 import {
   BRANCH_STATUS_TOOL_NAME,
   CHANGE_BRANCH_TOOL_NAME,
+  COMMIT_CHANGES_TOOL_NAME,
   CONCLUDE_MERGE_TOOL_NAME,
   CREATE_BRANCH_TOOL_NAME,
   CREATE_WORKTREE_TOOL_NAME,
@@ -165,6 +166,21 @@ test("new shell-free schemas remain strict and accept explicit safety expectatio
   assertInvalid(tools.get("stage_changes"), { paths: [] });
   assertInvalid(tools.get("merge_pull_request"), { number: 7, expectedHead: "a".repeat(40), mergeMethod: "admin" });
   assertInvalid(tools.get("restore_paths"), { paths: ["file.txt"], ...expected, expectedFiles: [{ path: "file.txt", fingerprint: "c".repeat(64), force: true }] });
+});
+
+test("commit action keeps its optional provider-facing string enum and default", () => {
+  const tool = registeredTools().get(COMMIT_CHANGES_TOOL_NAME);
+  const schema = JSON.parse(JSON.stringify(tool.parameters));
+
+  assert.deepEqual(schema.properties.action, {
+    type: "string",
+    enum: ["gather", "commit"],
+    description: "Use gather to collect commit context. Use commit to create a local commit with either an explicit message or a drafted message when message is omitted.",
+    default: "gather",
+  });
+  assertValid(tool, {});
+  assertValid(tool, { action: "commit" });
+  assertInvalid(tool, { action: "push" });
 });
 
 test("runtime schema validation enforces bounded git_status inputs", () => {

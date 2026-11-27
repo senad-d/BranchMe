@@ -1,6 +1,6 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { StringEnum } from "./string-enum.ts";
 import {
   CONCLUDE_MERGE_TOOL_NAME, GIT_CONTEXT_VALUE_LIMIT_CHARS, PULL_REQUEST_FEEDBACK_TOOL_NAME, PULL_REQUEST_REPLY_BODY_LIMIT_CHARS,
   LABEL_PULL_REQUEST_TOOL_NAME, LIST_PULL_REQUESTS_TOOL_NAME, PULL_REQUEST_FILES_TOOL_NAME, PULL_REQUEST_LABEL_LIMIT, PULL_REQUEST_STATUS_TOOL_NAME,
